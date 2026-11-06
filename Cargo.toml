@@ -1,0 +1,24 @@
+[package]
+name = "FFmpeg-Builds-Full"
+version = "0.1.0"
+authors = ["ChanTrail"]
+edition = "2024"
+description = "FFmpeg-Builds-Full native build driver (Rust port of the .sh pipeline)"
+
+[dependencies]
+# HTTPS 客户端（异步）：rustls 纯 Rust TLS，流式下载，代理走环境变量
+# Async HTTPS client: pure-Rust TLS (rustls), streaming downloads, env proxy
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+# 异步运行时：库源码预取与配方编译并发执行
+# Async runtime: library source prefetch runs concurrently with recipe builds
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
+# bytes_stream 的 StreamExt / StreamExt for reqwest's bytes_stream
+futures-util = "0.3"
+# YAML 解析：features/ 与 sources/ 清单文件（需要注释支持）
+# YAML parsing: features/ and sources/ manifest files (comments required)
+yaml-rust2 = "0.10"
+
+[profile.release]
+opt-level = 2
+debug = false
+strip = true

@@ -1,0 +1,177 @@
+# 杂项/不常用库的源码：按 <os>-<arch> 分节（对应 features/misc.yaml 的键），
+# 各节独立取值。即便特性默认 disable 也声明来源——启用时无需再找地址。
+# Misc/rare library sources: one <os>-<arch> section each (matching
+# features/misc.yaml keys), values independent. Sources are declared even
+# when the feature defaults to disable — enabling needs no further edit.
+
+windows-x86_64:
+  openssl:
+    git: https://github.com/openssl/openssl.git
+  mbedtls:
+    git: https://github.com/Mbed-TLS/mbedtls.git
+  fdk-aac:
+    git: https://github.com/mstorsjo/fdk-aac.git
+  libshaderc:
+    git: https://github.com/google/shaderc.git
+  libglslang:
+    git: https://github.com/KhronosGroup/glslang.git
+  decklink: {}            # Blackmagic 闭源 SDK，无公开源码地址 / proprietary SDK, no public source
+  libklvanc:
+    git: https://github.com/stoth68000/libklvanc.git
+  libcelt:
+    git: https://gitlab.xiph.org/xiph/celt.git
+  libsmbclient:
+    git: https://gitlab.com/samba-team/samba.git
+  libmfx:
+    git: https://github.com/Intel-Media-SDK/MediaSDK.git
+  libopenvino:
+    git: https://github.com/openvinotoolkit/openvino.git
+  libtensorflow:
+    git: https://github.com/tensorflow/tensorflow.git
+  libtorch:
+    git: https://github.com/pytorch/pytorch.git
+  opencv:
+    git: https://github.com/opencv/opencv.git
+  ladspa:
+    archive: https://www.ladspa.org/download/ladspa_sdk_1.17.tgz
+
+windows-arm64:
+  openssl:
+    git: https://github.com/openssl/openssl.git
+  mbedtls:
+    git: https://github.com/Mbed-TLS/mbedtls.git
+  fdk-aac:
+    git: https://github.com/mstorsjo/fdk-aac.git
+  libshaderc:
+    git: https://github.com/google/shaderc.git
+  libglslang:
+    git: https://github.com/KhronosGroup/glslang.git
+  decklink: {}
+  libklvanc:
+    git: https://github.com/stoth68000/libklvanc.git
+  libcelt:
+    git: https://gitlab.xiph.org/xiph/celt.git
+  libsmbclient:
+    git: https://gitlab.com/samba-team/samba.git
+  libmfx:
+    git: https://github.com/Intel-Media-SDK/MediaSDK.git
+  libopenvino:
+    git: https://github.com/openvinotoolkit/openvino.git
+  libtensorflow:
+    git: https://github.com/tensorflow/tensorflow.git
+  libtorch:
+    git: https://github.com/pytorch/pytorch.git
+  opencv:
+    git: https://github.com/opencv/opencv.git
+  ladspa:
+    archive: https://www.ladspa.org/download/ladspa_sdk_1.17.tgz
+
+linux-x86_64:
+  openssl:
+    git: https://github.com/openssl/openssl.git
+  mbedtls:
+    git: https://github.com/Mbed-TLS/mbedtls.git
+  fdk-aac:
+    git: https://github.com/mstorsjo/fdk-aac.git
+  pulseaudio:
+    git: https://gitlab.freedesktop.org/pulseaudio/pulseaudio.git
+  libjack:
+    git: https://github.com/jackaudio/jack2.git
+  sndio:
+    git: https://caoua.org/git/sndio
+  libshaderc:
+    git: https://github.com/google/shaderc.git
+  libglslang:
+    git: https://github.com/KhronosGroup/glslang.git
+  decklink: {}
+  libklvanc:
+    git: https://github.com/stoth68000/libklvanc.git
+  libcelt:
+    git: https://gitlab.xiph.org/xiph/celt.git
+  libsmbclient:
+    git: https://gitlab.com/samba-team/samba.git
+  libmfx:
+    git: https://github.com/Intel-Media-SDK/MediaSDK.git
+  libopenvino:
+    git: https://github.com/openvinotoolkit/openvino.git
+  libtensorflow:
+    git: https://github.com/tensorflow/tensorflow.git
+  libtorch:
+    git: https://github.com/pytorch/pytorch.git
+  opencv:
+    git: https://github.com/opencv/opencv.git
+  ladspa:
+    archive: https://www.ladspa.org/download/ladspa_sdk_1.17.tgz
+
+linux-arm64:
+  openssl:
+    git: https://github.com/openssl/openssl.git
+  mbedtls:
+    git: https://github.com/Mbed-TLS/mbedtls.git
+  fdk-aac:
+    git: https://github.com/mstorsjo/fdk-aac.git
+  pulseaudio:
+    git: https://gitlab.freedesktop.org/pulseaudio/pulseaudio.git
+  libjack:
+    git: https://github.com/jackaudio/jack2.git
+  sndio:
+    git: https://caoua.org/git/sndio
+  libshaderc:
+    git: https://github.com/google/shaderc.git
+  libglslang:
+    git: https://github.com/KhronosGroup/glslang.git
+  decklink: {}
+  libklvanc:
+    git: https://github.com/stoth68000/libklvanc.git
+  libcelt:
+    git: https://gitlab.xiph.org/xiph/celt.git
+  libsmbclient:
+    git: https://gitlab.com/samba-team/samba.git
+  libmfx:
+    git: https://github.com/Intel-Media-SDK/MediaSDK.git
+  libopenvino:
+    git: https://github.com/openvinotoolkit/openvino.git
+  libtensorflow:
+    git: https://github.com/tensorflow/tensorflow.git
+  libtorch:
+    git: https://github.com/pytorch/pytorch.git
+  opencv:
+    git: https://github.com/opencv/opencv.git
+  ladspa:
+    archive: https://www.ladspa.org/download/ladspa_sdk_1.17.tgz
+
+
+mac-arm64:
+  openssl:
+    git: https://github.com/openssl/openssl.git
+  mbedtls:
+    git: https://github.com/Mbed-TLS/mbedtls.git
+  fdk-aac:
+    git: https://github.com/mstorsjo/fdk-aac.git
+  pulseaudio:
+    git: https://gitlab.freedesktop.org/pulseaudio/pulseaudio.git
+  libjack:
+    git: https://github.com/jackaudio/jack2.git
+  libshaderc:
+    git: https://github.com/google/shaderc.git
+  libglslang:
+    git: https://github.com/KhronosGroup/glslang.git
+  decklink: {}
+  libklvanc:
+    git: https://github.com/stoth68000/libklvanc.git
+  libcelt:
+    git: https://gitlab.xiph.org/xiph/celt.git
+  libsmbclient:
+    git: https://gitlab.com/samba-team/samba.git
+  libmfx:
+    git: https://github.com/Intel-Media-SDK/MediaSDK.git
+  libopenvino:
+    git: https://github.com/openvinotoolkit/openvino.git
+  libtensorflow:
+    git: https://github.com/tensorflow/tensorflow.git
+  libtorch:
+    git: https://github.com/pytorch/pytorch.git
+  opencv:
+    git: https://github.com/opencv/opencv.git
+  ladspa:
+    archive: https://www.ladspa.org/download/ladspa_sdk_1.17.tgz

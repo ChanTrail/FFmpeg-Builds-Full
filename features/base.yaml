@@ -1,0 +1,7 @@
+# 基础库：始终启用且不可禁用。键只能出现在本文件——任何其它文件再列同名即报错。
+# Base libraries: always enabled, cannot be disabled. A key may live ONLY
+# here — listing it in any other file is an error.
+- zlib     # FFmpeg 内部硬依赖（压缩流/PNG 路径等）/ hard internal dependency
+- bzlib    # Matroska 等容器压缩支持 / container compression support
+- lzma     # TIFF/容器 xz 支持 / xz support
+- iconv    # 字符集转换（字幕必需）/ charset conversion, required by subtitles

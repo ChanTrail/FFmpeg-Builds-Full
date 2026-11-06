@@ -1,0 +1,243 @@
+# 通用源码：全平台共享的库（对应 features/common.yaml 的键与其依赖源）。
+# 基础库在 base.yaml；杂项在 misc.yaml 分节；平台库在 <os>-<arch>.yaml。
+# Common sources: libraries shared by every platform (matching
+# features/common.yaml keys plus their dependency sources). Base libs live
+# in base.yaml; misc in misc.yaml sections; platform libs in
+# <os>-<arch>.yaml.
+
+# ================= 压缩 / compression =================
+zstd:
+  git: https://github.com/facebook/zstd.git
+brotli:
+  git: https://github.com/google/brotli.git
+libsnappy:
+  git: https://github.com/google/snappy.git
+
+# ================= TLS / crypto（gnutls 链） =================
+gmp:
+  archive: https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
+  sha256: a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898
+nettle:
+  archive: https://ftp.gnu.org/gnu/nettle/nettle-4.0.tar.gz
+  sha256: 3addbc00da01846b232fb3bc453538ea5468da43033f21bb345cb1e9073f5094
+gnutls:
+  archive: https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.13.tar.xz
+  sha256: ffed8ec1bf09c2426d4f14aae377de4753b53e537d685e604e99a8b16ca9c97e
+libtasn1:
+  archive: https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.21.0.tar.gz
+  sha256: 1d8a444a223cc5464240777346e125de51d8e6abf0b8bac742ac84609167dc87
+p11-kit:
+  git: https://github.com/p11-glue/p11-kit.git
+
+# ================= 视频编解码 / video codecs =================
+x264:
+  git: https://code.videolan.org/videolan/x264.git   # 无 release tag → HEAD
+x265:
+  git: https://bitbucket.org/multicoreware/x265_git.git
+svtav1:
+  git: https://gitlab.com/AOMediaCodec/SVT-AV1.git
+aom:
+  git: https://aomedia.googlesource.com/aom           # googlesource 无 CI API → tag
+dav1d:
+  git: https://code.videolan.org/videolan/dav1d.git
+libvpx:
+  git: https://chromium.googlesource.com/webm/libvpx
+rav1e:
+  git: https://github.com/xiph/rav1e.git
+kvazaar:
+  git: https://github.com/ultravideo/kvazaar.git
+openh264:
+  git: https://github.com/cisco/openh264.git
+openapv:
+  git: https://github.com/AcademySoftwareFoundation/openapv.git
+xevd:
+  git: https://github.com/mpeg5/xevd.git
+xeve:
+  git: https://github.com/mpeg5/xeve.git
+vvenc:
+  git: https://github.com/fraunhoferhhi/vvenc.git
+theora:
+  git: https://gitlab.xiph.org/xiph/theora.git
+xvid:
+  archive: https://downloads.xvid.com/downloads/xvidcore-1.3.7.tar.gz
+  sha256: abbdcbd39555691dd1c9b4d08f0a031376a3b211652c0d8b3b8aa9be1303ce2d
+openjpeg:
+  git: https://github.com/uclouvain/openjpeg.git
+libjxl:
+  git: https://github.com/libjxl/libjxl.git
+  submodules: true
+libwebp:
+  git: https://chromium.googlesource.com/webm/libwebp
+
+# ================= 音频编解码 / audio codecs =================
+lame:
+  archive: https://downloads.sourceforge.net/project/lame/lame/4.0/lame-4.0.tar.gz
+  sha256: 3df5124d5ad3a98312ffd7ba6a9b36230e4f8a3e66d3ce0f425e336c32d216eb
+ogg:
+  git: https://github.com/xiph/ogg.git
+vorbis:
+  git: https://github.com/xiph/vorbis.git
+opus:
+  git: https://gitlab.xiph.org/xiph/opus.git
+speex:
+  git: https://gitlab.xiph.org/xiph/speex.git         # downloads.xiph.org 不可达，走仓库
+shine:
+  git: https://github.com/toots/shine.git
+codec2:
+  git: https://github.com/drowe67/codec2.git
+ilbc:
+  git: https://github.com/TimothyGu/libilbc.git
+gsm:
+  archive: https://www.quut.com/gsm/gsm-1.0.24.tar.gz
+  sha256: a3c40c6471928383f4abfcb2e8f24012a1f562be2f17b8d672145d5986681a92
+lc3:
+  git: https://github.com/google/liblc3.git
+sndfile:
+  git: https://github.com/libsndfile/libsndfile.git
+bs2b:
+  archive: https://downloads.sourceforge.net/project/bs2b/libbs2b/3.1.0/libbs2b-3.1.0.tar.gz
+  sha256: 6aaafd81aae3898ee40148dd1349aab348db9bfae9767d0e66e0b07ddd4b2528
+modplug:
+  archive: https://downloads.sourceforge.net/project/modplug-xmms/libmodplug/0.8.9.0/libmodplug-0.8.9.0.tar.gz
+  sha256: 457ca5a6c179656d66c01505c0d95fafaead4329b9dbaa0f997d00a3508ad9de
+vo-amrwbenc:
+  archive: https://downloads.sourceforge.net/project/opencore-amr/vo-amrwbenc/vo-amrwbenc-0.1.3.tar.gz
+  sha256: 5652b391e0f0e296417b841b02987d3fd33e6c0af342c69542cbb016a71d9d4e
+opencore-amr:
+  archive: https://downloads.sourceforge.net/opencore-amr/opencore-amr-0.1.6.tar.gz
+mysofa:
+  git: https://github.com/hoene/libmysofa.git
+flite:
+  git: https://github.com/festvox/flite.git
+pocketsphinx:
+  git: https://github.com/cmusphinx/pocketsphinx.git
+twolame:
+  archive: https://downloads.sourceforge.net/twolame/twolame-0.4.0.tar.gz
+soxr:
+  archive: https://downloads.sourceforge.net/project/soxr/soxr-0.1.3-Source.tar.xz
+rubberband:
+  git: https://github.com/breakfastquay/rubberband.git
+chromaprint:
+  git: https://github.com/acoustid/chromaprint.git
+openal:
+  git: https://github.com/kcat/openal-soft.git
+gme:
+  git: https://github.com/libgme/game-music-emu.git
+openmpt:
+  archive: https://lib.openmpt.org/files/libopenmpt/src/libopenmpt-0.8.3+release.autotools.tar.gz
+
+# ================= 字幕、文字、图形栈 / subtitles, text, graphics =================
+freetype:
+  git: https://gitlab.freedesktop.org/freetype/freetype.git
+harfbuzz:
+  git: https://github.com/harfbuzz/harfbuzz.git       # mac-arm64 覆盖见 sources/mac-arm64.yaml
+fribidi:
+  git: https://github.com/fribidi/fribidi.git
+fontconfig:
+  git: https://gitlab.freedesktop.org/fontconfig/fontconfig.git
+libass:
+  git: https://github.com/libass/libass.git
+lcms2:
+  git: https://github.com/mm2/Little-CMS.git
+pixman:
+  archive: https://cairographics.org/releases/pixman-0.46.4.tar.gz
+  sha256: d09c44ebc3bd5bee7021c79f922fe8fb2fb57f7320f55e97ff9914d2346a591c
+cairo:
+  archive: https://cairographics.org/releases/cairo-1.18.6.tar.xz
+  sha256: 1c767308174337a74694da0f3ec069c271452163a1ef4540964c50c301f157d4
+pango:
+  archive: https://download.gnome.org/sources/pango/1.58/pango-1.58.2.tar.xz
+  sha256: 342385b6ca3b7c73455d7c80a13b7dbe4489e00bc3bd4c5bd6ed4dce421e374a
+librsvg:
+  archive: https://download.gnome.org/sources/librsvg/2.63/librsvg-2.63.4.tar.xz
+  sha256: 31f07d9350dad3f8964fd613c31309ac160fdef13dfac59df6fd082de78d6e8f
+zimg:
+  git: https://github.com/sekrit-twc/zimg.git
+vidstab:
+  git: https://github.com/georgmartius/vid.stab.git
+vmaf:
+  git: https://github.com/Netflix/vmaf.git
+frei0r:
+  git: https://codeberg.org/frei0r/frei0r.git
+aribb24:
+  git: https://github.com/nkoriyama/aribb24.git
+aribcaption:
+  git: https://github.com/xqq/libaribcaption.git
+zvbi:
+  archive: https://downloads.sourceforge.net/project/zapping/zvbi/0.2.42/zvbi-0.2.42.tar.bz2
+vapoursynth:
+  git: https://github.com/vapoursynth/vapoursynth.git
+avisynth:
+  git: https://github.com/AviSynth/AviSynthPlus.git
+qrencode:
+  git: https://github.com/fukuchi/libqrencode.git
+quirc:
+  git: https://github.com/dlbeer/quirc.git
+leptonica:
+  git: https://github.com/DanBloomberg/leptonica.git
+tesseract:
+  git: https://github.com/tesseract-ocr/tesseract.git
+lensfun:
+  git: https://github.com/lensfun/lensfun.git
+sdl2:
+  git: https://github.com/libsdl-org/SDL.git
+  ref: SDL2                                           # 默认分支已是 SDL3
+
+# ================= glib / GNOME 依赖栈 =================
+pcre2:
+  archive: https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.49/pcre2-10.49.tar.bz2
+  sha256: 53c156e1ba416a20da8e65395daa132da0d80e76910424caca3fcdae7831d384
+libffi:
+  archive: https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz
+  sha256: 7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4
+glib:
+  archive: https://gitlab.gnome.org/GNOME/glib/-/archive/2.88.4/glib-2.88.4.tar.bz2
+  sha256: efa41ebb4af761ec5d5e2a7f16efffdf014acd17926913350ed820e1dd935357
+gettext:
+  archive: https://ftp.gnu.org/gnu/gettext/gettext-0.26.tar.gz
+
+# ================= 容器、协议、光盘 =================
+libxml2:
+  git: https://gitlab.gnome.org/GNOME/libxml2.git
+libssh:
+  git: https://git.libssh.org/projects/libssh.git      # 自托管 → tag 回退
+libsrt:
+  git: https://github.com/Haivision/srt.git
+librist:
+  git: https://code.videolan.org/rist/librist.git
+libzmq:
+  git: https://github.com/zeromq/libzmq.git
+rabbitmq:
+  git: https://github.com/alanxz/rabbitmq-c.git
+libbluray:
+  git: https://code.videolan.org/videolan/libbluray.git
+libdvdcss:
+  archive: https://download.videolan.org/pub/libdvdcss/1.6.0/libdvdcss-1.6.0.tar.xz
+  sha256: 7ea556c846b7bfc32d47b41cae56d1863a6b6d5f706bb162778d6f298490977c
+libdvdread:
+  archive: https://download.videolan.org/pub/videolan/libdvdread/7.1.1/libdvdread-7.1.1.tar.xz
+  sha256: a0d47876548bec806774bbf8dbf20bb19ba139464383156b32eb8e59915b90a9
+libdvdnav:
+  archive: https://download.videolan.org/pub/videolan/libdvdnav/7.0.0/libdvdnav-7.0.0.tar.xz
+  sha256: a2a18f5ad36d133c74bf9106b6445806fa253b09141a46392550394b647b221e
+libcdio:
+  git: https://github.com/libcdio/libcdio.git
+libcdio-paranoia:
+  archive: https://ftp.gnu.org/gnu/libcdio/libcdio-paranoia-10.2+2.0.2.tar.bz2
+  sha256: 186892539dedd661276014d71318c8c8f97ecb1250a86625256abd4defbf0d0c
+caca:
+  archive: https://github.com/cacalabs/libcaca/releases/download/v0.99.beta20/libcaca-0.99.beta20.tar.gz
+  sha256: 8ad74babc63bf665b0b2378d95b4da65b7493c11bd9f3ac600517085b0c4acf2
+librtmp:
+  git: git://git.ffmpeg.org/rtmpdump.git               # https 端点周期性 502；9418 原生协议 / https 502s periodically; native proto on 9418
+libcurl:
+  archive: https://curl.se/download/curl-8.23.0.tar.xz
+  sha256: 8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5
+whisper:
+  git: https://github.com/ggml-org/whisper.cpp.git     # FFmpeg 需 >=1.7.5
+
+# ================= 硬件加速（通用）=================
+amf:
+  git: https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git
+nv-codec-headers:
+  git: https://github.com/FFmpeg/nv-codec-headers.git

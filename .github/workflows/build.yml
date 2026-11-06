@@ -1,0 +1,763 @@
+# FFmpeg 构建：五平台原生构建上游 FFmpeg master 并发布。
+# FFmpeg builds: native builds of upstream FFmpeg master on five platforms.
+#
+# 触发模型 / trigger model:
+#   - repository_dispatch (Build FFmpeg)：驱动程序成功发布 release 后
+#     由 release.yml 链入——产物以正常 release 发布。release 事件在
+#     GITHUB_TOKEN 下不会触发工作流，dispatch 是官方留的链接口。
+#     Linked in by release.yml once the driver has been successfully
+#     released — artifacts ship as a normal release. The release event
+#     itself does not fire workflows under GITHUB_TOKEN; dispatch is
+#     the sanctioned chaining hook.
+#   - schedule：定时构建只在 master（默认分支）发生——GitHub 的 cron 本来
+#     就只在默认分支求值；且只有完整成功构建过一次（latest release
+#     存在）定时才生效。产物以正常 release 发布。
+#     Scheduled builds only ever happen on master (the default branch) —
+#     GitHub evaluates crons on the default branch alone — and only after
+#     one complete successful build (a `latest` release exists). Artifacts
+#     ship as a normal release.
+#   - workflow_run：非 master 分支的 rust CI（ci.yml）成功完成后发起——
+#     构建该分支的 FFmpeg，产物以 pre-release 发布。
+#     A non-master branch's rust CI (ci.yml) finishing successfully kicks
+#     off an FFmpeg build of that branch; artifacts ship as a pre-release.
+#   - workflow_dispatch：手动构建，可选 publish 发布（仅 master 有意义）。
+#     Manual builds, optionally publishing (only meaningful on master).
+#
+# 驱动程序始终用"已发布的最新 release 二进制"（prepare 解析最新 v* tag），
+# 不在仓内现编——保证开跑时必定是发布版。
+# The driver is always the newest PUBLISHED release binary (prepare
+# resolves the latest v* tag) rather than something compiled in-place —
+# every run provably starts from a released driver.
+name: Build FFmpeg
+
+on:
+  schedule:
+    # Every 3rd day of the month (1, 4, 7, ... 31) at 00:00 UTC (08:00 in UTC+8).
+    # Cron cannot express "every 72 hours", so the gap shrinks to 1-2 days
+    # around month ends. Top-of-the-hour crons can be delayed by GitHub at
+    # busy times; that is acceptable here.
+    - cron: "0 0 */3 * *"
+  # 驱动 release 发布后的链接触发（release.yml 发 dispatches）
+  # the link fired after the driver's release is published
+  repository_dispatch:
+    types: [Build FFmpeg]
+  workflow_run:
+    # rust CI 在非 master 分支成功 → 以 pre-release 构建该分支
+    # rust CI succeeding on a non-master branch -> build as a pre-release
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a GitHub Release when everything passed (scheduled runs always publish)"
+        type: boolean
+        default: false
+
+# Never run two builds at once, and never cancel one that is already running.
+concurrency:
+  group: build-ffmpeg
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # 分支判定：workflow_run 触发时取发起 CI 的分支与提交；其余情况是当前
+  # 分支。driver/build 都要 checkout 这个 ref——workflow_run 默认停在
+  # 默认分支上，不 checkout 就会拿 master 的驱动代码去构建别的分支。
+  # Branch resolution: for workflow_run, the branch+sha that ran CI; the
+  # current ref otherwise. driver/build must check out this ref —
+  # workflow_run lands on the default branch by default, and building
+  # master's driver code for another branch would be wrong.
+  prepare:
+    name: Resolve upstream commit + ref
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    # workflow_run 门：仅当发起方 CI 在非 master 分支成功时才放行整条
+    # 流水线——master 的 CI 完成和失败的 CI 都不该触发 FFmpeg 构建。
+    # prepare 被拒后下游 needs 全部跳过。
+    # The workflow_run gate: the pipeline only proceeds when the triggering
+    # CI run succeeded on a non-master branch — a completed master CI run
+    # or a failed one must not start an FFmpeg build. With prepare
+    # rejected, every downstream `needs` is skipped.
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch != 'master') }}
+    outputs:
+      sha: ${{ steps.up.outputs.sha }}
+      hash: ${{ steps.up.outputs.hash }}
+      ref: ${{ steps.ref.outputs.ref }}
+      branch: ${{ steps.ref.outputs.branch }}
+      prerelease: ${{ steps.ref.outputs.prerelease }}
+      driver_tag: ${{ steps.drv.outputs.tag }}
+      go: ${{ steps.gate.outputs.go }}
+    steps:
+      - name: Resolve source ref
+        id: ref
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "ref=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+            echo "branch=${{ github.event.workflow_run.head_branch }}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            echo "branch=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve FFmpeg master
+        id: up
+        run: |
+          set -euo pipefail
+          sha="$(git ls-remote https://github.com/FFmpeg/FFmpeg.git refs/heads/master | cut -f1)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve FFmpeg master (got '$sha')"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "hash=${sha:0:10}" >> "$GITHUB_OUTPUT"
+          echo "Building FFmpeg commit $sha"
+
+      # 定时门槛：只有完整成功构建过一次（latest release 存在）定时才
+      # 生效——首次成功只能靠 dispatch 链或手动触发，避免没跑通的流水
+      # 线每三天空烧几个小时。
+      # Schedule gate: the cron only becomes effective after one fully
+      # successful build (a `latest` release exists) — the first success
+      # can only come from the dispatch chain or a manual run, so an
+      # unproven pipeline doesn't burn hours every three days.
+      - name: Gate the schedule on a first complete build
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # 按 tag 精确查：/releases/latest 返回的是"Latest 徽章"的
+          # release（驱动 v* 发布也会戴徽章），tag 名 latest 才是
+          # FFmpeg 首建的可靠凭证。
+          # Query by tag, not the badge: /releases/latest answers
+          # "the release wearing the Latest badge" (driver v* releases
+          # wear it too) — the tag named `latest` is the only reliable
+          # proof of a first complete FFmpeg build.
+          if [ "${{ github.event_name }}" = "schedule" ] && ! gh api "repos/$GITHUB_REPOSITORY/releases/tags/latest" >/dev/null 2>&1; then
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no complete build yet (no 'latest' release) — scheduled run skipped"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 驱动用"已发布的最新"：dispatch 载荷带 tag；其余触发取最新 v*
+      # release（gh release list 按创建时间倒序，第一行就是最新的）。
+      # The driver is always the newest PUBLISHED one: the dispatch
+      # payload carries its tag; every other trigger resolves the latest
+      # v* release (`gh release list` is newest-first).
+      - name: Resolve driver release
+        id: drv
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            tag="${{ github.event.client_payload.tag }}"
+          else
+            # Latest 浮动桶恒定指向最新发布；不存在时退到最新
+            # Driver-* tag。/ the floating Latest bucket always
+            # points at the newest publish; fall back to the newest
+            # Driver-* tag when absent
+            tag="Latest"
+            gh release view Latest >/dev/null 2>&1 \
+              || tag="$(gh release list --json tagName --limit 50 -q '.[].tagName' | grep -m1 '^Driver-[0-9]' || true)"
+          fi
+          [[ "$tag" =~ ^Driver- ]] || { echo "::error::no published driver release (Driver-* tag) found"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Using driver release $tag"
+
+  # Every platform is built natively, on a runner of its own OS and CPU
+  # architecture, by the Rust driver (FFmpeg-Builds-Full build).
+  #   windows-*  MSYS2 (UCRT64 on x86_64, CLANGARM64 on arm64)
+  #   linux-*    Ubuntu, apt toolchain + this repo's Rust recipes
+  #   macos      brew toolchain + the same recipes
+  # 驱动二进制从"最新已发布 release"下载（prepare.outputs.driver_tag）。
+  # The driver binary is downloaded from the newest published release
+  # (prepare.outputs.driver_tag).
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    # 定时未过首建门时整条流水线停在这里，verify/release 随 needs 跳过
+    # when the schedule gate rejects, the pipeline stops here and
+    # verify/release skip with their needs
+    if: needs.prepare.outputs.go == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    permissions:
+      # publish/restore the dependency prefix as assets of the "deps" release
+      contents: write
+    strategy:
+      # Let the other platforms finish even if one fails, so a single run shows
+      # every problem at once. The release job still requires all of them.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x86_64
+            runner: windows-latest
+            kind: windows
+            msystem: UCRT64
+            msysdir: ucrt64
+          - platform: windows-arm64
+            runner: windows-11-arm
+            kind: windows
+            msystem: CLANGARM64
+            msysdir: clangarm64
+          - platform: linux-x86_64
+            runner: ubuntu-26.04
+            kind: linux
+          - platform: linux-arm64
+            runner: ubuntu-26.04-arm
+            kind: linux
+          - platform: macos-arm64
+            runner: macos-latest
+            kind: macos
+    env:
+      FFMPEG_SHA: ${{ needs.prepare.outputs.sha }}
+      FFBUILD_DIST: dist
+      # GitLab 源解析用的 PAT：secrets 优先、仓库变量兜底；都不设则匿名
+      # （公共项目可查但限流低）。自托管实例用同一 token。
+      # PAT for GitLab source resolution: secrets first, a repo variable as
+      # fallback; anonymous (public works, tighter rate limit) when unset.
+      # The same token is used for self-hosted instances.
+      GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN || vars.GITLAB_TOKEN }}
+    steps:
+      # Windows git would turn the shell scripts into CRLF before MSYS2 sees them.
+      - name: Keep line endings as they are (Windows)
+        if: matrix.kind == 'windows'
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      # 从最新驱动 release 下载本平台二进制并校验；产物名带平台后缀，
+      # 重命名回调用名 FFmpeg-Builds-Full[.exe]。
+      # Download this platform's binary from the newest driver release and
+      # verify it; assets carry the platform suffix and are renamed back
+      # to the invocation name FFmpeg-Builds-Full[.exe].
+      - name: Download released driver
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p driver
+          gh release download "${{ needs.prepare.outputs.driver_tag }}" \
+            -p "FFmpeg-Builds-Full-${{ matrix.platform }}*" -D driver --clobber
+          cd driver
+          exe="FFmpeg-Builds-Full-${{ matrix.platform }}"
+          tgt="FFmpeg-Builds-Full"
+          # Windows 的产物名和回调名都带 .exe —— 显式推导，别用参数展开
+          # （*FFmpeg-Builds-Full-* 的尾 * 会把整个文件名剥光）
+          # Both the asset and the callback name carry .exe on Windows —
+          # derive explicitly; parameter expansion (*FFmpeg-Builds-Full-*
+          # strips the whole filename via its trailing *)
+          if [[ "${{ matrix.kind }}" == windows ]]; then
+            exe="$exe.exe"
+            tgt="FFmpeg-Builds-Full.exe"
+          fi
+          sha256sum -c -- "$exe.sha256"
+          rm "$exe.sha256"
+          mv "$exe" "$tgt"
+
+      - name: Make driver executable (POSIX)
+        if: matrix.kind != 'windows'
+        run: chmod +x driver/FFmpeg-Builds-Full
+
+      # ---------------------------------------------------------------- Windows
+      - name: Set up MSYS2 (${{ matrix.msystem || 'none' }})
+        if: matrix.kind == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          # Windows PATH appended after MSYS2's own dirs: needed so that gh
+          # (GitHub CLI, a native Windows program) is reachable for the deps
+          # publish/restore steps.
+          path-type: inherit
+          # pacman-contrib carries `paccache`, which this action's post-run
+          # cache-save step shells out to; the CLANGARM64 base image does not
+          # ship it and the whole job then dies at step 1 with exit 127
+          # (run 41761588362).
+          install: >-
+            git
+            base-devel
+            pacman-contrib
+
+      # 已解包的 pacman 环境整个进 actions/cache：$MSYSTEM_PREFIX 子树 +
+      # pacman 本地库 /var/lib/pacman/local。命中后驱动 packages() 里的
+      # pacman -S --needed 全是同版本 no-op——只有上游真升级的包才重解压；
+      # action 自带的下载缓存照旧管那些增量。msys 内核（/usr）故意不缓
+      # 存：替换正在运行的 bash 已加载的 DLL 会炸，那部分是
+      # setup-msys2 的地盘。key 带 run_id + 前缀回退=滚动最新快照；
+      # 半截状态的缓存由驱动里的完成戳机制兜住。
+      # The unpacked pacman environment rides actions/cache wholesale: the
+      # $MSYSTEM_PREFIX subtree + pacman's local DB /var/lib/pacman/local.
+      # On a hit every `pacman -S --needed` in the driver's packages() is a
+      # same-version no-op — only packages upstream actually moved get
+      # re-extracted, while the action's own download cache still covers
+      # those deltas. The msys core (/usr) is deliberately NOT cached:
+      # overwriting DLLs the running bash already has loaded crashes, and
+      # that part belongs to setup-msys2 anyway. run_id key + prefix
+      # fallback = rolling newest snapshot; a half-written env is caught by
+      # the completion-stamp check inside the driver.
+      - name: Restore MSYS2 env cache
+        if: matrix.kind == 'windows'
+        id: envcache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}\msys64\${{ matrix.msysdir }}
+            ${{ runner.temp }}\msys64\var\lib\pacman\local
+          key: env-${{ matrix.platform }}-${{ github.run_id }}
+          restore-keys: |
+            env-${{ matrix.platform }}-
+
+      - name: Build FFmpeg (Windows, MSYS2 ${{ matrix.msystem || '' }})
+        if: matrix.kind == 'windows'
+        env:
+          FFBUILD_WORK: ${{ github.workspace }}/ffwork
+          FFBUILD_MSYS2: ${{ runner.temp }}\msys64
+          GH_TOKEN: ${{ github.token }}
+          # 驱动 packages() 用它决定要不要校验环境完成戳。
+          # The driver's packages() uses it to decide whether the env
+          # completion stamp has to be verified.
+          MSYS_ENV_RESTORED: ${{ steps.envcache.outputs.cache-hit }}
+        run: ./driver/FFmpeg-Builds-Full.exe build
+
+      # Publish the deps overlay (extras libs) even when the build died; the
+      # next run restores it before compiling.
+      - name: Publish deps (Windows)
+        if: matrix.kind == 'windows' && always()
+        env:
+          FFBUILD_WORK: ${{ github.workspace }}/ffwork
+          FFBUILD_MSYS2: ${{ runner.temp }}\msys64
+          GH_TOKEN: ${{ github.token }}
+        run: ./driver/FFmpeg-Builds-Full.exe save-deps
+
+      # ------------------------------------------------------------------ Linux
+      - name: Free disk space
+        if: matrix.kind == 'linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          sudo apt-get clean || true
+          df -h /
+
+      # 自建工具目录（python venv / rustup / cargo-c）走 actions/cache——
+      # 装一次 ~1-2 分钟，之后每轮探测到二进制就跳过。apt 包走 Azure 本地
+      # 镜像足够快，缓存 root 拥有的下载目录不值得折腾。
+      # Self-installed tool dirs (python venv / rustup / cargo-c) ride
+      # actions/cache — ~1-2 min once, then binary probes skip the steps.
+      # The apt packages come from the Azure-local mirror quickly enough
+      # that caching a root-owned download dir is not worth the plumbing.
+      - name: Prepare tool cache dirs (Linux)
+        if: matrix.kind == 'linux'
+        run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/pyenv /opt/cargo /opt/rustup /opt/ffbuild /work
+
+      - name: Restore tool cache (Linux)
+        if: matrix.kind == 'linux'
+        uses: actions/cache@v4
+        with:
+          path: |
+            /opt/pyenv
+            /opt/cargo
+            /opt/rustup
+          # 不给 restore-keys：key 里哈希了驱动的 packages 实现，版本钉
+          # （cargo-c、pip 清单）一改自动冷装；前缀回退反而会把旧版二进
+          # 制恢复回来，而"二进制在场即跳过"探针会把它当成新版。
+          # No restore-keys on purpose: the key hashes the driver's
+          # packages implementation, so a bump of any pinned version
+          # (cargo-c, the pip list) cold-installs; a prefix fallback would
+          # restore the OLD binaries and the "skip if binary exists"
+          # probes would take them for the new version.
+          key: tools-${{ matrix.platform }}-${{ hashFiles('src/platforms/linux_common.rs', 'packages/linux.txt') }}
+
+      # The library prefix is restored from / published to the "deps" release
+      # by the driver itself. That is durable (unlike the 10 GB shared
+      # actions/cache) and lets the build resume mid-way after a timeout:
+      # a partial prefix is uploaded whenever the job ends.
+      - name: Build FFmpeg (Linux, native)
+        if: matrix.kind == 'linux'
+        timeout-minutes: 325
+        env:
+          FFBUILD_WORK: /work
+          FFBUILD_DIST: ${{ github.workspace }}/dist
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # apt、/opt、/usr/local 安装都需要 root。新版 runner 的 sudo-rs
+          # 不认 -E（直接忽略），改用 `sudo env` 显式透传——FFBUILD_DIST
+          # 丢了产物会写进编译期烤进二进制的幽灵路径；GH_TOKEN 丢了
+          # deps 恢复/上传全体静默跳过。
+          # apt, /opt and the /usr/local install all want root. sudo-rs on
+          # newer runners silently ignores -E, so pass env through
+          # `sudo env` explicitly — a lost FFBUILD_DIST sends artifacts to
+          # the compile-time-baked phantom path, a lost GH_TOKEN silently
+          # disables deps restore/upload.
+          sudo env FFBUILD_WORK="$FFBUILD_WORK" FFBUILD_DIST="$FFBUILD_DIST" \
+            GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            GITHUB_SHA="$GITHUB_SHA" \
+            ./driver/FFmpeg-Builds-Full build
+
+      - name: Publish deps (Linux)
+        if: matrix.kind == 'linux' && always()
+        env:
+          FFBUILD_WORK: /work
+          GH_TOKEN: ${{ github.token }}
+        # sudo-rs 不认 -E —— env 显式透传 / sudo-rs ignores -E — pass env
+        # through `sudo env` explicitly
+        run: |
+          sudo env FFBUILD_WORK="$FFBUILD_WORK" GH_TOKEN="$GH_TOKEN" \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" \
+            ./driver/FFmpeg-Builds-Full save-deps
+
+      # ------------------------------------------------------------------ macOS
+      # The runner image ships a Homebrew tap that Homebrew warns about on
+      # every invocation; we do not use it.
+      - name: Remove untrusted Homebrew taps
+        if: matrix.kind == 'macos'
+        run: brew untap aws/tap || true
+
+      # ccache + the workspace snapshot cache make the otherwise from-scratch
+      # dependency rebuild several times faster.
+      - name: Restore warm caches (macOS)
+        if: matrix.kind == 'macos'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/ffmpeg-ccache
+            ${{ runner.temp }}/ffmpeg-macos-workspace
+          key: ${{ matrix.platform }}-warm-${{ github.run_id }}
+          restore-keys: |
+            ${{ matrix.platform }}-warm-
+
+      - name: Build FFmpeg (macOS arm64)
+        if: matrix.kind == 'macos'
+        timeout-minutes: 340
+        env:
+          # Oldest macOS the binaries are meant to run on.
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          GH_TOKEN: ${{ github.token }}
+        run: ./driver/FFmpeg-Builds-Full build
+
+      # Publish the deps workspace snapshot even when the build died; the
+      # next run restores it before compiling.
+      - name: Publish deps (macOS)
+        if: matrix.kind == 'macos' && always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./driver/FFmpeg-Builds-Full save-deps
+
+      # ----------------------------------------------------------------- common
+      - name: Upload build
+        if: ${{ !cancelled() && hashFiles('dist/*.zip', 'dist/*.tar.xz') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-${{ matrix.platform }}
+          path: |
+            dist/*.zip
+            dist/*.tar.xz
+            dist/*.sha256
+            dist/*.buildinfo.txt
+          if-no-files-found: error
+          retention-days: 3
+
+      # 日志路径按 kind 分步：布局跟着驱动实际写入走——work 下是
+      # ffmpeg-info/dropped-libs/extras-*/ffmpeg-build.log 与
+      # ffbuild-ffmpeg/**/config.log；配方状态 .extras/*.txt 在平台前缀
+      # 下（win: <msys64>/<envdir>，linux: /opt/ffbuild，mac: workspace 树）
+      # Log paths split per kind — they track what the driver actually
+      # writes: work holds ffmpeg-info/dropped-libs/extras-*/
+      # ffmpeg-build.log plus ffbuild-ffmpeg/**/config.log; the recipe
+      # state .extras/*.txt lives under the platform prefix (win:
+      # <msys64>/<envdir>, linux: /opt/ffbuild, mac: the workspace tree)
+      - name: Upload build logs (Windows)
+        if: always() && matrix.kind == 'windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-${{ matrix.platform }}
+          path: |
+            ffwork/*.txt
+            ffwork/*.log
+            ffwork/ffbuild-ffmpeg/**/config.log
+            ${{ runner.temp }}\msys64\${{ matrix.msysdir }}\.extras\*.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload build logs (Linux)
+        if: always() && matrix.kind == 'linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-${{ matrix.platform }}
+          path: |
+            /work/*.txt
+            /work/*.log
+            /work/ffbuild-ffmpeg/**/config.log
+            /opt/ffbuild/.extras/*.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload build logs (macOS)
+        if: always() && matrix.kind == 'macos'
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/ffmpeg-macos/*.txt
+            ${{ runner.temp }}/ffmpeg-macos/*.log
+            ${{ runner.temp }}/ffmpeg-macos/ffbuild-ffmpeg/**/config.log
+            ${{ runner.temp }}/ffmpeg-macos-workspace/.extras/*.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Each build is unpacked and smoke-tested on a clean runner of the same OS and
+  # architecture, without any of the build tools in the PATH — the driver's own
+  # `smoke` subcommand performs the test.
+  verify:
+    name: Verify ${{ matrix.platform }}
+    needs: [prepare, build]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x86_64
+            runner: windows-latest
+          - platform: windows-arm64
+            runner: windows-11-arm
+          - platform: linux-x86_64
+            runner: ubuntu-26.04
+          - platform: linux-arm64
+            runner: ubuntu-26.04-arm
+          - platform: macos-arm64
+            runner: macos-latest
+    steps:
+      - name: Download released driver (for `smoke`)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p driver
+          gh release download "${{ needs.prepare.outputs.driver_tag }}" \
+            -p "FFmpeg-Builds-Full-${{ matrix.platform }}*" -D driver --clobber
+          (cd driver && sha256sum -c -- *.sha256 && rm -f *.sha256)
+
+      - name: Download build
+        uses: actions/download-artifact@v8
+        with:
+          name: build-${{ matrix.platform }}
+          path: dist
+
+      # Catches corruption between the build job and this one.
+      - name: Verify SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c -- *.sha256
+          else
+            shasum -a 256 -c -- *.sha256
+          fi
+
+      - name: Extract (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path pkg | Out-Null
+          Get-ChildItem dist -Filter *.zip | ForEach-Object {
+            Expand-Archive -LiteralPath $_.FullName -DestinationPath pkg
+          }
+
+      - name: Extract (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p pkg
+          for f in dist/*.tar.xz; do tar -xf "$f" -C pkg; done
+
+      # 驱动的 smoke 子命令在干净环境测 ffmpeg/ffprobe/ffplay / the
+      # driver's `smoke` subcommand tests ffmpeg/ffprobe/ffplay on a clean
+      # machine
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x driver/* 2>/dev/null || true
+          bins=(pkg/*/bin)
+          [[ ${#bins[@]} -eq 1 ]] || { echo "::error::expected exactly one package, found: ${bins[*]}"; exit 1; }
+          exe="$(find driver -name 'FFmpeg-Builds-Full*' -type f | head -n1)"
+          "$exe" smoke "${bins[0]}"
+
+      # Only builds that passed verification are published; the release job
+      # picks up `ffmpeg-*` artifacts and nothing else.
+      - name: Upload verified build
+        uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-${{ matrix.platform }}
+          path: |
+            dist/*.zip
+            dist/*.tar.xz
+            dist/*.sha256
+            dist/*.buildinfo.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  # All-or-nothing: a release is only published when every platform was built
+  # AND verified. `success()` is false as soon as one of the needed jobs failed
+  # or was skipped, so a partially failed run publishes nothing.
+  #
+  # 发布门槛 / publish gates:
+  #   schedule → 正常 release（autobuild-*，最新滑动 latest）
+  #   workflow_dispatch + publish → 正常 release
+  #   workflow_run（非 master 分支 CI 完成）→ pre-release（autobuild-<branch>-*，
+  #   不动 latest）
+  release:
+    name: Publish release
+    needs: [prepare, verify]
+    if: ${{ success() && (github.event_name == 'schedule' || github.event_name == 'repository_dispatch' || inputs.publish || github.event_name == 'workflow_run') }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      FFMPEG_COMMIT: ${{ needs.prepare.outputs.sha }}
+      FFMPEG_HASH: ${{ needs.prepare.outputs.hash }}
+      TARGET_REF: ${{ needs.prepare.outputs.ref }}
+      BRANCH: ${{ needs.prepare.outputs.branch }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      # One release every ~3 days, so 30 releases is roughly the last 3 months.
+      KEEP_RELEASES: "30"
+    steps:
+      - name: Check out this repository (for .github/scripts/)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Download verified builds
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ffmpeg-*
+          merge-multiple: true
+          path: artifacts
+
+      # Only FFmpeg's `configure` is used, to list every external library it
+      # knows, for the completeness table in the release notes.
+      - name: Fetch FFmpeg source (for the library list)
+        run: |
+          set -euo pipefail
+          git init -q ffmpeg-src
+          git -C ffmpeg-src fetch -q --depth 1 https://github.com/FFmpeg/FFmpeg.git "$FFMPEG_COMMIT"
+          git -C ffmpeg-src -c advice.detachedHead=false checkout -q FETCH_HEAD
+          echo "FFMPEG_SRC=$PWD/ffmpeg-src" >> "$GITHUB_ENV"
+
+      - name: Create dated release
+        run: |
+          set -euo pipefail
+          ls -lh artifacts/
+
+          # Belt and braces: refuse to publish unless every platform is present,
+          # built from the pinned commit, with its checksum and build report.
+          files=()
+          for p in windows-x86_64 windows-arm64 linux-x86_64 linux-arm64 macos-arm64; do
+            ext="tar.xz"
+            [[ "$p" == windows-* ]] && ext="zip"
+            base="artifacts/ffmpeg-$FFMPEG_HASH-$p"
+            for f in "$base.$ext" "$base.$ext.sha256" "$base.buildinfo.txt"; do
+              [[ -f "$f" ]] || { echo "::error::missing $f"; exit 1; }
+              files+=("$f")
+            done
+          done
+          all=(artifacts/*)
+          [[ ${#all[@]} -eq ${#files[@]} ]] || { echo "::error::unexpected files in artifacts/: ${all[*]}"; exit 1; }
+          (cd artifacts && sha256sum -c -- *.sha256)
+
+          if [ "$PRERELEASE" = "true" ]; then
+            # 非 master 分支构建：tag 带分支名，发 pre-release / non-master
+            # branch builds: branch name in the tag, published as a pre-release
+            safe="$(echo "$BRANCH" | tr -c 'A-Za-z0-9._-' '-')"
+            TAG="$safe-$(date -u +%Y%m%d-%H%M)"
+            PRE="--prerelease"
+            TITLE="FFmpeg $FFMPEG_HASH 预发布构建 / pre-release build ($BRANCH, $(date -u +'%Y-%m-%d %H:%M') UTC)"
+            LATEST="--latest=false"
+          else
+            # 日期 tag（YYYYMMDD）；同日第二次构建加 -HHMM 后缀防撞
+            # date tag (YYYYMMDD); a second same-day build gains a -HHMM
+            # suffix to avoid the collision
+            TAG="$(date -u +%Y%m%d)"
+            gh release view "$TAG" >/dev/null 2>&1 && TAG="$TAG-$(date -u +%H%M)"
+            PRE=""
+            TITLE="FFmpeg $FFMPEG_HASH 自动构建 / auto-build $(date -u +'%Y-%m-%d %H:%M') UTC"
+            LATEST="--latest=false"
+          fi
+          bash .github/scripts/release-notes.sh "$TAG" artifacts > notes.md
+
+          gh release create "$TAG" \
+            --target "$TARGET_REF" \
+            --title "$TITLE" \
+            --notes-file notes.md \
+            $PRE $LATEST \
+            "${files[@]}"
+
+      # A floating "latest" release with hash-less file names, so download
+      # links never change (master builds only — pre-releases never touch it):
+      #   https://github.com/<owner>/<repo>/releases/latest/download/ffmpeg-latest-windows-x86_64.zip
+      - name: Update "latest" release
+        if: env.PRERELEASE != 'true'
+        run: |
+          set -euo pipefail
+          mkdir latest
+          re='^ffmpeg-[0-9a-f]{10}-(windows-x86_64|windows-arm64|linux-x86_64|linux-arm64|macos-arm64)\.(zip|tar\.xz)$'
+          for f in artifacts/*.zip artifacts/*.tar.xz; do
+            name="$(basename "$f")"
+            [[ "$name" =~ $re ]] || { echo "::error::unexpected archive name $name"; exit 1; }
+            p="${BASH_REMATCH[1]}"
+            new="ffmpeg-latest-$p.${BASH_REMATCH[2]}"
+            cp "$f" "latest/$new"
+            # Same-named checksum file; it has to reference the new file name.
+            (cd latest && sha256sum -- "$new" > "$new.sha256")
+            cp "artifacts/ffmpeg-$FFMPEG_HASH-$p.buildinfo.txt" "latest/ffmpeg-latest-$p.buildinfo.txt"
+          done
+          # 正文与刚发的日期 tag release 逐字同步（同一份 notes.md；
+          # 里面的链接指向日期 tag 资产，永久有效）
+          # body synced verbatim with the just-published dated release
+          # (the same notes.md; its links point at dated-tag assets,
+          # which stay valid forever)
+          gh release delete latest --cleanup-tag --yes || true
+          sleep 10
+          gh release create latest \
+            --target "$TARGET_REF" \
+            --title "Latest" \
+            --notes-file notes.md \
+            --latest \
+            latest/*
+
+      - name: Prune old releases
+        run: |
+          set -euo pipefail
+          # 修剪对象：日期 tag（^YYYYMMDD，留最新 KEEP_RELEASES 个）与分支
+          # pre tag（*-\d{8}-\d{4}$，留最新 10 个）；latest/deps/Driver-*
+          # 永远不匹配这两个模式，不会被误删。
+          # prune targets: date tags (^YYYYMMDD, newest KEEP_RELEASES kept)
+          # and branch pre tags (*-\d{8}-\d{4}$, newest 10 kept);
+          # latest/deps/Driver-* match neither pattern and are never
+          # touched.
+          gh release list --limit 200 --json tagName,createdAt \
+            | jq -r --argjson keep "$KEEP_RELEASES" \
+                '[.[] | select(.tagName | test("^[0-9]{8}"))] | sort_by(.createdAt) | reverse | .[$keep:] | .[].tagName' \
+            | while read -r tag; do
+                echo "deleting old release $tag"
+                gh release delete "$tag" --cleanup-tag --yes
+              done
+          gh release list --limit 200 --json tagName,createdAt \
+            | jq -r '[.[] | select(.tagName | test("-[0-9]{8}-[0-9]{4}$"))] | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' \
+            | while read -r tag; do
+                echo "deleting old pre-release $tag"
+                gh release delete "$tag" --cleanup-tag --yes
+              done

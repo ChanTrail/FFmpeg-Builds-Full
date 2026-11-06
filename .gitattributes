@@ -1,0 +1,4 @@
+# Scripts run on Linux/macOS runners: never let a Windows checkout turn them into CRLF.
+* text=auto eol=lf
+*.sh text eol=lf
+*.yml text eol=lf

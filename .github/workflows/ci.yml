@@ -1,0 +1,80 @@
+# Rust 驱动程序（FFmpeg-Builds-Full）的 CI：所有分支 push 与
+# PR→master 只跑测试；构建与发布在 release.yml（它监听本 workflow
+# 在 master 上的成功完成，并检查版本变化）。
+# CI for the Rust driver (FFmpeg-Builds-Full): every branch push and
+# PRs to master run tests only; build & publish live in release.yml,
+# which listens for this workflow succeeding on master and checks for
+# a version change.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    paths-ignore:
+      - '**.md'
+      - 'old/**'
+      - '.gitignore'
+  pull_request:
+    branches: [master]
+    paths-ignore:
+      - '**.md'
+      - 'old/**'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # fmt --check + cargo check + clippy -D warnings + cargo test，五个目标
+  # 平台各跑一遍：驱动里 cfg!(windows)/cfg(unix)/aarch64 分支只有在本家
+  # 平台上才编得到。
+  # fmt --check + cargo check + clippy -D warnings + cargo test on each of
+  # the five target platforms: the driver's cfg!(windows)/cfg(unix)/aarch64
+  # branches only compile on their own platform.
+  # 矩阵与 build.yml 的 driver/build 矩阵一一对应：cfg!(windows)/
+  # cfg(unix) 之外还有 cfg!(target_arch = "aarch64") 分支，x86 上编
+  # 不到的 arm 代码也要各编各测一遍。
+  # The matrix mirrors build.yml's driver/build matrix one-to-one:
+  # besides cfg!(windows)/cfg(unix) there are cfg!(target_arch =
+  # "aarch64") branches — arm-only code that never compiles on x86
+  # gets built and tested on its own runner too.
+  test:
+    name: Test (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x86_64
+            runner: windows-latest
+          - platform: windows-arm64
+            runner: windows-11-arm
+          - platform: linux-x86_64
+            runner: ubuntu-26.04
+          - platform: linux-arm64
+            runner: ubuntu-26.04-arm
+          - platform: macos-arm64
+            runner: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Check
+        run: cargo check --all-targets
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --all-targets

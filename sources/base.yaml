@@ -1,0 +1,27 @@
+# 基础源码：FFmpeg 本体与恒启用基础库（对应 features/base.yaml 的键）。
+# Base sources: FFmpeg itself and the always-enabled base libraries
+# (matching the keys in features/base.yaml).
+#
+# 取值形式 / value forms:
+#   git: <url>             git 仓库：ref=tag/sha 钉死；ref=分支或未设 →
+#                          该分支 HEAD 经 CI 验证（GitHub/GitLab），无 CI
+#                          或失败回退最新 tag，无 tag 用 HEAD
+#   ref: <branch|tag|sha>  可选钉住
+#   submodules: true       递归初始化子模块（浅）
+#   archive: <url>         固定产物归档（发行 tarball，configure 已烘焙）
+#   sha256: <hex>          archive 完整性校验
+
+ffmpeg:
+  git: https://github.com/FFmpeg/FFmpeg.git
+  ref: master              # FFMPEG_REF/FFMPEG_SHA 环境变量仍可覆盖 / env vars still override
+
+zlib:
+  git: https://github.com/madler/zlib.git
+bzip2:
+  archive: https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
+  sha256: ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269
+lzma:
+  git: https://github.com/tukaani-project/xz.git
+iconv:
+  archive: https://ftp.gnu.org/gnu/libiconv/libiconv-1.19.tar.gz
+  sha256: 88dd96a8c0464eca144fc791ae60cd31cd8ee78321e67397e25fc095c4a19aa6

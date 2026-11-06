@@ -1,0 +1,18 @@
+# macOS brew 包栈（旧 scripts/macos/build.sh 移植；runner 镜像自带 xcode
+# 工具链，这里只补 autotools 系——配方从零 autoreconf 需要，brew 的 libtool
+# 是 g- 前缀的）
+# macOS brew package stack (ported from the old scripts/macos/build.sh;
+# the runner image ships the xcode toolchain — only the autotools family
+# is added here since recipes autoreconf from scratch, and brew's libtool
+# is g-prefixed).
+ccache
+autoconf
+automake
+libtool
+gettext
+zstd
+nasm
+cmake
+meson
+ninja
+pkg-config

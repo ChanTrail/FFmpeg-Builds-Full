@@ -1,0 +1,24 @@
+# Linux x86_64 特化：仅本平台×架构的启用项（键不得与其他文件重复）。
+# libpulse/libjack/sndio 等音频栈杂项请改 features/misc.yaml 的本平台分节。
+# Linux x86_64 specifics: enable entries for this platform+arch only.
+# Audio-stack misc items live in this platform's misc.yaml section.
+vaapi: enable
+vdpau: enable
+libdrm: enable
+alsa: enable
+libdc1394: enable
+libxcb: enable
+libxcb-shm: enable
+libxcb-shape: enable
+libxcb-xfixes: enable
+xlib: enable
+libvpl: enable          # Intel QSV（x86 only）/ Intel QSV, x86 only
+libsvtjpegxs: enable    # JPEG-XS（x86 only）/ JPEG-XS, x86 only
+liblcevc-dec: enable    # LCEVC（x86 only）
+libuavs3d: enable       # AVS3 解码（x86 only）
+libdavs2: enable        # AVS2 解码（x86 only）
+libxavs2: enable        # AVS2 编码（x86 only）
+v4l2m2m: enable         # V4L2 mem2mem 硬件加速 / V4L2 mem2mem hwaccel
+nvdec: enable
+nvenc: enable
+cuvid: enable

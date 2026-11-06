@@ -1,0 +1,58 @@
+# Linux x86_64 源码：仅本平台×架构需要的库源 + common 值覆盖。
+# Linux x86_64 sources: sources needed only on this platform+arch, plus
+# whole-value overrides of common.yaml.
+
+# ---- Linux 硬件/采集栈 ----
+alsa:
+  archive: https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.16.1.tar.bz2
+  sha256: f740db7f488255944ffd4428416ee3390a96742856916433df468c281436480e
+libva:
+  git: https://github.com/intel/libva.git
+vdpau:
+  git: https://gitlab.freedesktop.org/vdpau/libvdpau.git
+libdrm:
+  git: https://gitlab.freedesktop.org/mesa/drm.git
+v4l-utils:
+  git: https://git.linuxtv.org/v4l-utils.git
+raw1394:
+  archive: https://www.kernel.org/pub/linux/libs/ieee1394/libraw1394-2.1.2.tar.xz
+  sha256: 03ccc69761d22c7deb1127fc301010dd13e70e44bb7134b8ff0d07590259a55e
+dc1394:
+  archive: https://downloads.sourceforge.net/project/libdc1394/libdc1394-2/2.2.6/libdc1394-2.2.6.tar.gz
+  sha256: 2b905fc9aa4eec6bdcf6a2ae5f5ba021232739f5be047dec8fe8dd6049c10fed
+lz4:
+  git: https://github.com/lz4/lz4.git
+
+# ---- X11 / xcb 栈 ----
+xcb-proto:
+  git: https://gitlab.freedesktop.org/xorg/proto/xcbproto.git
+libxcb:
+  git: https://gitlab.freedesktop.org/xorg/lib/libxcb.git
+xorgproto:
+  git: https://gitlab.freedesktop.org/xorg/proto/xorgproto.git
+libx11:
+  git: https://gitlab.freedesktop.org/xorg/lib/libx11.git
+libxext:
+  git: https://gitlab.freedesktop.org/xorg/lib/libxext.git
+libxau:
+  git: https://gitlab.freedesktop.org/xorg/lib/libxau.git
+libxdmcp:
+  git: https://gitlab.freedesktop.org/xorg/lib/libxdmcp.git
+xtrans:
+  git: https://gitlab.freedesktop.org/xorg/lib/libxtrans.git
+xorg-macros:
+  git: https://gitlab.freedesktop.org/xorg/util/macros.git
+
+# ---- x86-only 库 ----
+libvpl:
+  git: https://github.com/intel/libvpl.git
+svtjpegxs:
+  git: https://github.com/OpenVisualCloud/SVT-JPEG-XS.git
+lcevcdec:
+  git: https://github.com/v-novaltd/LCEVCdec.git
+uavs3d:
+  git: https://github.com/uavs3/uavs3d.git
+davs2:
+  git: https://github.com/pkuvcl/davs2.git
+xavs2:
+  git: https://github.com/pkuvcl/xavs2.git

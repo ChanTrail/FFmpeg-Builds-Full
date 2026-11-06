@@ -1,0 +1,104 @@
+# 通用库：全平台共享的 FFmpeg 特性开关，值为 enable 或 disable。
+# 键不能出现在 base.yaml、misc.yaml 的本平台分节、或本平台文件里——重复即报错。
+# Common libraries: FFmpeg feature switches shared by every platform;
+# values are enable or disable. A key must not appear in base.yaml, in this
+# platform's section of misc.yaml, or in this platform's file — duplicates
+# are errors.
+#
+# 未列出的已知特性一律按 --disable 处理（严格默认关闭）。
+# Known features absent from every file resolve to --disable (strict).
+
+# ---- 视频编解码 / video codecs ----
+libx264: enable
+libx265: enable
+libaom: enable
+libdav1d: enable
+libvpx: enable
+libsvtav1: enable
+librav1e: enable
+libjxl: enable
+libwebp: enable
+libopenjpeg: enable
+libtheora: enable
+libxvid: enable
+libkvazaar: enable
+libopenh264: enable
+liboapv: enable
+libxeve: enable
+libxevd: enable
+libvvenc: enable
+
+# ---- 音频编解码 / audio codecs ----
+libvorbis: enable
+libopus: enable
+libmp3lame: enable
+libspeex: enable
+libshine: enable
+libgsm: enable
+liblc3: enable
+libbs2b: enable
+libmodplug: enable
+libopenmpt: enable
+libgme: enable
+libopencore-amrnb: enable
+libopencore-amrwb: enable
+libvo-amrwbenc: enable
+libtwolame: enable
+libsoxr: enable
+librubberband: enable
+libmysofa: enable
+chromaprint: enable
+openal: enable
+libcodec2: enable
+libilbc: enable
+libflite: enable
+pocketsphinx: enable
+
+# ---- 字幕、文字、图形 / subtitles, text, graphics ----
+libass: enable
+libfreetype: enable
+libharfbuzz: enable
+libfribidi: enable
+libfontconfig: enable
+lcms2: enable
+librsvg: enable
+sdl2: enable
+libzimg: enable
+libvidstab: enable
+libvmaf: enable
+frei0r: enable
+libaribcaption: enable
+libaribb24: enable
+libzvbi: enable
+vapoursynth: enable
+libtesseract: enable
+libqrencode: enable
+libquirc: enable
+liblensfun: enable
+
+# ---- 容器、协议、光盘 / containers, protocols, discs ----
+gmp: enable
+libxml2: enable
+libssh: enable
+libsrt: enable
+librist: enable
+libzmq: enable
+librabbitmq: enable
+libbluray: enable
+libdvdnav: enable
+libdvdread: enable
+libcdio: enable
+libcaca: enable
+librtmp: enable
+libcurl: enable
+
+# ---- 杂项库 / misc libraries ----
+libsnappy: enable
+amf: enable
+ffnvcodec: enable
+vulkan: enable
+opencl: enable
+whisper: enable
+libplacebo: enable
+lv2: enable
+avisynth: enable

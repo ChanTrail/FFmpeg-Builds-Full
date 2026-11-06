@@ -1,0 +1,313 @@
+# Rust 驱动程序（FFmpeg-Builds-Full）的 CD：master 上 CI 测试成功完成
+# 后，若 Cargo.toml 版本对应的 tag 尚不存在（=版本变化），在全部五
+# 个平台/架构上构建驱动二进制并发布 v<版本> release。手动触发同理。
+# CD for the Rust driver (FFmpeg-Builds-Full): after CI finishes
+# successfully on master, if the tag matching Cargo.toml's version does
+# not exist yet (= the version changed), build the driver on all five
+# platform/architectures and publish a v<version> release. A manual
+# dispatch works the same way.
+name: Release
+
+on:
+  # 测试过后才构建：等 "CI" workflow 在 master 的 push 成功完成。
+  # Build only after tests: wait for the "CI" workflow to finish
+  # successfully on a master push.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── 版本变化探测 / Version-change detection ────────────────────────────────
+  # 从 Cargo.toml 读版本号：对应 tag v<版本> 不存在才算"版本变化"——与
+  # 直接在此止步。
+  # Read the version from Cargo.toml: a change means the tag v<version>
+  # Triggers that are not a successful master run stop right here.
+  version:
+    name: Detect version change
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'master' &&
+       github.event.workflow_run.event == 'push')
+    outputs:
+      changed: ${{ steps.v.outputs.changed }}
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      sha: ${{ steps.v.outputs.sha }}
+    steps:
+      # workflow_run 触发的检出必须是"被测过的那个 commit"，而不是此刻
+      # 的 master 头（之间可能有新 push）。
+      # A workflow_run trigger must check out the exact commit that was
+      # tested, not whatever master head is now (new pushes may have
+      # landed in between).
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Read version / probe tag
+        id: v
+        run: |
+          set -euo pipefail
+          ver="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          [[ -n "$ver" ]] || { echo "::error::no version in Cargo.toml"; exit 1; }
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          # 驱动 tag 约定：Driver-v<版本> / driver tag convention:
+          # Driver-v<version>
+          echo "tag=Driver-v$ver" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if git ls-remote --tags origin "Driver-v$ver" | grep -q .; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Tag Driver-v$ver already exists — driver build skipped."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Version changed to $ver — will build and release."
+          fi
+
+  # ── 构建驱动二进制 / Build the driver binaries ────────────────────────────
+  # 五平台全覆盖：windows-x86_64、windows-arm64、linux-x86_64、
+  # linux-arm64、macos-arm64——缺任何一个都不发 release。
+  # All five platforms: windows-x86_64, windows-arm64, linux-x86_64,
+  # linux-arm64, macos-arm64 — a release never ships with one missing.
+  build:
+    name: Build driver (${{ matrix.platform }})
+    needs: version
+    if: needs.version.outputs.changed == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x86_64
+            runner: windows-latest
+            exe: FFmpeg-Builds-Full.exe
+          - platform: windows-arm64
+            runner: windows-11-arm
+            exe: FFmpeg-Builds-Full.exe
+          - platform: linux-x86_64
+            runner: ubuntu-26.04
+            exe: FFmpeg-Builds-Full
+          - platform: linux-arm64
+            runner: ubuntu-26.04-arm
+            exe: FFmpeg-Builds-Full
+          - platform: macos-arm64
+            runner: macos-latest
+            exe: FFmpeg-Builds-Full
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: driver-${{ matrix.platform }}
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp "target/release/${{ matrix.exe }}" "out/"
+          (cd out && sha256sum -- "${{ matrix.exe }}" > "${{ matrix.exe }}.sha256")
+
+      - name: Upload driver
+        uses: actions/upload-artifact@v4
+        with:
+          name: driver-${{ matrix.platform }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 30
+
+  # ── 发布 / Release ────────────────────────────────────────────────────────
+  release:
+    name: Release driver
+    needs: [version, build]
+    if: needs.version.outputs.changed == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+          # 需要历史 tag 来算 Full Changelog 区间 / history tags are
+          # needed to compute the Full Changelog range
+          fetch-depth: 0
+
+      # 逐平台目录下载（不 merge——五个二进制同名，merge 会互相覆盖）
+      # Download per-platform directories (no merge — the five binaries
+      # share a name and a merge would clobber them)
+      - name: Download per-platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: driver-*
+          path: dist
+
+      - name: Assemble release assets
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          for p in windows-x86_64 windows-arm64 linux-x86_64 linux-arm64 macos-arm64; do
+            case "$p" in windows-*) exe=FFmpeg-Builds-Full.exe ;; *) exe=FFmpeg-Builds-Full ;; esac
+            src="dist/driver-$p/$exe"
+            [[ -f "$src" ]] || { echo "::error::missing $src"; exit 1; }
+            (cd "dist/driver-$p" && sha256sum -c -- "$exe.sha256")
+            cp "$src" "assets/FFmpeg-Builds-Full-$p${exe##*FFmpeg-Builds-Full}"
+          done
+          (cd assets && for f in FFmpeg-Builds-Full-*; do sha256sum -- "$f" > "$f.sha256"; done)
+          ls -lh assets/
+
+      # Release 正文按仓库规范拼装：What's Changed → 产物表格 →
+      # New Contributors → Full Changelog。
+      # The release body is assembled per the repo's release-commit
+      # rules: What's Changed -> artifacts table -> New Contributors
+      # -> Full Changelog.
+      - name: Assemble release body
+        run: |
+          set -euo pipefail
+          PREV_TAG="$(git tag -l 'Driver-*' --sort=-v:refname | head -n1 || true)"
+          args=(-f "tag_name=$TAG" -f "target_commitish=${{ needs.version.outputs.sha }}")
+          [[ -n "$PREV_TAG" ]] && args+=(-f "previous_tag_name=$PREV_TAG")
+          # generate-notes 失败或返回空 body 时兜底：从两个 Driver-* tag
+          # 之间的 git log 自造 What's Changed（首个 release 取最近 50
+          # 条），并补一行 Full Changelog 链接。
+          # Fall back when generate-notes fails or returns an empty body:
+          # synthesize What's Changed from the git log between Driver-*
+          # tags
+          # (the last 50 commits for a first release) and emit a Full
+          # Changelog link.
+          if ! gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" "${args[@]}" --jq '.body' > notes.md \
+             || [[ ! -s notes.md ]]; then
+            echo "::warning::generate-notes unavailable, falling back to git log"
+            {
+              echo "## What's Changed"
+              echo
+              if [[ -n "$PREV_TAG" ]]; then
+                git log --no-merges --pretty='* %s' "$PREV_TAG..HEAD"
+              else
+                git log --no-merges --pretty='* %s' -50 HEAD
+              fi
+            } > notes.md
+            if [[ -n "$PREV_TAG" ]]; then
+              FALLBACK_CHANGELOG="**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$PREV_TAG...$TAG"
+            fi
+          fi
+          # 按规范顺序重排 notes：What's Changed → 产物表格 →
+          # New Contributors → Full Changelog。awk 把 notes 从
+          # "### New Contributors" 处劈成 wc.md/nc.md，Full
+          # Changelog 行单独摘出来收尾。
+          # Reorder the notes per the rules: What's Changed ->
+          # artifacts table -> New Contributors -> Full Changelog. awk
+          # splits them at "### New Contributors" into wc.md/nc.md and
+          # the Full Changelog line is lifted out to close the body.
+          CHANGELOG="$(grep -m1 'Full Changelog' notes.md || true)"
+          awk '/Full Changelog/ { next } /^### New Contributors/ { nc=1 } { if (nc) print > "nc.md"; else print > "wc.md" }' notes.md
+          # wc.md 必须存在：notes 若只有 New Contributors 段或只剩
+          # Changelog 行，awk 一行都不往 wc.md 写，cp 会炸。
+          # wc.md must exist: notes consisting solely of New
+          # Contributors or of just the Changelog line leave awk with
+          # nothing to write into wc.md and cp explodes.
+          [[ -s wc.md ]] || { echo "## What's Changed"; echo; echo "* _No changes listed._"; } > wc.md
+          cp wc.md body.md
+          cat >> body.md <<EOF
+
+          ## 构建产物 / Artifacts
+
+          | 平台 / Platform | 产物 / Artifact |
+          |:--|:--|
+          | Windows x86_64 | \`FFmpeg-Builds-Full-windows-x86_64.exe\` |
+          | Windows arm64 | \`FFmpeg-Builds-Full-windows-arm64.exe\` |
+          | Linux x86_64 | \`FFmpeg-Builds-Full-linux-x86_64\` |
+          | Linux arm64 | \`FFmpeg-Builds-Full-linux-arm64\` |
+          | macOS arm64 | \`FFmpeg-Builds-Full-macos-arm64\` |
+
+          每个产物附带同名 \`.sha256\` 校验文件（\`sha256sum -c\` 校验）。
+          Every artifact ships a matching \`.sha256\` checksum file (verify with \`sha256sum -c\`).
+          EOF
+          # 无新贡献者时 notes 没有该节，nc.md 为空则不追加
+          # notes lack the section when there are no new contributors;
+          # an empty nc.md appends nothing
+          [[ -s nc.md ]] && { printf '\n'; cat nc.md; } >> body.md
+          [[ -n "${CHANGELOG:-${FALLBACK_CHANGELOG:-}}" ]] \
+            && printf '\n%s\n' "${CHANGELOG:-${FALLBACK_CHANGELOG:-}}" >> body.md
+          cat body.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: Driver ${{ needs.version.outputs.version }}
+          prerelease: false
+          # Latest 徽章永远留给 FFmpeg 的滑动 latest 产物 release——
+          # 驱动 release 戴徽章会抢产品位，且会让 build.yml 的首建门
+          # 误判（/releases/latest 查的是徽章不是 tag）
+          # the Latest badge belongs to FFmpeg's floating `latest`
+          # product release — a badged driver release would both steal
+          # the product slot and fool build.yml's first-build gate
+          # (/releases/latest queries the badge, not the tag)
+          make_latest: false
+          body_path: body.md
+          files: assets/*
+
+      # 浮动 Driver-Latest 桶：与 FFmpeg 的 latest 同模型——每次发布
+      # 重建指向最新，build.yml 永远从这下载"最新驱动"。正文直接用
+      # 版本 release 的 body.md——与最新 tag 的 release 逐字同步。
+      # 同样不戴 Latest 徽章（徽章专属于 FFmpeg latest）。
+      # Floating Driver-Latest bucket, same model as FFmpeg's `latest`:
+      # rebuilt on every publish to point at the newest binaries, and
+      # build.yml always downloads "the newest driver" from it. Its body
+      # reuses the versioned release's body.md — literally in sync with
+      # the newest tag's release. It never wears the Latest badge either
+      # (the badge is FFmpeg-latest-only).
+      - name: Update floating Driver-Latest release
+        run: |
+          set -euo pipefail
+          gh release delete Driver-Latest --cleanup-tag --yes || true
+          sleep 5
+          gh release create Driver-Latest \
+            --target "${{ needs.version.outputs.sha }}" \
+            --title "Driver Latest" \
+            --notes-file body.md \
+            --latest=false \
+            assets/*
+
+      # 驱动发布成功 → 链式触发 FFmpeg 构建（repository_dispatch 是
+      # GITHUB_TOKEN 下官方留的工作流链接口；release 事件本身不触发）。
+      # 仅 master 链入：workflow_run 已由 branches:[master] 与 version
+      # 门双重约束；在非主分支上手动 dispatch 只是验证驱动发布链路，
+      # 不该顺手点起 FFmpeg 五平台构建。
+      # Driver published -> chain into the FFmpeg build
+      # (repository_dispatch is the sanctioned chaining hook under
+      # GITHUB_TOKEN; the release event itself does not fire). Master
+      # only: workflow_run is already doubly gated by branches:[master]
+      # and the version job; a manual dispatch on a side branch just
+      # exercises the driver publish path and must not fire the
+      # five-platform FFmpeg build.
+      - name: Kick the FFmpeg pipeline
+        if: ${{ github.event_name != 'workflow_dispatch' || github.ref_name == 'master' }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/dispatches" \
+            -f "event_type=Build FFmpeg" \
+            -F "client_payload[tag]=${{ needs.version.outputs.tag }}"

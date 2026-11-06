@@ -1,0 +1,565 @@
+//! 进程派生与运行环境（build.sh 顶层的工具链/路径探测移植）
+//! Process spawning and the run-time environment (port of the toolchain /
+//! path probing at the top of build.sh)
+
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{OnceLock, RwLock};
+
+/// 目标平台标识 / Target OS identifier
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    Linux,
+    Mac,
+    Windows,
+}
+
+/// 目标架构 / Target CPU architecture
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Arch {
+    X86_64,
+    Arm64,
+}
+
+impl Os {
+    /// 表项匹配名 / name used in recipe target lists
+    pub fn name(self) -> &'static str {
+        match self {
+            Os::Linux => "linux",
+            Os::Mac => "mac",
+            Os::Windows => "windows",
+        }
+    }
+}
+
+impl Arch {
+    /// 表项匹配名 / name used in recipe target lists
+    pub fn name(self) -> &'static str {
+        match self {
+            Arch::X86_64 => "x86_64",
+            Arch::Arm64 => "arm64",
+        }
+    }
+}
+
+impl Env {
+    /// 平台清单键：features/sources/<key>.yaml 与 misc.yaml 分节名共用，
+    /// 统一 <os>-<arch> 形式（Mac 单架构也带后缀：mac-arm64）。
+    /// Platform manifest key shared by features/sources/<key>.yaml and the
+    /// misc.yaml section names — uniformly <os>-<arch> (the single-arch
+    /// Mac keeps its suffix too: mac-arm64).
+    pub fn plat(&self) -> String {
+        format!("{}-{}", self.os.name(), self.arch.name())
+    }
+}
+
+/// 全局运行环境：一次探测、全局只读（gomp 例外，探测后写入）
+/// Global run-time environment: probed once, read-only afterwards (except
+/// `gomp`, filled in by the OpenMP probe)
+pub struct Env {
+    pub os: Os,
+    pub arch: Arch,
+    /// MSYSTEM 环境名（UCRT64/CLANGARM64）；非 Windows 为空
+    /// MSYSTEM name (UCRT64/CLANGARM64); empty off Windows
+    pub msystem: String,
+    /// pacman 包名前缀与仓库名 / pacman package prefix and repo name
+    pub pkgprefix: String,
+    pub pacrepo: String,
+    /// MSYS2 根目录（Windows 原生路径，如 D:\tools\msys64）
+    /// MSYS2 root (native Windows path, e.g. D:\tools\msys64)
+    pub msys2_root: PathBuf,
+    /// 库安装前缀的混合形式（D:/tools/msys64/ucrt64）——写进 .pc/configure
+    /// Mixed-form install prefix (D:/tools/msys64/ucrt64) — for .pc/configure
+    pub prefix: String,
+    /// 前缀的 POSIX 形式（/ucrt64）——bash 命令行用
+    /// POSIX form of the prefix (/ucrt64) — for bash command lines
+    pub env_prefix: String,
+    /// 前缀的 Windows 路径形式 —— 本进程的 fs 操作用
+    /// Windows form of the prefix — for this process's fs ops
+    pub prefix_win: PathBuf,
+    /// bash 可执行文件 / the bash executable
+    pub bash: PathBuf,
+    /// 工具链 / toolchain
+    pub cc: String,
+    pub cxx: String,
+    pub ar: String,
+    pub ranlib: String,
+    pub nm: String,
+    pub strip: String,
+    pub objdump: String,
+    /// C++ 运行时链接旗标 / C++ runtime link flag
+    pub cxxrt: String,
+    /// OpenMP 运行时（deps_fixup 探测填充）/ OpenMP runtime (deps_fixup probe)
+    pub gomp: RwLock<String>,
+    /// 并行任务数 / parallel jobs
+    pub jobs: usize,
+    /// 工作目录 / scratch dir
+    pub work: PathBuf,
+    /// 产物输出目录 / artifact output dir
+    pub dist: PathBuf,
+    /// 仓库根目录 / repository root
+    pub repo_root: PathBuf,
+    /// 子进程继承的额外 PATH（Windows 原生分号形式，前缀+bin 已并入）
+    /// Extra PATH entries for children (Windows ';'-form, prefix bin folded in)
+    pub child_path: String,
+    /// 是否已在 MSYS2 shell 内（MSYSTEM 已设置）/ already inside MSYS2
+    pub inside_msys: bool,
+}
+
+static G: OnceLock<Env> = OnceLock::new();
+
+/// 初始化全局环境 / Install the global environment
+pub fn set_env(e: Env) {
+    let _ = G.set(e);
+}
+
+/// smoke_env：`smoke` 子命令的最小环境——只装 PATH 与临时工作目录，不做
+/// 任何工具链探测。verify 的干净 runner 上没有 MSYS2/apt/brew，平台
+/// init_env 必挂；冒烟本身只需要 spawn ffmpeg/ffprobe。
+/// A minimal env for the `smoke` subcommand: installs PATH and a temp work
+/// dir only, without any toolchain probing. Verification runners are clean
+/// machines with no MSYS2/apt/brew where the platform init_env would fail;
+/// the smoke test itself only needs to spawn ffmpeg/ffprobe.
+pub fn smoke_env() {
+    let work = std::env::temp_dir().join("ffbuild-smoke");
+    // current_dir 目标必须存在——spawn 前建好 / current_dir must exist
+    // before spawning
+    let _ = std::fs::create_dir_all(&work);
+    let (os, arch) = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => (Os::Windows, Arch::X86_64),
+        ("windows", "aarch64") => (Os::Windows, Arch::Arm64),
+        ("linux", "x86_64") => (Os::Linux, Arch::X86_64),
+        ("linux", "aarch64") => (Os::Linux, Arch::Arm64),
+        ("macos", "aarch64") => (Os::Mac, Arch::Arm64),
+        (o, a) => crate::log::die(&format!("unsupported host platform for smoke: {o}-{a}")),
+    };
+    set_env(Env {
+        os,
+        arch,
+        msystem: String::new(),
+        pkgprefix: String::new(),
+        pacrepo: String::new(),
+        msys2_root: PathBuf::new(),
+        prefix: String::new(),
+        env_prefix: String::new(),
+        prefix_win: PathBuf::new(),
+        // smoke 只派生 .exe/原生二进制，不经 bash；字段留空也不会被用到
+        // smoke only spawns .exe/native binaries, never through bash; the
+        // field stays empty and is never dereferenced
+        bash: PathBuf::new(),
+        cc: String::new(),
+        cxx: String::new(),
+        ar: String::new(),
+        ranlib: String::new(),
+        nm: String::new(),
+        strip: String::new(),
+        objdump: String::new(),
+        cxxrt: String::new(),
+        gomp: RwLock::new(String::new()),
+        jobs: std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4),
+        work,
+        dist: std::env::temp_dir(),
+        repo_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+        child_path: std::env::var("PATH").unwrap_or_default(),
+        inside_msys: false,
+    });
+}
+
+/// 取全局环境 / Access the global environment
+pub fn env() -> &'static Env {
+    G.get().expect("env not initialised")
+}
+
+/// 拼子进程 PATH：前缀 bin + MSYS usr/bin + 原 PATH / Build the child PATH
+pub fn child_path(msys2_root: &Path, env_prefix: &str) -> String {
+    let prefix_bin = posix_to_win(&format!("{env_prefix}/bin"), msys2_root);
+    let usr_bin = msys2_root.join("usr").join("bin");
+    let old = std::env::var("PATH").unwrap_or_default();
+    format!("{};{};{}", prefix_bin.display(), usr_bin.display(), old)
+}
+
+/// POSIX 路径 → Windows 路径（cygpath -w 的等价物，覆盖 MSYS2 挂载与
+/// cygdrive）/ POSIX → Windows path (cygpath -w equivalent for the MSYS2
+/// mounts and cygdrive)
+pub fn posix_to_win(p: &str, root: &Path) -> PathBuf {
+    let p = p.replace('\\', "/");
+    // /cygdrive 与裸 /d/ 两种写法 / both /cygdrive and bare /d/ spellings
+    for pre in ["/cygdrive/", "/"] {
+        if let Some(rest) = p.strip_prefix(pre) {
+            let b: Vec<char> = rest.chars().collect();
+            if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == '/' {
+                return PathBuf::from(format!("{}:{}", b[0].to_ascii_uppercase(), &rest[1..]));
+            }
+            if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == ':' {
+                return PathBuf::from(&rest[..2].to_uppercase()).join(&rest[2..]);
+            }
+        }
+    }
+    // MSYS2 根内路径 / path inside the MSYS2 root
+    root.join(p.trim_start_matches('/'))
+}
+
+/// Windows 路径 → 混合形式（cygpath -m：D:/x/y）/ Windows → mixed cygpath -m
+pub fn win_to_mixed(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
+/// Windows 路径 → POSIX 形式（cygpath -u；根内先折成 /x，其余按盘符）
+/// Windows → POSIX (cygpath -u: inside-root collapses to /x, else /drive/x)
+pub fn win_to_posix(p: &Path, root: &Path) -> String {
+    let p = win_to_mixed(p);
+    let r = win_to_mixed(root);
+    if let Some(rest) = p.strip_prefix(&r) {
+        return format!("/{}", rest.trim_start_matches('/'));
+    }
+    let c: Vec<char> = p.chars().collect();
+    if c.len() >= 2 && c[0].is_ascii_alphabetic() && c[1] == ':' {
+        return format!("/{}{}", c[0].to_ascii_lowercase(), &p[2..]);
+    }
+    p
+}
+
+/// 程序的可执行形式：(程序, 完整 argv)。本进程是原生二进制，直接
+/// exec 一个无扩展名脚本（configure/meson/autoreconf/…）会 ENOENT；
+/// 这类程序经 `bash -c 'exec "$@"'` 派生——argv 逐字透传不涉引号。
+/// Executable form of prog: (program, full argv). This process is a native
+/// binary, so exec'ing an extension-less script (configure/meson/
+/// autoreconf/...) would ENOENT; those go through `bash -c 'exec "$@"'`,
+/// which passes argv verbatim with no quoting involved.
+fn resolve(prog: &str, args: &[&str]) -> (String, Vec<String>) {
+    /// 路径解析为可直接派生的原生可执行？/ does the path resolve to a
+    /// directly spawnable native executable?
+    fn is_native(p: &std::path::Path) -> bool {
+        p.extension()
+            .map(|x| {
+                let x = x.to_string_lossy().to_lowercase();
+                x == "exe" || x == "bat" || x == "cmd" || x == "com"
+            })
+            .unwrap_or(false)
+    }
+    let direct = if prog.contains('/') || prog.contains('\\') {
+        let p = Path::new(prog);
+        p.is_file() && is_native(p)
+    } else {
+        match which(prog) {
+            // PATH 上找到无扩展名脚本 → bash；找不到就交给 OS 报错
+            // a bare-name script on PATH → bash; not found → let the OS
+            // report the error itself
+            Some(p) => is_native(&p),
+            None => true,
+        }
+    };
+    if direct {
+        (
+            prog.to_string(),
+            args.iter().map(|s| s.to_string()).collect(),
+        )
+    } else {
+        let e = env();
+        // 经 bash 时路径参数必须是 POSIX 形式（D:\x 在 bash 里不解析）
+        // a path argument must be POSIX when routed through bash (D:\x does
+        // not resolve there)
+        let pprog = if prog.contains('/') || prog.contains('\\') {
+            win_to_posix(Path::new(prog), &e.msys2_root)
+        } else {
+            prog.to_string()
+        };
+        let mut v: Vec<String> = vec!["-c".into(), "exec \"$@\"".into(), "ffbuild".into(), pprog];
+        v.extend(args.iter().map(|s| s.to_string()));
+        (e.bash.to_string_lossy().to_string(), v)
+    }
+}
+
+/// 拼一条标准子进程命令（继承全局环境变量与 child_path；脚本自动经 bash）
+/// Build a Command carrying the global env vars and the child PATH
+/// (scripts are routed through bash automatically)
+pub fn cmd(prog: &str, args: &[&str]) -> Command {
+    let e = env();
+    let (p, a) = resolve(prog, args);
+    let mut c = Command::new(p);
+    c.args(a)
+        .env("PATH", &e.child_path)
+        .env("CC", &e.cc)
+        .env("CXX", &e.cxx)
+        .env("AR", &e.ar)
+        .env("RANLIB", &e.ranlib)
+        .env("NM", &e.nm)
+        .env("STRIP", &e.strip)
+        .env("OBJDUMP", &e.objdump)
+        .env("CXXRT", &e.cxxrt)
+        .env("PREFIX", &e.prefix)
+        .env("JOBS", e.jobs.to_string())
+        .env("ARCH", e.arch.name())
+        .env("OS", e.os.name())
+        .env("PKG_CONFIG", "pkg-config")
+        .env("MSYSTEM", &e.msystem)
+        .env("MSYSTEM_PREFIX", &e.env_prefix)
+        .env("MSYS2_ROOT", win_to_mixed(&e.msys2_root))
+        .env("ENV_PREFIX", &e.env_prefix);
+    if !e.msystem.is_empty() {
+        c.env("CHERE_INVOKING", "1");
+    }
+    if e.os != Os::Windows {
+        // POSIX：前缀不进 pkg-config 默认搜索路径，显式给 LIBDIR；
+        // aclocal 要看到前缀装的宏；CMake 4.x 移除了 <3.5 最低版本兼容；
+        // rustup/cargo-c 的家目录钉在 /opt 下随 deps 快照往返
+        // POSIX: the prefix is not on pkg-config's default search path so
+        // LIBDIR is passed explicitly; aclocal must see prefix-installed
+        // macros; CMake 4.x dropped <3.5 minimum-version compat; the
+        // rustup/cargo-c homes are pinned under /opt so they ride the
+        // deps snapshot
+        c.env(
+            "PKG_CONFIG_LIBDIR",
+            format!("{}/lib/pkgconfig:{}/share/pkgconfig", e.prefix, e.prefix),
+        )
+        .env(
+            "ACLOCAL_PATH",
+            format!("{}/share/aclocal:/usr/share/aclocal", e.prefix),
+        )
+        .env("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
+        .env("CARGO_HOME", "/opt/cargo")
+        .env("RUSTUP_HOME", "/opt/rustup");
+    }
+    c
+}
+
+/// 直接派生程序并等待完成；输出直通本进程 stdio
+/// Spawn a program and wait; output passes through to our stdio
+pub fn run(prog: &str, args: &[&str], dir: &Path) -> Result<i32, String> {
+    let mut c = cmd(prog, args);
+    c.current_dir(dir);
+    c.status()
+        .map(|s| s.code().unwrap_or(-1))
+        .map_err(|e| format!("spawn {prog}: {e}"))
+}
+
+/// 非零退出视为失败 / Fail on a non-zero exit status
+pub fn run_ok(prog: &str, args: &[&str], dir: &Path) -> Result<(), String> {
+    match run(prog, args, dir)? {
+        0 => Ok(()),
+        rc => Err(format!("{prog} {args:?} exited {rc}")),
+    }
+}
+
+/// 经 bash -c 执行脚本串（MSYS2/系统 bash），继承全局环境
+/// Run a script line through bash -c (MSYS2/system bash), inheriting the env
+pub fn bash(script: &str, dir: &Path) -> Result<i32, String> {
+    let e = env();
+    run(e.bash.to_str().unwrap(), &["-c", script], dir)
+}
+
+/// 非零退出视为失败的 bash 执行 / bash run that fails on non-zero
+pub fn bash_ok(script: &str, dir: &Path) -> Result<(), String> {
+    match bash(script, dir)? {
+        0 => Ok(()),
+        rc => Err(format!("bash '{script}' exited {rc}")),
+    }
+}
+
+/// 捕获 stdout（stderr 丢弃）/ Capture stdout (stderr discarded)
+pub fn capture(prog: &str, args: &[&str], dir: &Path) -> Result<String, String> {
+    let mut c = cmd(prog, args);
+    c.current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let out = c.output().map_err(|e| format!("spawn {prog}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("{prog} {args:?} exited {:?}", out.status.code()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).replace('\r', ""))
+}
+
+/// 捕获 bash 输出 / Capture bash output
+pub fn capture_bash(script: &str, dir: &Path) -> Result<String, String> {
+    let e = env();
+    capture(e.bash.to_str().unwrap(), &["-c", script], dir)
+}
+
+/// 捕获原始字节 stdout（二进制安全；stderr 丢弃）
+/// Capture raw stdout bytes (binary-safe; stderr discarded)
+pub fn capture_bytes(prog: &str, args: &[&str], dir: &Path) -> Result<Vec<u8>, String> {
+    let mut c = cmd(prog, args);
+    c.current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let out = c.output().map_err(|e| format!("spawn {prog}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("{prog} {args:?} exited {:?}", out.status.code()));
+    }
+    Ok(out.stdout)
+}
+
+/// 运行并把 stdout 同时写入文件（tee 语义）/ Run with stdout teed to a file
+pub fn run_tee(prog: &str, args: &[&str], dir: &Path, logfile: &Path) -> Result<i32, String> {
+    let mut c = cmd(prog, args);
+    c.current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    let mut ch = c.spawn().map_err(|e| format!("spawn {prog}: {e}"))?;
+    let mut so = ch.stdout.take().unwrap();
+    let mut f = std::fs::File::create(logfile).map_err(|e| format!("{logfile:?}: {e}"))?;
+    let mut buf = [0u8; 65536];
+    let mut wr = std::io::stdout();
+    loop {
+        match so.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let _ = f.write_all(&buf[..n]);
+                let _ = wr.write_all(&buf[..n]);
+                let _ = wr.flush();
+            }
+            Err(_) => break,
+        }
+    }
+    ch.wait()
+        .map(|s| s.code().unwrap_or(-1))
+        .map_err(|e| format!("wait {prog}: {e}"))
+}
+
+/// 临时环境变量覆盖：RAII——drop 时恢复原值。shell 的
+/// `VAR=x cmd ...` 前缀语义的进程内等价物。
+/// Scoped env-var overrides: RAII — restores the previous values on drop.
+/// The in-process equivalent of shell's `VAR=x cmd ...` prefix.
+pub struct EnvGuard {
+    saved: Vec<(String, Option<String>)>,
+}
+
+impl EnvGuard {
+    /// 设置并接管若干环境变量 / set and own some env vars
+    pub fn set(vars: &[(&str, String)]) -> Self {
+        let mut saved = Vec::new();
+        for (k, v) in vars {
+            saved.push((k.to_string(), std::env::var(k).ok()));
+            // SAFETY：本程序单线程驱动、子进程同步派生，改环境无并发读写
+            // SAFETY: the driver is single-threaded and children are spawned
+            // synchronously — no concurrent env access
+            unsafe { std::env::set_var(k, v) };
+        }
+        EnvGuard { saved }
+    }
+
+    /// 在现有值上追加（分隔符为空格）/ append to the existing value
+    /// (space-separated)
+    pub fn append(vars: &[(&str, &str)]) -> Self {
+        let mut saved = Vec::new();
+        for (k, v) in vars {
+            let old = std::env::var(k).unwrap_or_default();
+            saved.push((k.to_string(), std::env::var(k).ok()));
+            // SAFETY：同上 / SAFETY: as above
+            unsafe { std::env::set_var(k, format!("{old} {v}").trim()) };
+        }
+        EnvGuard { saved }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (k, v) in self.saved.drain(..) {
+            // SAFETY：同上 / SAFETY: as above
+            match v {
+                Some(x) => unsafe { std::env::set_var(&k, x) },
+                None => unsafe { std::env::remove_var(&k) },
+            }
+        }
+    }
+}
+
+/// 失败重试 n 次（间隔 10 秒）/ Retry a closure up to n times (10 s apart)
+pub fn retry<F: FnMut() -> Result<(), String>>(n: u32, mut f: F) -> Result<(), String> {
+    for i in 1..=n {
+        match f() {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if i >= n {
+                    return Err(e);
+                }
+                crate::log::log(&format!("[retry] attempt {}/{n}: {e}", i + 1));
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+        }
+    }
+    unreachable!()
+}
+
+/// 在子进程 PATH 里找可执行文件 / Look an executable up in the child PATH
+pub fn which(prog: &str) -> Option<PathBuf> {
+    // child_path 分隔符按平台：Windows ';'，POSIX ':'（不能在 Windows 上
+    // 用 ':'——驱动器字母会被拆碎）/ separator by platform: ';' on Windows,
+    // ':' on POSIX (a ':' split would shred Windows drive letters)
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    let pathext: Vec<String> = std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
+        .split(';')
+        .map(|s| s.to_string())
+        .collect();
+    for d in env().child_path.split(sep) {
+        let d = d.trim();
+        if d.is_empty() {
+            continue;
+        }
+        for ext in ["", ".exe"] {
+            let p = Path::new(d).join(format!("{prog}{ext}"));
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        // 无扩展名时按 PATHEXT 试探 / try PATHEXT when no hit yet
+        if !prog.contains('.') {
+            for ext in &pathext {
+                let p = Path::new(d).join(format!("{prog}{}", ext.to_lowercase()));
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// sha256：优先 sha256sum（GNU），退回 shasum -a 256（macOS），再退 openssl
+/// sha256 of a byte slice: sha256sum → shasum -a 256 → openssl
+pub fn sha256_data(data: &[u8]) -> Result<String, String> {
+    for (prog, args) in [
+        ("sha256sum", vec![] as Vec<&str>),
+        ("shasum", vec!["-a", "256"]),
+        ("openssl", vec!["dgst", "-sha256", "-r"]),
+    ] {
+        if which(prog).is_none() {
+            continue;
+        }
+        let mut c = cmd(prog, &args);
+        c.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        if let Ok(mut ch) = c.spawn() {
+            ch.stdin.take().unwrap().write_all(data).ok();
+            if let Ok(out) = ch.wait_with_output()
+                && out.status.success()
+            {
+                let s = String::from_utf8_lossy(&out.stdout);
+                return Ok(s.split_whitespace().next().unwrap_or("").to_string());
+            }
+        }
+    }
+    Err("no sha256 tool available".into())
+}
+
+/// 文件内容的 sha256 / sha256 of a file's contents
+pub fn sha256_file(p: &Path) -> Result<String, String> {
+    sha256_data(&std::fs::read(p).map_err(|e| format!("{p:?}: {e}"))?)
+}
+
+/// 字节数 → 人类可读（numfmt --to=iec-i 的等价物）
+/// Human-readable byte count (numfmt --to=iec-i equivalent)
+pub fn human_size(b: u64) -> String {
+    let units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let (mut v, mut i) = (b as f64, 0);
+    while v >= 1024.0 && i < units.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    format!("{v:.1}{}", units[i])
+}

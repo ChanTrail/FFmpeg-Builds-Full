@@ -1,0 +1,133 @@
+# MSYS2 packages for the Windows builds (UCRT64 on x86_64, CLANGARM64 on arm64).
+#
+#   <package>|<archs>|<FFmpeg configure flags>
+#
+# <package> is the name without the mingw-w64-<env>- prefix. <archs> is "all",
+# "x86_64" or "arm64". The flags are only passed to FFmpeg's configure when the
+# package was actually installed, so a package that is missing for an
+# architecture (or that failed to install) only removes its own feature.
+# Packages without flags are build tools or dependencies of the ones below.
+#
+# FFmpeg allows exactly one TLS backend: the builds use GnuTLS (same backend
+# as the Linux build; it resolves the Windows certificate store through
+# CryptoAPI, so no CA bundle needs shipping). No OpenSSL/Schannel flag.
+#
+# Libraries that MSYS2 does not package, or only ships as DLLs, are built from
+# source by scripts/common/extras-recipes.sh.
+
+# --- build tools ----------------------------------------------------------------
+cmake|all|
+ninja|all|
+meson|all|
+nasm|x86_64|
+yasm|x86_64|
+pkgconf|all|
+python|all|
+python-jinja|all|
+python-mako|all|
+python-markupsafe|all|
+autotools|all|
+libtool|all|
+clang|x86_64|
+
+# --- video codecs ---------------------------------------------------------------
+libx264|all|--enable-libx264
+x265|all|--enable-libx265
+aom|all|--enable-libaom
+
+dav1d|all|--enable-libdav1d
+libvpx|all|--enable-libvpx
+svt-av1|all|--enable-libsvtav1
+rav1e|all|--enable-librav1e
+libjxl|all|--enable-libjxl
+libwebp|all|--enable-libwebp
+openjpeg2|all|--enable-libopenjpeg
+libtheora|all|--enable-libtheora
+xvidcore|all|--enable-libxvid
+kvazaar|all|--enable-libkvazaar
+openh264|all|--enable-libopenh264
+openapv|all|--enable-liboapv
+xavs|all|--enable-libxavs
+
+# --- audio codecs, speech, audio filters ---------------------------------------
+libvorbis|all|--enable-libvorbis
+opus|all|--enable-libopus
+lame|all|--enable-libmp3lame
+speex|all|--enable-libspeex
+shine|all|--enable-libshine
+gsm|all|--enable-libgsm
+liblc3|all|--enable-liblc3
+libbs2b|all|--enable-libbs2b
+libmodplug|all|--enable-libmodplug
+libopenmpt|all|--enable-libopenmpt
+libgme|all|--enable-libgme
+opencore-amr|all|--enable-libopencore-amrnb --enable-libopencore-amrwb
+vo-amrwbenc|all|--enable-libvo-amrwbenc
+twolame|all|--enable-libtwolame
+libsoxr|all|--enable-libsoxr
+rubberband|all|--enable-librubberband
+libmysofa|all|--enable-libmysofa
+chromaprint|all|--enable-chromaprint
+openal|all|--enable-openal
+
+# --- subtitles, text, graphics, filters ----------------------------------------
+libass|all|--enable-libass
+freetype|all|--enable-libfreetype
+harfbuzz|all|--enable-libharfbuzz
+fribidi|all|--enable-libfribidi
+fontconfig|all|--enable-fontconfig
+libunibreak|all|
+lcms2|all|--enable-lcms2
+# librsvg used to be UCRT64-only (MSYS2 had no clang-aarch64 build), but
+# mingw-w64-clang-aarch64-librsvg exists now — enable it on both arches.
+librsvg|all|--enable-librsvg
+SDL2|all|--enable-sdl2
+zimg|all|--enable-libzimg
+vid.stab|all|--enable-libvidstab
+vmaf|all|--enable-libvmaf
+frei0r-plugins|all|--enable-frei0r
+lv2|all|
+libaribcaption|all|--enable-libaribcaption
+aribb24|all|--enable-libaribb24
+zvbi|all|--enable-libzvbi
+vapoursynth|all|--enable-vapoursynth
+tesseract-ocr|all|--enable-libtesseract
+glib2|all|
+shaderc|all|
+spirv-tools|all|
+spirv-headers|all|
+spirv-cross|all|
+glslang|all|
+xxhash|all|
+
+# --- containers, protocols, discs ----------------------------------------------
+gnutls|all|--enable-gnutls
+libxml2|all|--enable-libxml2
+gmp|all|--enable-gmp
+libssh|all|--enable-libssh
+srt|all|--enable-libsrt
+librist|all|--enable-librist
+zeromq|all|--enable-libzmq
+rabbitmq-c|all|--enable-librabbitmq
+libbluray|all|--enable-libbluray
+libdvdnav|all|--enable-libdvdnav
+libdvdread|all|--enable-libdvdread
+libdvdcss|all|
+libcdio-paranoia|all|--enable-libcdio
+libcaca|all|--enable-libcaca
+rtmpdump|all|--enable-librtmp
+curl-winssl|all|--enable-libcurl
+
+# --- compression, text encodings -----------------------------------------------
+zlib|all|--enable-zlib
+bzip2|all|--enable-bzlib
+xz|all|--enable-lzma
+libiconv|all|--enable-iconv
+brotli|all|
+zstd|all|
+snappy|all|--enable-libsnappy
+
+# --- hardware acceleration / capture -------------------------------------------
+amf-headers|all|--enable-amf
+ffnvcodec-headers|all|--enable-ffnvcodec
+libvpl|x86_64|--enable-libvpl
