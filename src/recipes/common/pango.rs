@@ -28,6 +28,17 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-Dbuild-examples=false",
             "-Dxft=disabled",
             "-Dlibthai=disabled",
+            // fontconfig=enabled：librsvg 的 rsvg-convert 在 unix 上无条件
+            // extern FcGetVersion，需要 pangoft2 链出来的 -lfontconfig；
+            // auto 探测会在 fontconfig 缺席时静默产无 pangoft2 的 pango，
+            // 死法挪到 rsvg-convert 链接才爆。显式 enabled 响亮地约束
+            // fontconfig 配方先就位 / fontconfig=enabled: librsvg's
+            // rsvg-convert unconditionally externs FcGetVersion on unix
+            // and needs -lfontconfig via pangoft2; auto-detect would
+            // silently produce a pangoft2-less pango when fontconfig is
+            // absent and defer the death to rsvg-convert's link. Explicit
+            // enabled loudly requires the fontconfig recipe to land first
+            "-Dfontconfig=enabled",
             "-Dsysprof=disabled",
             "--wrap-mode=nofallback",
         ],

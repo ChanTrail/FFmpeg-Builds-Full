@@ -16,6 +16,7 @@ pub mod cairo;
 pub mod codec2;
 pub mod davs2;
 pub mod flite;
+pub mod fontconfig;
 pub mod freetype;
 pub mod fribidi;
 pub mod glib;
@@ -84,6 +85,7 @@ pub fn recipes() -> Vec<Recipe> {
         codec2::recipe(),
         davs2::recipe(),
         flite::recipe(),
+        fontconfig::recipe(),
         freetype::recipe(),
         fribidi::recipe(),
         gmp::recipe(),
