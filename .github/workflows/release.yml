@@ -12,13 +12,23 @@
 name: Release
 
 on:
-  # 测试过后才构建：等 "CI" workflow 在 master 的 push 成功完成。
-  # Build only after tests: wait for the "CI" workflow to finish
-  # successfully on a master push.
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: [master]
+  # 由 ci.yml 尾部的 release job 以 workflow_call 调起——它 needs
+  # test/driver/deps 全绿且仅 master push。可复用调用的 run 记录嵌在
+  # 调用方 CI run 内部，CI 红时这里连"触发但跳过"的条目都不产生
+  # （workflow_run 事件没有结论过滤器，completed 含失败，永远会留
+  # 一条全跳过的记录）。
+  # invoked via workflow_call by ci.yml's tail release job, which needs
+  # test/driver/deps green and only fires on master pushes. A
+  # reusable-call run nests inside the caller's CI run, so a red CI
+  # leaves no "triggered but skipped" standalone entry here at all
+  # (the workflow_run event has no conclusion filter — completed
+  # includes failures — so it always logged a fully-skipped record).
+  workflow_call:
+    inputs:
+      sha:
+        description: '被 CI 测过的 commit（检出对象）/ the CI-tested commit to check out'
+        required: true
+        type: string
   workflow_dispatch:
 
 env:
@@ -34,26 +44,27 @@ jobs:
     name: Detect version change
     runs-on: ubuntu-26.04
     timeout-minutes: 10
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'master' &&
-       github.event.workflow_run.event == 'push')
+    # 剩下的两个触发源都合法：workflow_call 由 CI 全绿调起，
+    # workflow_dispatch 由下面的门禁步把关——无需再按事件过滤
+    # both remaining triggers are valid: workflow_call arrives gated by
+    # the green CI caller, workflow_dispatch is gated by the step below
+    # — no per-event filter needed anymore
     outputs:
       changed: ${{ steps.v.outputs.changed }}
       tag: ${{ steps.v.outputs.tag }}
       version: ${{ steps.v.outputs.version }}
       sha: ${{ steps.v.outputs.sha }}
     steps:
-      # workflow_run 触发的检出必须是"被测过的那个 commit"，而不是此刻
-      # 的 master 头（之间可能有新 push）。
-      # A workflow_run trigger must check out the exact commit that was
-      # tested, not whatever master head is now (new pushes may have
-      # landed in between).
+      # 检出必须是"被 CI 测过的那个 commit"（调用方传入），而不是此刻
+      # 的 master 头（CI 跑完到发布之间可能有新 push）；手动触发回退
+      # 到 dispatch 时的分支头 / the checkout must be the exact
+      # CI-tested commit (passed in by the caller), not whatever master
+      # head is now (new pushes may land between CI finishing and the
+      # release); manual dispatch falls back to the branch head
       - name: Checkout tested commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ inputs.sha || github.sha }}
           fetch-depth: 0
 
       # 手动触发同样受"CI 未绿不 Release"约束：查本分支最近一次已完成
@@ -324,14 +335,14 @@ jobs:
 
       # 驱动发布成功 → 链式触发 FFmpeg 构建（repository_dispatch 是
       # GITHUB_TOKEN 下官方留的工作流链接口；release 事件本身不触发）。
-      # 仅 master 链入：workflow_run 已由 branches:[master] 与 version
-      # 门双重约束；在非主分支上手动 dispatch 只是验证驱动发布链路，
+      # 仅 master 链入：workflow_call 的调用方已由 needs+push/master
+      # 门约束；在非主分支上手动 dispatch 只是验证驱动发布链路，
       # 不该顺手点起 FFmpeg 五平台构建。
       # Driver published -> chain into the FFmpeg build
       # (repository_dispatch is the sanctioned chaining hook under
       # GITHUB_TOKEN; the release event itself does not fire). Master
-      # only: workflow_run is already doubly gated by branches:[master]
-      # and the version job; a manual dispatch on a side branch just
+      # only: the workflow_call caller is already gated by
+      # needs+push/master; a manual dispatch on a side branch just
       # exercises the driver publish path and must not fire the
       # five-platform FFmpeg build.
       - name: Kick the FFmpeg pipeline

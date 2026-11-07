@@ -75,8 +75,12 @@ const ORDER: &[(&str, &str)] = &[
     ("freetype", ""),
     ("fribidi", ""),
     ("harfbuzz", ""),
-    ("pango", ""),
+    // libxml2 在 fontconfig 前：fontconfig 的 -Dxml-backend=libxml2 要
+    // 它的 .pc / libxml2 before fontconfig — its -Dxml-backend=libxml2
+    // resolves our libxml-2.0.pc
     ("libxml2", ""),
+    ("fontconfig", ""),
+    ("pango", ""),
     ("librsvg", ""),
     ("svtjpegxs", ""),
     ("openapv", ""),

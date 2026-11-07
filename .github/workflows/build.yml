@@ -132,18 +132,31 @@ jobs:
         id: drv
         env:
           GH_TOKEN: ${{ github.token }}
+          # gh 的仓库解析顺序是 -R → GH_REPO → 本地 git remote；本 job
+          # 不 checkout，没有 remote 可推，必须显式给 GH_REPO，否则
+          # `gh release` 内部调 git 报 "not a git repository" / gh
+          # resolves the repo via -R → GH_REPO → local git remote; this
+          # job never checks out, so there is no remote to infer from —
+          # GH_REPO must be set explicitly or `gh release` shells out to
+          # git and dies with "not a git repository"
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             tag="${{ github.event.client_payload.tag }}"
           else
-            # Latest 浮动桶恒定指向最新发布；不存在时退到最新
-            # Driver-* tag。/ the floating Latest bucket always
+            # Driver-Latest 浮动桶恒定指向最新发布（release.yml 维护）；
+            # 不存在时退到最新版本化 Driver-v* tag。注意 Latest/latest
+            # 都是 FFmpeg 产物的滑动 release，不是驱动桶；版本 tag 带 v
+            # 前缀（Driver-v1.2.3），不是 Driver-数字 / the floating
+            # Driver-Latest bucket (maintained by release.yml) always
             # points at the newest publish; fall back to the newest
-            # Driver-* tag when absent
-            tag="Latest"
-            gh release view Latest >/dev/null 2>&1 \
-              || tag="$(gh release list --json tagName --limit 50 -q '.[].tagName' | grep -m1 '^Driver-[0-9]' || true)"
+            # versioned Driver-v* tag when absent. Beware: Latest/latest
+            # is FFmpeg's PRODUCT release, not the driver bucket; version
+            # tags carry a v prefix (Driver-v1.2.3), not Driver-<digit>
+            tag="Driver-Latest"
+            gh release view "$tag" >/dev/null 2>&1 \
+              || tag="$(gh release list --json tagName --limit 50 -q '.[].tagName' | grep -m1 '^Driver-v[0-9]' || true)"
           fi
           [[ "$tag" =~ ^Driver- ]] || { echo "::error::no published driver release (Driver-* tag) found"; exit 1; }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -560,6 +573,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          # 本 job 不 checkout——gh 要靠 GH_REPO 解析仓库（同 prepare）/
+          # this job never checks out — gh needs GH_REPO to resolve the
+          # repo (same as prepare)
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           mkdir -p driver
