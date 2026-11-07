@@ -23,6 +23,7 @@ pub fn recipe() -> Recipe {
 
 /// 构建 VapourSynth / Build VapourSynth
 fn body(ctx: &Ctx) -> Result<(), String> {
+    let e = sys::env();
     let src = ctx.src()?;
     // cython 生成 src/cython 绑定——系统 python 受 PEP-668 保护不让
     // pip install，进 venv / cython generates the src/cython bindings —
@@ -35,6 +36,23 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         &["install", "cython"],
         &ctx.wd,
     )?;
-    let _g = sys::EnvGuard::append(&[("PATH", &format!("{}/bin", venv.display()))]);
+    // 子进程 PATH 是 sys::cmd 从 env.child_path 定死的——EnvGuard 改
+    // 进程内 PATH 传不下去；child_path 含 <prefix>/bin，把 cython 脚本
+    // 软链进去（shebang 指向 venv python，挪窝照跑）/ child PATH is
+    // fixed by sys::cmd from env.child_path — an EnvGuard PATH tweak
+    // never reaches the child; child_path does include <prefix>/bin so
+    // symlink the cython script there (its shebang points at the venv
+    // python and runs fine from anywhere)
+    let bindir = e.prefix_win.join("bin");
+    crate::fsx::install_d(&bindir)?;
+    sys::run_ok(
+        "ln",
+        &[
+            "-sf",
+            &venv.join("bin/cython").to_string_lossy(),
+            &bindir.join("cython").to_string_lossy(),
+        ],
+        &ctx.wd,
+    )?;
     buildsys::meson_build(&src, &[])
 }

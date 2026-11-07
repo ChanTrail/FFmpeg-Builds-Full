@@ -25,8 +25,18 @@ pub fn recipe() -> Recipe {
 fn body(ctx: &Ctx) -> Result<(), String> {
     let e = sys::env();
     let src = ctx.src()?;
-    // 源树 amf/public/include/AMF/** 整目录落到 <prefix>/include/AMF
-    // copy the tree's amf/public/include/AMF/** into <prefix>/include/AMF
+    // 上游改过一次布局：新版 amf/public/include/ 直下就是
+    // core|components（无 AMF/ 包裹层），旧版则是 include/AMF/**。
+    // 两种都归一成 <prefix>/include/AMF/** / upstream reshuffled the
+    // layout: newer trees carry core|components directly under
+    // amf/public/include (no AMF/ wrapper), older ones used
+    // include/AMF/** — normalise both into <prefix>/include/AMF/**
+    let inner = src.join("amf/public/include");
+    let payload = if inner.join("AMF").is_dir() {
+        inner.join("AMF")
+    } else {
+        inner
+    };
     let dst = e.prefix_win.join("include/AMF");
     fsx::rm_rf(&dst);
     fsx::install_d(&dst)?;
@@ -34,7 +44,7 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         "cp",
         &[
             "-R",
-            &format!("{}/.", src.join("amf/public/include/AMF").display()),
+            &format!("{}/.", payload.display()),
             &dst.to_string_lossy(),
         ],
         &src,

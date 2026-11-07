@@ -17,6 +17,10 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     let src = ctx.src()?;
     buildsys::meson_build(
         &src,
-        &["-Djpeg=disabled", "-Dtiff=disabled", "-Dutils=disabled"],
+        // jpeg/tiff 是 feature 型（disabled），utils 是 bool 型
+        // （false）——类型写混 meson 直接报错 / jpeg/tiff are
+        // feature-typed (disabled) while utils is a bool (false) —
+        // mixing the two fails meson's type check
+        &["-Djpeg=disabled", "-Dtiff=disabled", "-Dutils=false"],
     )
 }

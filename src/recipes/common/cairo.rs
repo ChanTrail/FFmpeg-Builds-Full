@@ -8,7 +8,16 @@ use crate::sys::{self, Os};
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("cairo", "linux,mac", "cairo,cairo-quartz", "-", body);
+    let mut x = r(
+        "cairo",
+        "linux,mac",
+        // cairo-quartz 只有 mac 有——多平台 check 只能挑通用 pc /
+        // cairo-quartz is mac-only — a multi-platform check can only
+        // name the universal pc
+        "cairo",
+        "-",
+        body,
+    );
     x.src = include_str!("cairo.rs");
     x
 }

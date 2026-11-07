@@ -21,7 +21,19 @@ pub fn recipe() -> Recipe {
 /// 构建 libbluray / Build libbluray
 fn body(ctx: &Ctx) -> Result<(), String> {
     let src = ctx.src()?;
-    // bdjava 要 JDK——无头 CLI 用不上，关掉 /
-    // BD-J wants a JDK — useless for a headless CLI, turn it off
-    buildsys::autotools_build(&src, &["--disable-bdjava-jar", "--disable-doxygen-doc"])
+    // 上游 ≥1.5 已纯 meson（configure.ac 删了）。freetype/fontconfig/
+    // libxml2 是 feature 项显式开；enable_tools/bdjava_jar 是 bool /
+    // upstream ≥1.5 is meson-only (configure.ac deleted). freetype/
+    // fontconfig/libxml2 are feature options flipped on explicitly;
+    // enable_tools/bdjava_jar are bools
+    buildsys::meson_build(
+        &src,
+        &[
+            "-Denable_tools=false",
+            "-Dbdjava_jar=false",
+            "-Dfreetype=enabled",
+            "-Dfontconfig=enabled",
+            "-Dlibxml2=enabled",
+        ],
+    )
 }

@@ -21,6 +21,11 @@ pub fn recipe() -> Recipe {
 /// 构建 librubberband / Build librubberband
 fn body(ctx: &Ctx) -> Result<(), String> {
     let src = ctx.src()?;
+    // mathmisc.cpp 裸用 size_t 未引 <cstddef>——clang 严格性报错，
+    // 强引头文件压住（各平台同加无害）/ mathmisc.cpp uses bare size_t
+    // without <cstddef> — clang strictness rejects it; force-include
+    // the header (harmless on every platform)
+    let _g = crate::sys::EnvGuard::append(&[("CXXFLAGS", "-include cstddef")]);
     // 只钉 fft/resampler 两个 combo 选项——其余一律默认（多出的
     // cmdline/插件二进制落进 prefix 无害，也不拉外部依赖）/
     // pin only the two combo options — everything else stays default

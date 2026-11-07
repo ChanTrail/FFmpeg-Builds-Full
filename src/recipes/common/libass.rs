@@ -19,10 +19,13 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         &src,
         &[
             "-Dfontconfig=enabled",
-            "-Dtest=false",
-            "-Dcompare=false",
-            "-Dprofile=false",
-            "-Dfuzz=false",
+            // test/checkasm 都是 feature 型——只能 enabled/disabled/
+            // auto，写 false 会报 "not one of the choices"；compare/
+            // profile/fuzz 类型拿不准，默认即关，不钉 / test and
+            // checkasm are feature-typed — only enabled/disabled/auto
+            // accepted, "false" is rejected outright; compare/profile/
+            // fuzz default to off anyway so leave them unpinned
+            "-Dtest=disabled",
             "-Dcheckasm=disabled",
         ],
     )

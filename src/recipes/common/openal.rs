@@ -23,6 +23,11 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-DALSOFT_TESTS=OFF",
             "-DALSOFT_INSTALL=ON",
             "-DLIBTYPE=STATIC",
+            // GCC 的 -fmodules-ts 在 alconfig.cpp 上 ICE（GIMPLE
+            // nonnull_arg_p）——关掉 C++20 模块扫描 /
+            // GCC's -fmodules-ts ICEs on alconfig.cpp (GIMPLE
+            // nonnull_arg_p) — disable C++20 module scanning
+            "-DCMAKE_CXX_SCAN_FOR_MODULES=OFF",
         ],
     )
 }

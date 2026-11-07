@@ -68,6 +68,9 @@ const ORDER: &[(&str, &str)] = &[
     ("modplug", ""),
     ("vo-amrwbenc", ""),
     // 音频编解码簇 / audio codec cluster
+    // lame 的 decoder 半边要 libmpg123——必须在 lame 前 /
+    // lame's decoder half needs libmpg123 — must precede lame
+    ("mpg123", ""),
     ("lame", ""),
     ("twolame", ""),
     ("opencore-amr", ""),

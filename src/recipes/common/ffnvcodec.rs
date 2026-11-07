@@ -12,7 +12,10 @@ pub fn recipe() -> Recipe {
     let mut x = r(
         "ffnvcodec",
         "linux,windows",
-        "ffnvcodec",
+        // 纯头文件——ffnvcodec.pc 没有 Libs/-l 记号，pc 检查必败，
+        // 改查头文件 / header-only — ffnvcodec.pc carries no Libs/-l
+        // token so a pc check always fails; check the header instead
+        "file:ffnvcodec/nvEncodeAPI.h",
         "--enable-ffnvcodec",
         body,
     );

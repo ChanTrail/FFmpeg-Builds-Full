@@ -15,6 +15,10 @@ pub fn recipe() -> Recipe {
 /// 构建 xvidcore / Build xvidcore
 fn body(ctx: &Ctx) -> Result<(), String> {
     let e = crate::sys::env();
+    // 老代码 typedef bool 撞 C23 关键字——GCC16 默认 -std=gnu23，
+    // 压回 gnu17 / its old `typedef ... bool` collides with the C23
+    // keyword — GCC16 defaults to -std=gnu23, clamp it back to gnu17
+    let _g = crate::sys::EnvGuard::append(&[("CFLAGS", "-std=gnu17")]);
     // autotools 工程嵌在 build/generic——不是仓库根 /
     // the autotools project is nested under build/generic, not the root
     buildsys::autotools_build(&ctx.src()?.join("build/generic"), &[])?;

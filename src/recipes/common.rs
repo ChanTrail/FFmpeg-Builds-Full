@@ -62,6 +62,7 @@ pub mod libzmq;
 pub mod lilv;
 pub mod mbedtls;
 pub mod modplug;
+pub mod mpg123;
 pub mod mysofa;
 pub mod nettle;
 pub mod ogg;
@@ -146,6 +147,7 @@ pub fn recipes() -> Vec<Recipe> {
         ilbc::recipe(),
         kvazaar::recipe(),
         lame::recipe(),
+        mpg123::recipe(),
         lc3::recipe(),
         lcevcdec::recipe(),
         lcms2::recipe(),

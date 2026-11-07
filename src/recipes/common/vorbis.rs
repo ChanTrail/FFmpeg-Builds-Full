@@ -23,5 +23,11 @@ pub fn recipe() -> Recipe {
 /// 构建 libvorbis / Build libvorbis
 fn body(ctx: &Ctx) -> Result<(), String> {
     let src = ctx.src()?;
-    buildsys::autotools_build(&src, &["--disable-examples"])
+    // autotools 路线的 libtool 在 darwin 链接 test 程序时硬塞
+    // -force_cpusubtype_ALL（ppc 时代死旗，现代 ld 已删）——cmake 没这
+    // 毛病，且同样装 vorbis*.pc / the autotools route's libtool jams
+    // -force_cpusubtype_ALL into darwin test-program links (a ppc-era
+    // flag long removed from modern ld) — cmake carries no such quirk
+    // and still installs vorbis*.pc
+    buildsys::cmake_build(&src, &["-DBUILD_TESTING=OFF"])
 }

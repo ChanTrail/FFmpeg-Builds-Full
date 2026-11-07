@@ -73,12 +73,19 @@ libwebp:
 lame:
   archive: https://downloads.sourceforge.net/project/lame/lame/4.0/lame-4.0.tar.gz
   sha256: 3df5124d5ad3a98312ffd7ba6a9b36230e4f8a3e66d3ce0f425e336c32d216eb
+# lame 的 decoder 半边要 libmpg123 >=1.26——缺了 configure 直接报错 /
+# lame's decoder half wants libmpg123 >=1.26 — configure errors out
+# without it
+mpg123:
+  archive: https://downloads.sourceforge.net/project/mpg123/mpg123/1.33.7/mpg123-1.33.7.tar.bz2
+  sha256: 31d0e35a4ca567ec9b5ebda6c3062bb4435d6d3eacd6ef0d95cadd7854dc03ee
 ogg:
   git: https://github.com/xiph/ogg.git
 vorbis:
   git: https://github.com/xiph/vorbis.git
 opus:
   git: https://gitlab.xiph.org/xiph/opus.git
+  ref: v1.6.1   # get-version.py 靠 git describe 取版本——浅克隆必须落在 tag 上 / get-version.py derives the version from git describe — the shallow clone must land on a tag
 speex:
   git: https://gitlab.xiph.org/xiph/speex.git         # downloads.xiph.org 不可达，走仓库
 shine:
@@ -106,7 +113,10 @@ vo-amrwbenc:
   archive: https://downloads.sourceforge.net/project/opencore-amr/vo-amrwbenc/vo-amrwbenc-0.1.3.tar.gz
   sha256: 5652b391e0f0e296417b841b02987d3fd33e6c0af342c69542cbb016a71d9d4e
 opencore-amr:
-  archive: https://downloads.sourceforge.net/opencore-amr/opencore-amr-0.1.6.tar.gz
+  # 裸 SF 直链会落 HTML 中间页（CI 抓到 141KB 页面而非 939KB 真包）/
+  # the bare-SF link lands on an HTML interstitial (CI got a 141KB page
+  # instead of the real 939KB tarball)
+  archive: https://downloads.sourceforge.net/project/opencore-amr/opencore-amr/opencore-amr-0.1.6.tar.gz
   sha256: 483eb4061088e2b34b358e47540b5d495a96cd468e361050fae615b1809dc4a1
 mysofa:
   git: https://github.com/hoene/libmysofa.git
@@ -115,7 +125,7 @@ flite:
 pocketsphinx:
   git: https://github.com/cmusphinx/pocketsphinx.git
 twolame:
-  archive: https://downloads.sourceforge.net/twolame/twolame-0.4.0.tar.gz
+  archive: https://downloads.sourceforge.net/project/twolame/twolame/0.4.0/twolame-0.4.0.tar.gz
   sha256: cc35424f6019a88c6f52570b63e1baf50f62963a3eac52a03a800bb070d7c87d
 soxr:
   archive: https://downloads.sourceforge.net/project/soxr/soxr-0.1.3-Source.tar.xz
@@ -140,8 +150,14 @@ harfbuzz:
   git: https://github.com/harfbuzz/harfbuzz.git
 fribidi:
   git: https://github.com/fribidi/fribidi.git
+# libpng 原来只在 macos-arm64.yaml——linux 的 zvbi/selftest 也需要 /
+# libpng used to live only in macos-arm64.yaml — linux's zvbi/selftest
+# need it too
+libpng:
+  git: https://github.com/pnggroup/libpng.git
 fontconfig:
   git: https://gitlab.freedesktop.org/fontconfig/fontconfig.git
+  ref: 2.18.3   # pango 1.58 的 dependency() 硬要求 >=2.17.0 / pango 1.58's dependency() hard-requires >=2.17.0
 libass:
   git: https://github.com/libass/libass.git
 lcms2:
@@ -160,12 +176,14 @@ librsvg:
   sha256: 31f07d9350dad3f8964fd613c31309ac160fdef13dfac59df6fd082de78d6e8f
 zimg:
   git: https://github.com/sekrit-twc/zimg.git
+  submodules: true   # graphengine 以 submodule 随仓携带 / graphengine rides as a submodule
 vidstab:
   git: https://github.com/georgmartius/vid.stab.git
 vmaf:
   git: https://github.com/Netflix/vmaf.git
 frei0r:
-  git: https://codeberg.org/frei0r/frei0r.git
+  git: https://github.com/dyne/frei0r.git   # codeberg 仓已消失，此为活跃镜像 / the codeberg repo vanished — this is the live mirror
+  ref: v3.7.0
 aribb24:
   git: https://github.com/nkoriyama/aribb24.git
   ref: 5e9be272f96e00f15a2f3c5f8ba7e124862aec38   # 上游停滞，固化末次提交（2016-02）/ upstream stalled, pinned at last commit
@@ -221,6 +239,8 @@ rabbitmq:
   git: https://github.com/alanxz/rabbitmq-c.git
 libbluray:
   git: https://code.videolan.org/videolan/libbluray.git
+  ref: 1.5.1   # ≥1.5 纯 meson；master 的 configure.ac 已删 → 钉 tag / meson-only ≥1.5; master's configure.ac is gone → pin a tag
+  submodules: true   # libudfread 以 submodule 随仓携带 / libudfread rides as a submodule
 libdvdcss:
   archive: https://download.videolan.org/pub/libdvdcss/1.6.0/libdvdcss-1.6.0.tar.xz
   sha256: 7ea556c846b7bfc32d47b41cae56d1863a6b6d5f706bb162778d6f298490977c
@@ -254,12 +274,16 @@ nv-codec-headers:
 
 # ---- xz/lzma（base.yaml 恒启；win 走 msys 包）/ lzma is a base lib — msys on win ----
 xz:
-  git: https://github.com/tukaani-project/xz.git
+  # git 仓 autogen.sh 强制要 po4a 生翻译 man——发行 tar 自带 configure /
+  # the git repo's autogen.sh insists on po4a for translated man pages —
+  # the release tarball ships a ready-made configure
+  archive: https://github.com/tukaani-project/xz/releases/download/v5.8.4/xz-5.8.4.tar.gz
+  sha256: 0014c7886930454fe8bd4228665b51af55eeae560ea135c9c4cd33f55b2591d9
 
 # ---- mbedtls（libssh 的 crypto 后端——openssl 是动态库链不得）/ libssh's crypto backend (openssl is dynamic) ----
 mbedtls:
   git: https://github.com/Mbed-TLS/mbedtls.git
-  ref: v3.6.5
+  submodules: true   # framework/ 是子模块，cmake 直接引用其 CMakeLists / framework/ is a submodule whose CMakeLists is referenced directly
 
 # ---- vulkan 头 + shim 加载器（linux/windows；静态 dlopen 派发，系统
 #      驱动运行时才加载）/ headers + shim loader (linux/windows — a
