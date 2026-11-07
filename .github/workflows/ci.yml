@@ -519,3 +519,24 @@ jobs:
           path: logs/
           if-no-files-found: ignore
           retention-days: 7
+
+  # ── Release（仅 master push 全绿）/ Release (master pushes, all-green only)
+  # 以 workflow_call 调起 release.yml——可复用调用的 run 记录嵌在本
+  # CI run 内部；CI 红时不会产生"触发但跳过"的独立 Release 条目
+  # （workflow_run 事件没有结论过滤器，completed 含失败，旧实现每条
+  # 红 CI 都留一条全跳过的记录）。
+  # invokes release.yml via workflow_call — a reusable-call run nests
+  # inside this CI run; a red CI leaves no "triggered but skipped"
+  # standalone Release entry at all (the workflow_run event has no
+  # conclusion filter — completed includes failures — so the old design
+  # logged one fully-skipped record per red CI).
+  release:
+    name: Release
+    needs: [test, driver, deps]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    uses: ./.github/workflows/release.yml
+    with:
+      sha: ${{ github.sha }}
+    secrets: inherit
+    permissions:
+      contents: write
