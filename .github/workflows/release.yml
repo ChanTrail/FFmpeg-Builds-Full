@@ -12,23 +12,25 @@
 name: Release
 
 on:
-  # 由 ci.yml 尾部的 release job 以 workflow_call 调起——它 needs
-  # test/driver/deps 全绿且仅 master push。可复用调用的 run 记录嵌在
-  # 调用方 CI run 内部，CI 红时这里连"触发但跳过"的条目都不产生
-  # （workflow_run 事件没有结论过滤器，completed 含失败，永远会留
-  # 一条全跳过的记录）。
-  # invoked via workflow_call by ci.yml's tail release job, which needs
-  # test/driver/deps green and only fires on master pushes. A
-  # reusable-call run nests inside the caller's CI run, so a red CI
+  # 由 ci.yml 尾部的 release job 发 repository_dispatch 调起——它
+  # needs test/driver/deps 全绿且仅 master push。dispatch 产生独立
+  # run 与独立 artifact 命名空间：workflow_call 曾把本工作流的 job
+  # 内联进 CI run 并共享命名空间，CI/release 两边的 driver-<p>
+  # artifact 撞名导致组装步拿到无 sha256 的 CI 版。CI 红时这里连
+  # "触发但跳过"的条目都不产生（workflow_run 事件没有结论过滤器，
+  # completed 含失败，旧实现永远会留一条全跳过的记录）。
+  # invoked via repository_dispatch fired by ci.yml's tail release job,
+  # which needs test/driver/deps green and only fires on master pushes.
+  # A dispatch yields its own run with its own artifact namespace —
+  # workflow_call used to inline this workflow's jobs into the CI run
+  # and share the namespace, where CI/release driver-<p> artifacts
+  # collided and the assemble step got CI's sha256-less copy. A red CI
   # leaves no "triggered but skipped" standalone entry here at all
   # (the workflow_run event has no conclusion filter — completed
-  # includes failures — so it always logged a fully-skipped record).
-  workflow_call:
-    inputs:
-      sha:
-        description: '被 CI 测过的 commit（检出对象）/ the CI-tested commit to check out'
-        required: true
-        type: string
+  # includes failures — so the old design always logged a fully-skipped
+  # record).
+  repository_dispatch:
+    types: [Release driver]
   workflow_dispatch:
 
 env:
@@ -44,27 +46,27 @@ jobs:
     name: Detect version change
     runs-on: ubuntu-26.04
     timeout-minutes: 10
-    # 剩下的两个触发源都合法：workflow_call 由 CI 全绿调起，
-    # workflow_dispatch 由下面的门禁步把关——无需再按事件过滤
-    # both remaining triggers are valid: workflow_call arrives gated by
-    # the green CI caller, workflow_dispatch is gated by the step below
-    # — no per-event filter needed anymore
+    # 剩下的两个触发源都合法：repository_dispatch 由绿 CI 的调用方
+    # 调起，workflow_dispatch 由下面的门禁步把关——无需再按事件过滤
+    # both remaining triggers are valid: repository_dispatch arrives
+    # via the green-CI caller, workflow_dispatch is gated by the step
+    # below — no per-event filter needed anymore
     outputs:
       changed: ${{ steps.v.outputs.changed }}
       tag: ${{ steps.v.outputs.tag }}
       version: ${{ steps.v.outputs.version }}
       sha: ${{ steps.v.outputs.sha }}
     steps:
-      # 检出必须是"被 CI 测过的那个 commit"（调用方传入），而不是此刻
-      # 的 master 头（CI 跑完到发布之间可能有新 push）；手动触发回退
-      # 到 dispatch 时的分支头 / the checkout must be the exact
-      # CI-tested commit (passed in by the caller), not whatever master
-      # head is now (new pushes may land between CI finishing and the
-      # release); manual dispatch falls back to the branch head
+      # 检出必须是"被 CI 测过的那个 commit"（dispatch 载荷传入），而
+      # 不是此刻的 master 头（CI 跑完到发布之间可能有新 push）；手动
+      # 触发回退到 dispatch 时的分支头 / the checkout must be the exact
+      # CI-tested commit (carried in the dispatch payload), not whatever
+      # master head is now (new pushes may land between CI finishing and
+      # the release); manual dispatch falls back to the branch head
       - name: Checkout tested commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.sha || github.sha }}
+          ref: ${{ github.event.client_payload.sha || github.sha }}
           fetch-depth: 0
 
       # 手动触发同样受"CI 未绿不 Release"约束：查本分支最近一次已完成
@@ -335,13 +337,13 @@ jobs:
 
       # 驱动发布成功 → 链式触发 FFmpeg 构建（repository_dispatch 是
       # GITHUB_TOKEN 下官方留的工作流链接口；release 事件本身不触发）。
-      # 仅 master 链入：workflow_call 的调用方已由 needs+push/master
-      # 门约束；在非主分支上手动 dispatch 只是验证驱动发布链路，
-      # 不该顺手点起 FFmpeg 五平台构建。
+      # 仅 master 链入：repository_dispatch 的调用方已由
+      # needs+push/master 门约束；在非主分支上手动 dispatch 只是
+      # 验证驱动发布链路，不该顺手点起 FFmpeg 五平台构建。
       # Driver published -> chain into the FFmpeg build
       # (repository_dispatch is the sanctioned chaining hook under
       # GITHUB_TOKEN; the release event itself does not fire). Master
-      # only: the workflow_call caller is already gated by
+      # only: the repository_dispatch caller is already gated by
       # needs+push/master; a manual dispatch on a side branch just
       # exercises the driver publish path and must not fire the
       # five-platform FFmpeg build.

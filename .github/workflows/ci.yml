@@ -521,22 +521,44 @@ jobs:
           retention-days: 7
 
   # ── Release（仅 master push 全绿）/ Release (master pushes, all-green only)
-  # 以 workflow_call 调起 release.yml——可复用调用的 run 记录嵌在本
-  # CI run 内部；CI 红时不会产生"触发但跳过"的独立 Release 条目
-  # （workflow_run 事件没有结论过滤器，completed 含失败，旧实现每条
-  # 红 CI 都留一条全跳过的记录）。
-  # invokes release.yml via workflow_call — a reusable-call run nests
-  # inside this CI run; a red CI leaves no "triggered but skipped"
-  # standalone Release entry at all (the workflow_run event has no
-  # conclusion filter — completed includes failures — so the old design
-  # logged one fully-skipped record per red CI).
+  # 发 repository_dispatch 调起独立的 Release run——dispatch 是
+  # GITHUB_TOKEN 下官方留的链接口（release.yml 链 build.yml 用的同款）。
+  # 不用 workflow_call：可复用调用把被调 job 内联进本 run 并共享
+  # artifact 命名空间——CI driver job 与 release build job 的
+  # driver-<p> 撞名，release 组装步曾拿到无 sha256 的 CI 版 artifact。
+  # dispatch 既保"红 CI → Release 零记录"（workflow_run 事件没有结论
+  # 过滤器，completed 含失败，旧实现每条红 CI 都留一条全跳过记录），
+  # 又还它独立 run 条目与隔离命名空间。
+  # fires a repository_dispatch so release.yml runs as its OWN run —
+  # dispatch is the sanctioned chaining hook under GITHUB_TOKEN (the
+  # same one release.yml uses to kick build.yml). Not workflow_call:
+  # reusable calls inline callee jobs into this run and share the
+  # artifact namespace — CI's driver job and the release build job
+  # both uploaded driver-<p>, and the assemble step picked CI's
+  # sha256-less artifact. Dispatch keeps "red CI -> zero Release
+  # records" (the workflow_run event has no conclusion filter —
+  # completed includes failures — so the old design logged one
+  # fully-skipped record per red CI) while restoring Release's own
+  # run entry and isolated namespace.
   release:
-    name: Release
+    name: Kick Release
     needs: [test, driver, deps]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    uses: ./.github/workflows/release.yml
-    with:
-      sha: ${{ github.sha }}
-    secrets: inherit
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
     permissions:
       contents: write
+    steps:
+      - name: Fire the Release driver dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # client_payload.sha = 被 CI 测过的 commit——release.yml 检出
+          # 它做版本探测与构建（CI 完跑到发布之间可能有新 push）/
+          # client_payload.sha = the CI-tested commit — release.yml
+          # checks it out for the version probe and builds (new pushes
+          # may land between CI finishing and the release)
+          gh api "repos/$GITHUB_REPOSITORY/dispatches" \
+            -f "event_type=Release driver" \
+            -F "client_payload[sha]=$GITHUB_SHA"
