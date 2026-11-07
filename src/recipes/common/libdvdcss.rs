@@ -10,7 +10,7 @@ use crate::sys::{self, Os};
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("libdvdcss", "mac", "libdvdcss", "-", body);
+    let mut x = r("libdvdcss", "linux,mac", "libdvdcss", "-", body);
     x.src = include_str!("libdvdcss.rs");
     x
 }

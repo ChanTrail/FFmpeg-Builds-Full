@@ -8,7 +8,13 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("libxml2", "mac", "libxml-2.0", "--enable-libxml2", body);
+    let mut x = r(
+        "libxml2",
+        "linux,mac",
+        "libxml-2.0",
+        "--enable-libxml2",
+        body,
+    );
     x.src = include_str!("libxml2.rs");
     x
 }

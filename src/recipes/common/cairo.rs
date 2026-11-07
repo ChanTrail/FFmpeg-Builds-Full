@@ -8,7 +8,7 @@ use crate::sys::{self, Os};
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("cairo", "mac", "cairo,cairo-quartz", "-", body);
+    let mut x = r("cairo", "linux,mac", "cairo,cairo-quartz", "-", body);
     x.src = include_str!("cairo.rs");
     x
 }

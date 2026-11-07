@@ -124,6 +124,7 @@ rubberband:
   git: https://github.com/breakfastquay/rubberband.git
 chromaprint:
   git: https://github.com/acoustid/chromaprint.git
+  submodules: true   # kissfft 以 submodule 随仓携带 / kissfft rides as a submodule
 openal:
   git: https://github.com/kcat/openal-soft.git
 gme:
@@ -250,3 +251,48 @@ amf:
   git: https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git
 nv-codec-headers:
   git: https://github.com/FFmpeg/nv-codec-headers.git
+
+# ---- xz/lzma（base.yaml 恒启；win 走 msys 包）/ lzma is a base lib — msys on win ----
+xz:
+  git: https://github.com/tukaani-project/xz.git
+
+# ---- mbedtls（libssh 的 crypto 后端——openssl 是动态库链不得）/ libssh's crypto backend (openssl is dynamic) ----
+mbedtls:
+  git: https://github.com/Mbed-TLS/mbedtls.git
+  ref: v3.6.5
+
+# ---- vulkan 头 + shim 加载器（linux/windows；静态 dlopen 派发，系统
+#      驱动运行时才加载）/ headers + shim loader (linux/windows — a
+#      static dlopen dispatcher; the real driver loads at runtime) ----
+vulkan-headers:
+  git: https://github.com/KhronosGroup/Vulkan-Headers.git
+vulkan-shim:
+  git: https://github.com/BtbN/Vulkan-Shim-Loader.git
+
+# ---- opencl 头 + ICD 静态加载器（同上 dlopen 派发）/ headers + static
+#      ICD loader (same dlopen dispatch) ----
+opencl-headers:
+  git: https://github.com/KhronosGroup/OpenCL-Headers.git
+opencl-icd:
+  git: https://github.com/KhronosGroup/OpenCL-ICD-Loader.git
+
+# ---- LV2/lilv 栈（lilv 配方全平台）/ the LV2/lilv stack (lilv recipe
+#      on every platform) ----
+lv2:
+  git: https://github.com/lv2/lv2.git                  # 仅头文件+pc / headers + pc only
+  ref: 0bcde338db1c63bbc503b4d1f6d7b55ed43154af
+zix:
+  git: https://github.com/drobilla/zix.git
+  ref: 17d632393f5addb6fa24dda2927b96515407cca7
+serd:
+  git: https://github.com/drobilla/serd.git
+  ref: b621b0bc790d1e8102d3138ead16b974ddda8432
+sord:
+  git: https://github.com/drobilla/sord.git
+  ref: 4b5232bb91e7f2f1b84df384494d073fabbcd312
+sratom:
+  git: https://github.com/lv2/sratom.git
+  ref: 9e8ee84eed502e6030ce8bb49694fd28542b08fc
+lilv:
+  git: https://github.com/lv2/lilv.git
+  ref: 4b8f30055fa5cb4134a2eb45fc1555bc04289314

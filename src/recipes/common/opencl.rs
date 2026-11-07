@@ -10,7 +10,7 @@ use crate::sys;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("opencl", "windows", "OpenCL", "--enable-opencl", body);
+    let mut x = r("opencl", "linux,windows", "OpenCL", "--enable-opencl", body);
     x.src = include_str!("opencl.rs");
     x
 }
@@ -50,10 +50,19 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             libdir.display()
         ));
     };
+    // 私有链接尾巴按平台给：windows 的 ICD 走注册表/COM；linux 上加载
+    // 器 dlopen 厂商 ICD 只要 -ldl -lpthread / the private link tail is
+    // platform-picked: the Windows ICD walks the registry/COM; on linux
+    // the loader dlopen()s vendor ICDs and only needs -ldl -lpthread
+    let tail = if e.os == sys::Os::Windows {
+        "-lole32 -lshlwapi -lcfgmgr32"
+    } else {
+        "-ldl -lpthread"
+    };
     fsx::write(
         &libdir.join("pkgconfig/OpenCL.pc"),
         &format!(
-            "prefix={}\nexec_prefix=${{prefix}}\nlibdir=${{exec_prefix}}/lib\nincludedir=${{prefix}}/include\n\nName: OpenCL\nDescription: OpenCL ICD Loader\nVersion: 9999\nCflags: -I${{includedir}}\nLibs: -L${{libdir}} {libarg}\nLibs.private: -lole32 -lshlwapi -lcfgmgr32\n",
+            "prefix={}\nexec_prefix=${{prefix}}\nlibdir=${{exec_prefix}}/lib\nincludedir=${{prefix}}/include\n\nName: OpenCL\nDescription: OpenCL ICD Loader\nVersion: 9999\nCflags: -I${{includedir}}\nLibs: -L${{libdir}} {libarg}\nLibs.private: {tail}\n",
             e.prefix
         ),
     )

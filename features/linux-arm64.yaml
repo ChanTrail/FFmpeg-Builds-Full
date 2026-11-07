@@ -18,3 +18,6 @@ v4l2m2m: enable
 nvdec: enable
 nvenc: enable
 cuvid: enable
+vulkan: enable          # 前缀 shim（头+dlopen 加载器）/ prefix shim (headers + dlopen loader)
+opencl: enable          # 前缀 ICD shim / prefix ICD shim
+ffnvcodec: enable       # nv-codec-headers 头文件 / nv-codec-headers headers

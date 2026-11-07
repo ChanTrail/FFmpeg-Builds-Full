@@ -8,7 +8,13 @@ use crate::sys;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("librsvg", "mac", "librsvg-2.0", "--enable-librsvg", body);
+    let mut x = r(
+        "librsvg",
+        "linux,mac",
+        "librsvg-2.0",
+        "--enable-librsvg",
+        body,
+    );
     x.src = include_str!("librsvg.rs");
     x
 }

@@ -10,7 +10,7 @@ use crate::sys;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("zlib", "mac", "zlib", "-", body);
+    let mut x = r("zlib", "linux,mac", "zlib", "-", body);
     x.src = include_str!("zlib.rs");
     x
 }

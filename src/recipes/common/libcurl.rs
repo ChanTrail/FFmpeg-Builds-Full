@@ -9,7 +9,7 @@ use crate::sys;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("libcurl", "mac", "libcurl", "--enable-libcurl", body);
+    let mut x = r("libcurl", "linux,mac", "libcurl", "--enable-libcurl", body);
     x.src = include_str!("libcurl.rs");
     x
 }

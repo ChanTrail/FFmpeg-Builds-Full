@@ -16,3 +16,8 @@ liblcevc-dec: enable    # LCEVC 增强层解码（x86 only）/ LCEVC enhancement
 libuavs3d: enable       # AVS3 解码（x86 only）/ AVS3 decode, x86 only
 libdavs2: enable        # AVS2 解码（x86 only）/ AVS2 decode, x86 only
 libxavs2: enable        # AVS2 编码（x86 only）/ AVS2 encode, x86 only
+vulkan: enable          # 前缀 shim（头+dlopen 加载器）/ prefix shim (headers + dlopen loader)
+opencl: enable          # 前缀 ICD shim / prefix ICD shim
+ffnvcodec: enable       # nv-codec-headers 头文件 / nv-codec-headers headers
+amf: enable             # AMF 头文件（x86 only）/ AMF headers, x86 only
+libplacebo: enable      # SPIRV-Cross 链全栈 / the whole SPIRV-Cross stack

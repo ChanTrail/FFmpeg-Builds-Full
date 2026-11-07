@@ -43,6 +43,13 @@ const ORDER: &[(&str, &str)] = &[
     ("bzip2", ""),
     ("zstd", ""),
     ("brotli", ""),
+    // 早期基础库：xz(base lzma)、ogg(vorbis/theora 前置)、snappy、
+    // mbedtls(libssh crypto 后端) / early base libs: xz (base lzma),
+    // ogg (vorbis/theora prereq), snappy, mbedtls (libssh crypto)
+    ("xz", ""),
+    ("ogg", ""),
+    ("libsnappy", ""),
+    ("mbedtls", ""),
     ("gmp", ""),
     ("nettle", ""),
     ("gnutls", ""),
@@ -52,10 +59,24 @@ const ORDER: &[(&str, &str)] = &[
     ("ilbc", ""),
     ("gsm", ""),
     ("lc3", ""),
+    // vorbis/opus 在 sndfile 前：sndfile 的 ogg 封装支持顺带接上 /
+    // vorbis/opus before sndfile so its ogg-mux support hooks up
+    ("vorbis", ""),
+    ("opus", ""),
     ("sndfile", ""),
     ("bs2b", ""),
     ("modplug", ""),
     ("vo-amrwbenc", ""),
+    // 音频编解码簇 / audio codec cluster
+    ("lame", ""),
+    ("twolame", ""),
+    ("opencore-amr", ""),
+    ("soxr", ""),
+    ("rubberband", ""),
+    ("openmpt", ""),
+    ("gme", ""),
+    ("chromaprint", ""),
+    ("openal", ""),
     ("mysofa", ""),
     ("flite", ""),
     ("pocketsphinx", ""),
@@ -71,6 +92,7 @@ const ORDER: &[(&str, &str)] = &[
     ("leptonica", ""),
     ("tesseract", ""),
     ("pixman", ""),
+    ("lcms2", ""),
     ("cairo", ""),
     ("freetype", ""),
     ("fribidi", ""),
@@ -80,6 +102,9 @@ const ORDER: &[(&str, &str)] = &[
     // resolves our libxml-2.0.pc
     ("libxml2", ""),
     ("fontconfig", ""),
+    // libass 吃 freetype/fribidi/harfbuzz/fontconfig 全套 /
+    // libass consumes the whole freetype/fribidi/harfbuzz/fontconfig set
+    ("libass", ""),
     ("pango", ""),
     ("librsvg", ""),
     ("svtjpegxs", ""),
@@ -87,6 +112,27 @@ const ORDER: &[(&str, &str)] = &[
     ("aom", ""),
     ("xevd", ""),
     ("xeve", ""),
+    // 视频编解码 + 图像/滤镜簇（theora 要 ogg、libjxl 自带
+    // hwy/skcms/brotli 子模块）/ video codec + image/filter cluster
+    // (theora wants ogg; libjxl brings bundled hwy/skcms/brotli
+    // submodules)
+    ("x264", ""),
+    ("x265", ""),
+    ("dav1d", ""),
+    ("libvpx", ""),
+    ("svtav1", ""),
+    ("rav1e", ""),
+    ("openh264", ""),
+    ("xvid", ""),
+    ("theora", ""),
+    ("openjpeg", ""),
+    ("libjxl", ""),
+    ("libwebp", ""),
+    ("zimg", ""),
+    ("vidstab", ""),
+    ("vmaf", ""),
+    ("frei0r", ""),
+    ("zvbi", ""),
     ("libcdio", ""),
     ("libcdio-paranoia", ""),
     ("caca", ""),
@@ -94,9 +140,16 @@ const ORDER: &[(&str, &str)] = &[
     ("librist", ""),
     ("libcurl", ""),
     ("librtmp", ""),
+    // 协议簇：libssh 要 mbedtls、libsrt 要 gnutls（都在前）/
+    // protocol cluster: libssh wants mbedtls, libsrt wants gnutls
+    // (both earlier)
+    ("libssh", ""),
+    ("libsrt", ""),
+    ("libzmq", ""),
     ("libdvdcss", ""),
     ("libdvdread", ""),
     ("libdvdnav", ""),
+    ("libbluray", ""),
     ("aribb24", ""),
     ("aribcaption", ""),
     ("kvazaar", ""),
@@ -116,6 +169,14 @@ const ORDER: &[(&str, &str)] = &[
     ("davs2", ""),
     ("xavs2", ""),
     ("avisynth", ""),
+    // 尾簇：sdl2/vapoursynth 消费面广放最后；ffnvcodec/amf 纯头文件
+    // 安装，位置随意 / tail cluster: sdl2/vapoursynth last for their
+    // broad consumption; ffnvcodec/amf are header-only installs and can
+    // sit anywhere
+    ("sdl2", ""),
+    ("vapoursynth", ""),
+    ("ffnvcodec", ""),
+    ("amf", ""),
 ];
 
 /// 组装全表：顺序即依赖序（敏感：whisper 必须在 vulkan 后、libdvdcss

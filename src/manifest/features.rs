@@ -147,8 +147,10 @@ pub const FEATURES: &[Feature] = &[
     f("libzmq", "libzmq"),
     f("librabbitmq", "librabbitmq"),
     f("libbluray", "libbluray"),
-    f("libdvdnav", "libdvdnav"),
-    f("libdvdread", "libdvdread"),
+    // .pc 名是 dvdnav/dvdread 不是 libdvdnav/libdvdread /
+    // the .pc names are dvdnav/dvdread, not libdvdnav/libdvdread
+    f("libdvdnav", "dvdnav"),
+    f("libdvdread", "dvdread"),
     f("libzimg", "zimg"),
     f("libcdio", "libcdio_paranoia"),
     f("libcaca", "caca"),

@@ -13,7 +13,7 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("vulkan", "windows", "vulkan", "--enable-vulkan", body);
+    let mut x = r("vulkan", "linux,windows", "vulkan", "--enable-vulkan", body);
     x.src = include_str!("vulkan.rs");
     x
 }

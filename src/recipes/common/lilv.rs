@@ -1,7 +1,7 @@
-//! lilv 配方：LV2 插件宿主依赖链，全部静态（lv2 头文件本身来自 MSYS2
-//! 包）
-//! lilv recipe: LV2 plugin host dependency chain, all static (the lv2
-//! headers themselves come from the MSYS2 package)
+//! lilv 配方：LV2 插件宿主依赖链，全部静态（lv2/zix/serd/sord/sratom
+//! 整链从 common.yaml 源自造）
+//! lilv recipe: LV2 plugin host dependency chain, all static (the whole
+//! lv2/zix/serd/sord/sratom chain builds from common.yaml sources)
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};
@@ -10,7 +10,7 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("lilv", "windows", "lilv-0", "--enable-lv2", body);
+    let mut x = r("lilv", "all", "lilv-0", "--enable-lv2", body);
     x.src = include_str!("lilv.rs");
     x
 }

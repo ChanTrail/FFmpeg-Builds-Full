@@ -22,3 +22,7 @@ v4l2m2m: enable         # V4L2 mem2mem 硬件加速 / V4L2 mem2mem hwaccel
 nvdec: enable
 nvenc: enable
 cuvid: enable
+vulkan: enable          # 前缀 shim（头+dlopen 加载器）/ prefix shim (headers + dlopen loader)
+opencl: enable          # 前缀 ICD shim / prefix ICD shim
+ffnvcodec: enable       # nv-codec-headers 头文件 / nv-codec-headers headers
+amf: enable             # AMF 头文件（x86 only）/ AMF headers, x86 only

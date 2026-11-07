@@ -8,7 +8,7 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("fribidi", "mac", "fribidi", "-", body);
+    let mut x = r("fribidi", "linux,mac", "fribidi", "-", body);
     x.src = include_str!("fribidi.rs");
     x
 }

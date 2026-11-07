@@ -11,7 +11,7 @@ use crate::recipes::r;
 pub fn recipe() -> Recipe {
     let mut x = r(
         "fontconfig",
-        "mac",
+        "linux,mac",
         "fontconfig",
         "--enable-libfontconfig",
         body,

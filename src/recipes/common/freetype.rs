@@ -12,7 +12,7 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("freetype", "mac", "freetype2", "-", body);
+    let mut x = r("freetype", "linux,mac", "freetype2", "-", body);
     x.src = include_str!("freetype.rs");
     x
 }

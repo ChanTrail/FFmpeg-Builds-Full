@@ -93,12 +93,15 @@ librtmp: enable
 libcurl: enable
 
 # ---- 杂项库 / misc libraries ----
+# 硬件/GPU 栈是平台受限的：amf/nv-codec-headers 只有 linux+windows 的
+# 配方（头文件安装）；vulkan/opencl 的静态 shim 只在 linux+windows
+# 编；libplacebo 要整条 SPIRV 链，只在 windows。它们各自在平台文件
+# 里 enable。
+# The hardware/GPU stack is platform-bound: amf/nv-codec-headers have
+# linux+windows recipes (header installs); the static vulkan/opencl
+# shims build only on linux+windows; libplacebo wants the whole SPIRV
+# chain and stays on windows. Each is enabled in its platform files.
 libsnappy: enable
-amf: enable
-ffnvcodec: enable
-vulkan: enable
-opencl: enable
 whisper: enable
-libplacebo: enable
 lv2: enable
 avisynth: enable

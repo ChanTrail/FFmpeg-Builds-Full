@@ -11,7 +11,7 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("aom", "windows:x86_64", "aom", "--enable-libaom", body);
+    let mut x = r("aom", "all", "aom", "--enable-libaom", body);
     x.src = include_str!("aom.rs");
     x
 }

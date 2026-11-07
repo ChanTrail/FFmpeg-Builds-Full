@@ -247,6 +247,9 @@ pub fn run_all() -> Result<(), String> {
                 "sord",
                 "sratom",
                 "lilv",
+                // ffnvcodec 配方的源键与配方名不同 /
+                // the ffnvcodec recipe's sources key differs from its name
+                "nv-codec-headers",
             ]
             .iter()
             .map(|s| s.to_string()),

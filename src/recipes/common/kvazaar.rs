@@ -8,7 +8,13 @@ use crate::sys;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("kvazaar", "mac", "kvazaar", "--enable-libkvazaar", body);
+    let mut x = r(
+        "kvazaar",
+        "linux,mac",
+        "kvazaar",
+        "--enable-libkvazaar",
+        body,
+    );
     x.src = include_str!("kvazaar.rs");
     x
 }

@@ -10,3 +10,7 @@ cuda-llvm: enable       # libplacebo/glslang 路径的 CUDA 编译器支持 / CU
 cuvid: enable           # NVIDIA CUVID 解码（ffnvcodec 自动随之）/ NVIDIA CUVID decode (pulls ffnvcodec automatically)
 nvdec: enable           # NVIDIA NVDEC 硬件解码 / NVIDIA NVDEC hw decode
 nvenc: enable           # NVIDIA NVENC 硬件编码 / NVIDIA NVENC hw encode
+vulkan: enable          # 前缀 shim（头+dlopen 加载器）/ prefix shim (headers + dlopen loader)
+opencl: enable          # 前缀 ICD shim / prefix ICD shim
+ffnvcodec: enable       # nv-codec-headers 头文件 / nv-codec-headers headers
+libplacebo: enable      # SPIRV-Cross 链全栈 / the whole SPIRV-Cross stack
