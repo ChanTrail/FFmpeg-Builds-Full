@@ -323,6 +323,9 @@ pub fn ffmpeg() -> Result<(), String> {
     if !r.enabled.iter().any(|n| n == "securetransport") {
         return Err("securetransport is not enabled; the build would have no TLS backend".into());
     }
+    // 必填库探测阶段缺席就点名早败 / fail early on required libs already
+    // absent at probe time
+    r.require(REQUIRED)?;
     let mut args: Vec<String> = vec![
         "--pkg-config-flags=--static".into(),
         "--enable-gpl".into(),

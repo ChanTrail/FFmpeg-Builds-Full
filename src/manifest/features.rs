@@ -230,6 +230,35 @@ pub struct Resolved {
     pub degraded: Vec<String>,
 }
 
+impl Resolved {
+    /// 必填特性必须实际启用——探测降级和显式关闭都算缺席，点名早败，
+    /// 别让 configure 静默产出一个缺件的二进制 /
+    /// required features must be effectively enabled — a probe-degraded
+    /// enable and an explicit disable both count as absent; fail early by
+    /// name rather than letting configure silently ship a short binary
+    pub fn require(&self, required: &[&str]) -> Result<(), String> {
+        let absent: Vec<String> = required
+            .iter()
+            .filter(|n| !self.enabled.iter().any(|e| e == *n))
+            .map(|n| {
+                if self.degraded.iter().any(|d| d == n) {
+                    format!("{n} (probe failed)")
+                } else {
+                    format!("{n} (not enabled)")
+                }
+            })
+            .collect();
+        if absent.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "required libraries not effectively enabled: {}",
+                absent.join(", ")
+            ))
+        }
+    }
+}
+
 /// 读 YAML 文件为单个文档 / load a YAML file as a single document
 fn load_yaml(p: &Path) -> Result<Yaml, String> {
     let text = crate::fsx::read(p);

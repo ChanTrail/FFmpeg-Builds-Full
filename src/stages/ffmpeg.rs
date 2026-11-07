@@ -203,18 +203,35 @@ pub fn configure(
                 if let Some(rest) = a.strip_prefix(kind) {
                     let opt = rest.split('=').next().unwrap_or(rest);
                     let base = opt.replace('_', "-");
-                    let known = [
-                        format!("{kind}{base} "),
-                        format!("{kind}{base}="),
-                        format!("{kind}{base}["),
-                    ]
-                    .iter()
-                    .any(|p| help.contains(p.trim_end()));
+                    // help 每类选项只印一个方向：外部库只印 --enable-X、
+                    // autodetect 库只印 --disable-X，但两个方向 configure
+                    // 都认——按名字任一方向命中即视为已知 /
+                    // help prints only one direction per option class:
+                    // external libs show --enable-X, autodetect libs show
+                    // --disable-X — yet configure accepts either, so match
+                    // the option name in either direction
+                    let known = ["--enable-", "--disable-"].iter().any(|k| {
+                        [
+                            format!("{k}{base} "),
+                            format!("{k}{base}="),
+                            format!("{k}{base}["),
+                        ]
+                        .iter()
+                        .any(|p| help.contains(p.trim_end()))
+                    });
                     if !known {
                         note(&format!(
                             "[ffconfigure] this FFmpeg has no option '{kind}{opt}'; skipping it"
                         ));
-                        let _ = fsx::append_line(dropped_file, &format!("{base} (unknown option)"));
+                        // 只有被丢掉的 --enable-* 才计入"缺失的库"——要求
+                        // 关闭一个 FFmpeg 本就没有的选项不构成能力缺失 /
+                        // only a dropped --enable-* counts as a missing
+                        // library — asking to disable an option FFmpeg
+                        // never had removes no requested capability
+                        if kind == "--enable-" {
+                            let _ =
+                                fsx::append_line(dropped_file, &format!("{base} (unknown option)"));
+                        }
                         return false;
                     }
                 }
