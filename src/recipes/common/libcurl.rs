@@ -14,6 +14,7 @@ pub fn recipe() -> Recipe {
 
 /// 构建 curl / Build curl
 fn body(ctx: &Ctx) -> Result<(), String> {
+    let e = crate::sys::env();
     let src = ctx.src()?;
     // autotools 路线的 config.status depfiles 在新版 make 上炸
     // （tests/* "missing separator"），走 cmake。静态归档没有链接步，
@@ -44,5 +45,17 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-DBUILD_MISC_DOCS=OFF",
             "-DENABLE_CURL_MANUAL=OFF",
         ],
+    )?;
+    // curl 的 cmake 不产 libcurl.pc（mac 实锤不装）——pkg-config 探针
+    // 全靠手写的这个；gnutls/zlib 尾巴经 Requires.private 传递 /
+    // curl's cmake emits no libcurl.pc (verified on mac) — the
+    // pkg-config probe relies on this hand-written one; the gnutls/
+    // zlib tail forwards via Requires.private
+    crate::fsx::write(
+        &e.prefix_win.join("lib/pkgconfig/libcurl.pc"),
+        &format!(
+            "prefix={}\nlibdir=${{prefix}}/lib\nincludedir=${{prefix}}/include\n\nName: libcurl\nDescription: multiprotocol file transfer library\nVersion: 8.23.0\nRequires.private: gnutls zlib\nLibs: -L${{libdir}} -lcurl\nLibs.private: -lpthread\nCflags: -I${{includedir}}\n",
+            e.prefix
+        ),
     )
 }

@@ -86,6 +86,7 @@ vorbis:
 opus:
   git: https://gitlab.xiph.org/xiph/opus.git
   ref: v1.6.1   # get-version.py 靠 git describe 取版本——浅克隆必须落在 tag 上 / get-version.py derives the version from git describe — the shallow clone must land on a tag
+  submodules: true   # dnn/fargan 模型数据是 submodule——meson 点名要 dnn/fargan_data.h / the dnn/fargan model data is a submodule — meson demands dnn/fargan_data.h
 speex:
   git: https://gitlab.xiph.org/xiph/speex.git         # downloads.xiph.org 不可达，走仓库
 shine:
@@ -137,6 +138,7 @@ chromaprint:
   submodules: true   # kissfft 以 submodule 随仓携带 / kissfft rides as a submodule
 openal:
   git: https://github.com/kcat/openal-soft.git
+  submodules: true   # gsl/fmt 以 submodule 随仓携带——gsl 缺席 gsl::narrow_cast 编译挂 / gsl+fmt ride as submodules — without gsl, gsl::narrow_cast fails to compile
 gme:
   git: https://github.com/libgme/game-music-emu.git
 openmpt:
@@ -282,8 +284,12 @@ xz:
 
 # ---- mbedtls（libssh 的 crypto 后端——openssl 是动态库链不得）/ libssh's crypto backend (openssl is dynamic) ----
 mbedtls:
-  git: https://github.com/Mbed-TLS/mbedtls.git
-  submodules: true   # framework/ 是子模块，cmake 直接引用其 CMakeLists / framework/ is a submodule whose CMakeLists is referenced directly
+  # 发行 tar 包已随带 framework/ 等子模块内容——git+submodule 路径在
+  # mac 上没把 framework 拉下来 / the release tarball bundles the
+  # framework/ submodule contents — the git+submodule route left
+  # framework/ empty on mac
+  archive: https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.5/mbedtls-3.6.5.tar.bz2
+  sha256: 4a11f1777bb95bf4ad96721cac945a26e04bf19f57d905f241fe77ebeddf46d8
 
 # ---- vulkan 头 + shim 加载器（linux/windows；静态 dlopen 派发，系统
 #      驱动运行时才加载）/ headers + shim loader (linux/windows — a

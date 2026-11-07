@@ -334,6 +334,16 @@ jobs:
             --notes-file body.md \
             --latest=false \
             assets/*
+          # 与 deps.rs 同款定针：tag 删除是最终一致的，create 若抢在
+          # 旧 tag 消失前完成会把 release 挂回旧 tag（--target 只在新建
+          # tag 时生效）——PATCH refs 保证 tag 确定指向本趟 commit。
+          # Same pin as deps.rs: tag deletion is eventually consistent —
+          # if create lands before the old tag is gone, the release
+          # attaches to the stale tag (--target only applies to a new
+          # tag). PATCH the ref so the tag deterministically points at
+          # this run's commit.
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/Driver-Latest" \
+            -f "sha=${{ needs.version.outputs.sha }}" -F force=true
 
       # 驱动发布成功 → 链式触发 FFmpeg 构建（repository_dispatch 是
       # GITHUB_TOKEN 下官方留的工作流链接口；release 事件本身不触发）。

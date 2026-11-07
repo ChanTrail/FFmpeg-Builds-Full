@@ -13,9 +13,11 @@ pub fn recipe() -> Recipe {
         "ffnvcodec",
         "linux,windows",
         // 纯头文件——ffnvcodec.pc 没有 Libs/-l 记号，pc 检查必败，
-        // 改查头文件 / header-only — ffnvcodec.pc carries no Libs/-l
-        // token so a pc check always fails; check the header instead
-        "file:ffnvcodec/nvEncodeAPI.h",
+        // 改查头文件（file: 按 $PREFIX 字面相对，include/ 层要写全）/
+        // header-only — ffnvcodec.pc carries no Libs/-l token so a pc
+        // check always fails; check the header instead (file: resolves
+        // literally under $PREFIX — the include/ level is explicit)
+        "file:include/ffnvcodec/nvEncodeAPI.h",
         "--enable-ffnvcodec",
         body,
     );

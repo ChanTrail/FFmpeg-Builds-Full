@@ -30,7 +30,10 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         &src,
         &[
             "-Denable_tools=false",
-            "-Dbdjava_jar=false",
+            // 选项真名是 bdj_jar——autotools 时代的 --disable-bdjava-jar
+            // 不带 a / the option's real name is bdj_jar — unlike the
+            // autotools-era --disable-bdjava-jar it drops the "a"
+            "-Dbdj_jar=false",
             "-Dfreetype=enabled",
             "-Dfontconfig=enabled",
             "-Dlibxml2=enabled",
