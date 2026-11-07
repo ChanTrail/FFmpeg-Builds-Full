@@ -1,5 +1,5 @@
-//! modplug 配方：MOD 音乐播放（旧 30-audio.sh 移植）
-//! modplug recipe: MOD music playback (port of 30-audio.sh)
+//! modplug 配方：MOD 音乐播放
+//! modplug recipe: MOD music playback
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

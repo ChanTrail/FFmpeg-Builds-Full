@@ -1,5 +1,5 @@
-//! bs2b 配方：Bauer 立体声-双耳滤波（旧 30-audio.sh 移植）
-//! bs2b recipe: Bauer stereo-to-binaural filter (port of 30-audio.sh)
+//! bs2b 配方：Bauer 立体声-双耳滤波
+//! bs2b recipe: Bauer stereo-to-binaural filter
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

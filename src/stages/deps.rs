@@ -3,13 +3,11 @@
 //! Durable dependency store backed by a fixed "deps" GitHub release: the
 //! library prefix is built once and reused by every run, so a normal run
 //! only compiles FFmpeg itself.
-//!
 //! 产物名 / Asset names:
 //!   deps-<platform>-<timestamp>.tar.zst   完整前缀快照（每平台保留最新 3 个）
 //!                                         complete prefix snapshot (3 newest kept)
 //!   deps-<platform>-partial.tar.zst       最新未完成前缀（断点续跑超时的构建）
 //!                                         latest in-progress prefix (resume)
-//!
 //! GH_TOKEN 或 gh CLI 缺席时全部是空操作，脚本在 Actions 之外也能工作。
 //! Everything is a no-op without GH_TOKEN or the gh CLI, so the pipeline
 //! also works outside Actions.
@@ -65,23 +63,46 @@ pub fn have_gh() -> bool {
         && sys::which("gh").is_some()
 }
 
-/// gh 命令（固定 --repo）/ run gh with the repo flag pinned
-fn gh(args: &[&str], dir: &Path) -> Result<i32, String> {
-    let repo = std::env::var("GITHUB_REPOSITORY").unwrap_or_default();
-    let mut a: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    a.push("--repo".into());
-    a.push(repo);
-    let refs: Vec<&str> = a.iter().map(String::as_str).collect();
-    sys::run("gh", &refs, dir)
+/// gh 命令（固定 --repo），stdout/stderr 双双接管——`gh release view`/
+/// `gh api` 的应答动辄整屏 JSON 与 markdown 表格，曾在 Publish deps 步
+/// 造成巨量转储。成功返回捕获的 stdout；失败把 stderr 一并塞进 Err，
+/// 诊断不丢。`gh api` 不带 --repo 走 `gh_quiet(.., false)`。
+/// run gh with the repo flag pinned and both streams captured — `gh
+/// release view` / `gh api` replies are screens of JSON and markdown
+/// tables that used to flood the Publish deps step. On success return
+/// captured stdout; on failure stderr rides inside the Err so
+/// diagnostics are not lost. `gh api` takes no --repo; use
+/// `gh_quiet(.., false)` there.
+fn gh_silent(args: &[&str], dir: &Path) -> Result<String, String> {
+    gh_quiet(args, dir, true)
 }
 
-fn gh_out(args: &[&str], dir: &Path) -> Result<String, String> {
-    let repo = std::env::var("GITHUB_REPOSITORY").unwrap_or_default();
+/// gh_quiet：gh_silent 的底层——with_repo=false 时原样发参数（`gh api`
+/// 的 endpoint 自带 repos/<repo> 路径）/ the workhorse: with_repo=false
+/// sends the args verbatim (`gh api` endpoints already carry the
+/// repos/<repo> path)
+fn gh_quiet(args: &[&str], dir: &Path, with_repo: bool) -> Result<String, String> {
     let mut a: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    a.push("--repo".into());
-    a.push(repo);
+    if with_repo {
+        a.push("--repo".into());
+        a.push(std::env::var("GITHUB_REPOSITORY").unwrap_or_default());
+    }
     let refs: Vec<&str> = a.iter().map(String::as_str).collect();
-    sys::capture("gh", &refs, dir)
+    let mut c = sys::cmd("gh", &refs);
+    c.current_dir(dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let out = c.output().map_err(|e| format!("spawn gh {args:?}: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).replace('\r', "");
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "gh {args:?} exited {:?}: {}",
+            out.status.code(),
+            stderr.trim()
+        ));
+    }
+    Ok(stdout)
 }
 
 /// deps_ensure_release：确保 deps release 存在（并把描述按实时产物清单
@@ -93,12 +114,11 @@ pub fn ensure_release() -> Result<(), String> {
     if !have_gh() {
         return Err("no gh".into());
     }
-    let view = gh(&["release", "view", DEPS_RELEASE], &e.work).unwrap_or(1);
-    if view != 0 {
+    if gh_silent(&["release", "view", DEPS_RELEASE], &e.work).is_err() {
         // 首次保存可能两平台抢建；输家落到下面验证 / first save ever: two
         // platforms may race the create; the loser falls through to the
         // verification below
-        let _ = gh(
+        if let Err(m) = gh_silent(
             &[
                 "release",
                 "create",
@@ -110,15 +130,17 @@ pub fn ensure_release() -> Result<(), String> {
                 "Auto-managed dependency prefixes for the CI builds. Safe to delete; they are rebuilt.",
             ],
             &e.work,
-        );
-        if gh(&["release", "view", DEPS_RELEASE], &e.work).unwrap_or(1) != 0 {
+        ) {
+            log::log(&format!("deps release create: {m}"));
+        }
+        if gh_silent(&["release", "view", DEPS_RELEASE], &e.work).is_err() {
             return Err("deps release unavailable".into());
         }
     }
     // 重渲染标题/正文：这个 release 是缓存桶不是产品，戴不得 Latest 徽章
     // re-render title/body: this release is a cache bucket, not a product —
     // it must never wear the Latest badge
-    let assets = gh_out(
+    let assets = gh_silent(
         &[
             "release",
             "view",
@@ -202,8 +224,7 @@ pub fn ensure_release() -> Result<(), String> {
          | {header} |\n|---|---|---|---|---|\n{snapshot_rows}",
         partial_cells.join(" | ")
     );
-    if let Ok(rel_id) = sys::capture(
-        "gh",
+    if let Ok(rel_id) = gh_quiet(
         &[
             "api",
             &format!(
@@ -214,11 +235,13 @@ pub fn ensure_release() -> Result<(), String> {
             ".id",
         ],
         &e.work,
+        false,
     ) {
         let rel_id = rel_id.trim().to_string();
         if !rel_id.is_empty() {
-            let _ = sys::run(
-                "gh",
+            // 应答是整个 release JSON——静默跑，失败才留一行 / the reply
+            // is the whole release JSON — run silently, log only failures
+            if let Err(m) = gh_quiet(
                 &[
                     "api",
                     "-X",
@@ -235,7 +258,10 @@ pub fn ensure_release() -> Result<(), String> {
                     &format!("body={body}"),
                 ],
                 &e.work,
-            );
+                false,
+            ) {
+                log::log(&format!("deps release body refresh: {m}"));
+            }
         }
     }
     Ok(())
@@ -246,7 +272,7 @@ pub fn ensure_release() -> Result<(), String> {
 pub fn find_asset(platform: &str) -> Result<String, String> {
     let e = sys::env();
     ensure_release()?;
-    let assets = gh_out(
+    let assets = gh_silent(
         &[
             "release",
             "view",
@@ -275,7 +301,7 @@ pub fn fetch(platform: &str, destdir: &Path) -> Result<String, String> {
     let e = sys::env();
     let name = find_asset(platform)?;
     fsx::install_d(destdir)?;
-    gh(
+    gh_silent(
         &[
             "release",
             "download",
@@ -288,13 +314,7 @@ pub fn fetch(platform: &str, destdir: &Path) -> Result<String, String> {
         ],
         &e.work,
     )
-    .and_then(|rc| {
-        if rc == 0 {
-            Ok(())
-        } else {
-            Err("gh download failed".into())
-        }
-    })?;
+    .map_err(|e| format!("gh download failed: {e}"))?;
     Ok(name)
 }
 
@@ -350,7 +370,7 @@ pub fn publish(
             if std::fs::hard_link(tarball, &upath).is_err() {
                 std::fs::copy(tarball, &upath).map_err(|e| format!("cp: {e}"))?;
             }
-            let rc = gh(
+            let up = gh_silent(
                 &[
                     "release",
                     "upload",
@@ -361,14 +381,15 @@ pub fn publish(
                 &e.work,
             );
             fsx::rm_rf(&udir);
-            if rc.unwrap_or(1) != 0 {
-                log::warn("deps upload failed");
+            match up {
+                Ok(_) => log::log(&format!("published deps asset {name}")),
+                Err(m) => log::warn(&format!("deps upload failed: {m}")),
             }
         }
     }
     // 保留策略：每平台最新 3 个 complete + 滚动 partial；再老的删除
     // retention: keep the 3 newest completes and the rolling partial
-    let assets = gh_out(
+    let assets = gh_silent(
         &[
             "release",
             "view",
@@ -393,12 +414,32 @@ pub fn publish(
     completes.sort_by(|a, b| b.cmp(a));
     for old in completes.iter().skip(3) {
         log::log(&format!("pruning old deps snapshot {old}"));
-        let _ = gh(
+        if let Err(m) = gh_silent(
             &["release", "delete-asset", DEPS_RELEASE, "-y", old],
             &e.work,
-        );
+        ) {
+            log::warn(&format!("delete-asset {old}: {m}"));
+        }
     }
-    let _ = gh(
+    // 平台键改名（plat(): mac-arm64 → macos-arm64）前上传的遗留产物：
+    // 正文表里没有它们的格子，find_asset 也不会取——见一个清一个
+    // leftover assets uploaded before the platform-key rename (plat():
+    // mac-arm64 -> macos-arm64): the body table has no cell for them and
+    // find_asset never picks them — sweep on sight
+    for old in assets
+        .lines()
+        .map(|l| l.split('\t').nth(1).unwrap_or(""))
+        .filter(|n| n.starts_with("deps-mac-arm64-"))
+    {
+        log::log(&format!("sweeping legacy deps asset {old}"));
+        if let Err(m) = gh_silent(
+            &["release", "delete-asset", DEPS_RELEASE, "-y", old],
+            &e.work,
+        ) {
+            log::warn(&format!("delete-asset {old}: {m}"));
+        }
+    }
+    let _ = gh_silent(
         &[
             "release",
             "delete-asset",
@@ -408,12 +449,13 @@ pub fn publish(
         ],
         &e.work,
     );
-    // 让 tag 指向最近塑造这个桶的 commit / keep the tag pointing at the
-    // commit whose run last shaped the bucket
+    // 让 tag 指向最近塑造这个桶的 commit（refs 不存在时 PATCH 会报错——
+    // 尽力而为，只留一行日志）/ keep the tag pointing at the commit whose
+    // run last shaped the bucket (the PATCH fails when the ref does not
+    // exist — best effort, one log line only)
     if let Ok(sha) = std::env::var("GITHUB_SHA") {
         let repo = std::env::var("GITHUB_REPOSITORY").unwrap_or_default();
-        let _ = sys::run(
-            "gh",
+        if let Err(m) = gh_quiet(
             &[
                 "api",
                 "-X",
@@ -425,7 +467,10 @@ pub fn publish(
                 "force=true",
             ],
             &e.work,
-        );
+            false,
+        ) {
+            log::log(&format!("deps tag re-point: {m}"));
+        }
     }
     let _ = ensure_release();
     Ok(())

@@ -1,13 +1,10 @@
 //! Linux 平台共享助手：apt 工具链、deps 前缀快照（整前缀 tar.zst）、
 //! FFmpeg 编排与打包。linux_x86_64 / linux_arm64 两个入口各自独立，
-//! 共享实现在此——对应旧 scripts/linux/build.sh（BtbN vendored 生态
-//! 已弃用：统一走本仓 66 个 Rust 配方）。
+//! 共享实现在此。
 //! Shared helpers for the Linux platform: the apt toolchain, deps prefix
 //! snapshots (whole-prefix tar.zst), FFmpeg orchestration and packaging.
 //! The linux_x86_64 / linux_arm64 entry modules stay independent but
-//! share the implementation here — the counterpart of the old
-//! scripts/linux/build.sh (the BtbN vendored ecosystem is retired: this
-//! repo's 66 Rust recipes drive every platform uniformly).
+//! share the implementation here.
 
 use crate::fsx;
 use crate::log;
@@ -36,7 +33,7 @@ pub fn init_env(arch: Arch) -> Result<(), String> {
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/work"));
+        .unwrap_or_else(|| PathBuf::from(format!("/ffmpeg-linux-{}", arch.name())));
     let dist = std::env::var("FFBUILD_DIST")
         .ok()
         .filter(|s| !s.is_empty())
@@ -80,27 +77,25 @@ pub fn init_env(arch: Arch) -> Result<(), String> {
     Ok(())
 }
 
-/// packages/linux.txt 行：每行一个 apt 包名，{GCCV} 是 GCC 主版本占位符
-/// packages/linux.txt rows: one apt package per line; {GCCV} is the GCC
-/// major-version placeholder
-fn package_rows(gccv: u32) -> Vec<String> {
-    include_str!("../../packages/linux.txt")
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|l| l.replace("{GCCV}", &gccv.to_string()))
-        .collect()
+/// packages/linux.yaml 项：每行一个 apt 包名，{GCCV} 是 GCC 主版本占位符
+/// packages/linux.yaml entries: one apt package per line; {GCCV} is the
+/// GCC major-version placeholder
+fn package_rows(gccv: u32) -> Result<Vec<String>, String> {
+    Ok(crate::manifest::packages::load("linux.yaml")?
+        .into_iter()
+        .map(|p| p.name.replace("{GCCV}", &gccv.to_string()))
+        .collect())
 }
 
 /// packages 阶段：apt 包装（整表批量 + 逐包回退）→ 最新 GCC 设为默认
 /// 编译器（/usr/local/bin 遮蔽 + update-alternatives）→ pyenv 里的
 /// meson/ninja/cmake → autoconf 2.73/automake 1.18 快照 .deb 直解进 /
-/// → rustup + 钉版 cargo-c（旧 setup_tools 全量移植）
+/// → rustup + 钉版 cargo-c
 /// The packages stage: apt install (one batch, per-package fallback) ->
 /// newest GCC as the default compiler (/usr/local/bin shadows +
 /// update-alternatives) -> meson/ninja/cmake in a pyenv -> the autoconf
 /// 2.73 / automake 1.18 snapshot .debs unpacked straight into / ->
-/// rustup + pinned cargo-c (full port of the old setup_tools)
+/// rustup + pinned cargo-c
 pub fn packages() -> Result<(), String> {
     let e = sys::env();
     // work/前缀在任何子进程以它们为 cwd 前就得在场（runner 上整条
@@ -133,7 +128,7 @@ pub fn packages() -> Result<(), String> {
     }
     log::log(&format!("gcc slot: gcc-{gccv}"));
 
-    let pkgs = package_rows(gccv);
+    let pkgs = package_rows(gccv)?;
     let refs: Vec<&str> = pkgs.iter().map(String::as_str).collect();
     // 整列表装；缺包逐个回退——某个发行版没有的包不拖死整个构建
     // install the whole list; fall back one-by-one so a package missing on
@@ -324,10 +319,10 @@ pub fn extras_stage() -> Result<(), String> {
     crate::extras::run_all()
 }
 
-/// restore_deps 移植：拉本平台的 deps 产物解进 / → .deps-sig 不符时逐
+/// 拉本平台的 deps 产物解进 / → .deps-sig 不符时逐
 /// 个复验 .extras/*.ok（每个标记自带配方哈希，重哈希不符即删——单个
 /// 配方改动只重建它自己而不是全部）→ 清 done/status 让整表重走
-/// Port of restore_deps: pull this platform's deps asset and untar into /
+/// Pull this platform's deps asset and untar into /
 /// -> on a .deps-sig mismatch revalidate every .extras/*.ok (each marker
 /// stores its recipe hash; a mismatch drops just that recipe, not all
 /// 60+) -> drop done/status so the table rewalks
@@ -367,20 +362,45 @@ pub fn restore() -> Result<(), String> {
         let _ = std::fs::remove_file(state.join("flags.txt"));
     }
     fsx::write(&sig_file, &format!("{}\n", deps_sig()))?;
+    // 恢复的 status 是旧 run 的；save() 的 dirty 判定只看本轮真跑过的
+    // 配方——与 Windows 同款无条件清。done 同样无条件清：历史 partial
+    // 快照里可能带着它——不清掉的话 extras 没跑的 run 会把这个陈旧
+    // 标记当成"完成"发出去
+    // the restored status file is stale — save()'s dirty check only
+    // counts recipes that ran this time; cleared unconditionally, same
+    // as Windows. done is dropped unconditionally too: historical partial
+    // snapshots may carry it — left in place, a run where extras never ran
+    // would treat the stale marker as "complete"
+    let _ = std::fs::remove_file(Path::new(PREFIX).join(".extras/status.txt"));
+    let _ = std::fs::remove_file(Path::new(PREFIX).join(".extras/done"));
     log::group_end();
     Ok(())
 }
 
-/// save_deps 移植：整前缀 tar -19 → deps::publish。complete = 配方表
-/// 零失败收尾（.extras/done 在场）/ port of save_deps: whole-prefix
-/// `tar -19` -> deps::publish. complete = the recipe table finished with
-/// zero failures (the .extras/done marker exists)
+/// 整前缀 tar -19 → deps::publish。complete = 本轮配方表
+/// 零失败收尾（done 在场 + status 非空且无 failed 行——与 Windows 同款
+/// 判定；单看 done 会被历史快照里"跑完但带失败"的标记骗到）/
+/// Whole-prefix `tar -19` -> deps::publish. complete = this
+/// run's recipe table finished green (done present + status non-empty
+/// with no failed lines — same predicate as Windows; done alone is
+/// fooled by "finished with failures" markers inside old snapshots)
 pub fn save() -> Result<(), String> {
     let e = sys::env();
     let platform = e.plat().to_string();
-    let complete = Path::new(PREFIX).join(".extras/done").is_file();
     let restored = fsx::read(&e.work.join("deps-restored")).trim().to_string();
-    let dirty = false;
+    // status 在 restore 已清——" ok"/" failed" 行只可能来自本轮：有进度
+    // 但未全绿时 partial 快照才能发出去（此前 dirty=false 恒真跳过，
+    // Linux 永远发不出续跑点）/ status was cleared at restore — " ok"/
+    // " failed" lines can only come from this run: progress without a
+    // green sweep must still publish a partial snapshot (the old
+    // hardcoded dirty=false meant Linux could never ship a resume point)
+    let status = fsx::read(&Path::new(PREFIX).join(".extras/status.txt"));
+    let complete = Path::new(PREFIX).join(".extras/done").is_file()
+        && !status.is_empty()
+        && !status.lines().any(|l| l.ends_with(" failed"));
+    let dirty = status
+        .lines()
+        .any(|l| l.ends_with(" ok") || l.ends_with(" failed"));
     if !restored.is_empty() && restored != format!("deps-{platform}-partial.tar.zst") && !dirty {
         log::log("deps prefix unchanged since restored snapshot; skipping pack+upload");
         return Ok(());
@@ -485,11 +505,9 @@ pub fn ffmpeg() -> Result<(), String> {
 
 /// package 阶段：收集二进制/文档/man 页/预设 → ldd 白名单（仅 glibc
 /// 家族允许动态依赖）→ 冒烟测试 → BUILDINFO → tar.xz + sha256
-/// （旧 linux package_and_verify 移植）
 /// The package stage: collect binaries/docs/man pages/presets -> the ldd
 /// allowlist (only the glibc family may appear as dynamic deps) -> smoke
-/// test -> BUILDINFO -> tar.xz + sha256 (port of the old linux
-/// package_and_verify)
+/// test -> BUILDINFO -> tar.xz + sha256
 pub fn package() -> Result<(), String> {
     let e = sys::env();
     let mut hash = "unknown".to_string();

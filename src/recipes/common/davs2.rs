@@ -1,5 +1,5 @@
-//! davs2 配方：AVS2 解码器（旧 50-video.sh 移植）
-//! davs2 recipe: AVS2 decoder (port of 50-video.sh)
+//! davs2 配方：AVS2 解码器
+//! davs2 recipe: AVS2 decoder
 
 use crate::extras::{Ctx, Recipe};
 use crate::fsx;
@@ -48,6 +48,10 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     // FFmpeg 的 "davs2 >= 1.6.0" 失败 / their version.sh emits "1.6."
     // tagless — not a valid pkg-config version and fails FFmpeg's check
     let pc = e.prefix_win.join("lib/pkgconfig/davs2.pc");
-    fsx::sed_i("s/^(Version:[[:space:]]*[0-9.]+)\\.$/\\1.0/", &pc, &e.work)?;
+    fsx::sed_i(
+        "s/^\\(Version:[[:space:]]*[0-9.]\\+\\)\\.$/\\1.0/",
+        &pc,
+        &e.work,
+    )?;
     Ok(())
 }

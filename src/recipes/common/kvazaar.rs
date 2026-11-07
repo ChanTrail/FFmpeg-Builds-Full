@@ -1,5 +1,5 @@
-//! kvazaar 配方：HEVC 编码器（旧 50-video.sh 移植）
-//! kvazaar recipe: HEVC encoder (port of 50-video.sh)
+//! kvazaar 配方：HEVC 编码器
+//! kvazaar recipe: HEVC encoder
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

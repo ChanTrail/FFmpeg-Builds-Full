@@ -1,7 +1,7 @@
 //! libdvdread 配方：DVD 读取（7.x 已去 autotools；libdvdcss 缺席时自
-//! 动探测为禁用；旧 60-media-io.sh 移植）
+//! 动探测为禁用）
 //! libdvdread recipe: DVD reading, 7.x dropped autotools and libdvdcss
-//! auto-detects to disabled when absent (port of 60-media-io.sh)
+//! auto-detects to disabled when absent
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

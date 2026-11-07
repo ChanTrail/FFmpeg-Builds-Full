@@ -1,6 +1,6 @@
-//! 静态归档符号操作：合并成员、改名去重、成员删改（deps.sh 移植）
+//! 静态归档符号操作：合并成员、改名去重、成员删改
 //! Static-archive symbol surgery: member merge, rename-with-dedup,
-//! member delete/replace (ported from deps.sh)
+//! member delete/replace
 
 use crate::sys;
 use std::collections::BTreeSet;

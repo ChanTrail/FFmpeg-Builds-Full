@@ -1,7 +1,7 @@
 //! lilv 配方：LV2 插件宿主依赖链，全部静态（lv2 头文件本身来自 MSYS2
-//! 包；旧 80-windows.sh 移植）
+//! 包）
 //! lilv recipe: LV2 plugin host dependency chain, all static (the lv2
-//! headers themselves come from the MSYS2 package; port of 80-windows.sh)
+//! headers themselves come from the MSYS2 package)
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

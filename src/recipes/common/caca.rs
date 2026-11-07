@@ -1,5 +1,5 @@
-//! caca 配方：彩色 ASCII 艺术渲染（旧 60-media-io.sh 移植）
-//! caca recipe: colour ASCII art rendering (port of 60-media-io.sh)
+//! caca 配方：彩色 ASCII 艺术渲染
+//! caca recipe: colour ASCII art rendering
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

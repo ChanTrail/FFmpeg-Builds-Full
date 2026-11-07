@@ -1,6 +1,5 @@
-//! quirc 配方：手工编译静态库（无构建系统；旧 40-imaging.sh 移植）
-//! quirc recipe: hand-compiled static lib, no build system (port of
-//! 40-imaging.sh)
+//! quirc 配方：手工编译静态库（无构建系统）
+//! quirc recipe: hand-compiled static lib, no build system
 
 use crate::extras::{Ctx, Recipe};
 use crate::fsx;

@@ -1,6 +1,5 @@
-//! leptonica 配方：图像处理（tesseract 依赖；旧 40-imaging.sh 移植）
-//! leptonica recipe: image processing, tesseract dependency (port of
-//! 40-imaging.sh)
+//! leptonica 配方：图像处理（tesseract 依赖）
+//! leptonica recipe: image processing, tesseract dependency
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};
@@ -26,13 +25,19 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     // codeload and is immutable
     let src = ctx.src()?;
     // SW_BUILD 默认 ON，find_package(SW) 没装 sw.org 工具时直接中止。
-    // ENABLE_TIFF/JPEG=OFF：迷路的系统库会被编进去但 .pc 从不点名、前缀
-    // 里也没有归档——tesseract 链接探测死于未定义。MinGW SUFFIX quirk：
-    // 静态构建会产出名为 .dll 的 ar 归档。
-    // SW_BUILD defaults ON and aborts without the sw.org tool. TIFF/JPEG
-    // off: stray system libs get compiled in but are never pc-named and no
-    // archive lands in the prefix. MinGW SUFFIX quirk: a static build emits
-    // an ar archive misnamed *.dll.
+    // ENABLE_TIFF/JPEG/WEBP/GIF/OPENJPEG=OFF：迷路的系统库会被编进去但
+    // .pc 从不点名、前缀里也没有归档——tesseract 链接探测死于未定义
+    // （brew 的 WebP::webp 就曾这样渗进导出 targets）。PNG/ZLIB 保持
+    // 探测：本流水线自带这两个配方，前缀里的归档能正经解析。MinGW
+    // SUFFIX quirk：静态构建会产出名为 .dll 的 ar 归档。
+    // SW_BUILD defaults ON and aborts without the sw.org tool. TIFF/JPEG/
+    // WEBP/GIF/OPENJPEG off: stray system libs get compiled in but are
+    // never pc-named and no archive lands in the prefix — tesseract's link
+    // probe dies on the fallout (brew's WebP::webp once leaked into the
+    // exported targets that way). PNG/ZLIB detection stays on: this
+    // pipeline ships both recipes and the prefix archives resolve
+    // properly. MinGW SUFFIX quirk: a static build emits an ar archive
+    // misnamed *.dll.
     fsx::sed_i(
         "s/^if(MINGW)$/if(MINGW AND BUILD_SHARED_LIBS)/",
         &src.join("src/CMakeLists.txt"),
@@ -45,6 +50,9 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-DSW_BUILD=OFF",
             "-DENABLE_TIFF=OFF",
             "-DENABLE_JPEG=OFF",
+            "-DENABLE_WEBP=OFF",
+            "-DENABLE_GIF=OFF",
+            "-DENABLE_OPENJPEG=OFF",
         ],
     )?;
     // 旧版 cmake 可能不安装 lept.pc——为 pkg-config 消费者补一份

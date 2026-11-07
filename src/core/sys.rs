@@ -1,6 +1,5 @@
-//! 进程派生与运行环境（build.sh 顶层的工具链/路径探测移植）
-//! Process spawning and the run-time environment (port of the toolchain /
-//! path probing at the top of build.sh)
+//! 进程派生与运行环境
+//! Process spawning and the run-time environment
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -45,12 +44,20 @@ impl Arch {
 
 impl Env {
     /// 平台清单键：features/sources/<key>.yaml 与 misc.yaml 分节名共用，
-    /// 统一 <os>-<arch> 形式（Mac 单架构也带后缀：mac-arm64）。
+    /// 统一 <os>-<arch> 形式。macOS 拼作 macos-arm64——与 release 矩阵、
+    /// README、deps/ffmpeg 产物名的既有约定一致（Os::name() 的 "mac" 只
+    /// 服务配方 targets 匹配，不进平台键）。
     /// Platform manifest key shared by features/sources/<key>.yaml and the
-    /// misc.yaml section names — uniformly <os>-<arch> (the single-arch
-    /// Mac keeps its suffix too: mac-arm64).
+    /// misc.yaml section names — uniformly <os>-<arch>. macOS spells
+    /// macos-arm64, matching the release matrix, the README and the
+    /// deps/ffmpeg asset-name conventions (Os::name()'s "mac" only serves
+    /// recipe-target matching and never enters the platform key).
     pub fn plat(&self) -> String {
-        format!("{}-{}", self.os.name(), self.arch.name())
+        let os = match self.os {
+            Os::Mac => "macos",
+            o => o.name(),
+        };
+        format!("{os}-{}", self.arch.name())
     }
 }
 
@@ -171,6 +178,26 @@ pub fn smoke_env() {
 /// 取全局环境 / Access the global environment
 pub fn env() -> &'static Env {
     G.get().expect("env not initialised")
+}
+
+/// 系统 pkg-config 的编译期默认搜索路径——读 `pkg-config --variable
+/// pc_path`，跨发行版/架构都正确（自动覆盖 multiarch 目录）。进程级
+/// 缓存一次探测；查不到退化为常见兜底 / the system pkg-config
+/// compile-time default search path — read from `pkg-config --variable
+/// pc_path`, correct across distros/arches (multiarch dirs included).
+/// Probed once per process; falls back to the common paths
+fn system_pc_path() -> &'static str {
+    static P: OnceLock<String> = OnceLock::new();
+    P.get_or_init(|| {
+        std::process::Command::new("pkg-config")
+            .args(["--variable", "pc_path", "pkg-config"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "/usr/lib/pkgconfig:/usr/share/pkgconfig".to_string())
+    })
 }
 
 /// 拼子进程 PATH：前缀 bin + MSYS usr/bin + 原 PATH / Build the child PATH
@@ -304,24 +331,46 @@ pub fn cmd(prog: &str, args: &[&str]) -> Command {
     }
     if e.os != Os::Windows {
         // POSIX：前缀不进 pkg-config 默认搜索路径，显式给 LIBDIR；
-        // aclocal 要看到前缀装的宏；CMake 4.x 移除了 <3.5 最低版本兼容；
-        // rustup/cargo-c 的家目录钉在 /opt 下随 deps 快照往返
+        // aclocal 要看到前缀装的宏；CMake 4.x 移除了 <3.5 最低版本兼容
         // POSIX: the prefix is not on pkg-config's default search path so
         // LIBDIR is passed explicitly; aclocal must see prefix-installed
-        // macros; CMake 4.x dropped <3.5 minimum-version compat; the
-        // rustup/cargo-c homes are pinned under /opt so they ride the
-        // deps snapshot
-        c.env(
-            "PKG_CONFIG_LIBDIR",
-            format!("{}/lib/pkgconfig:{}/share/pkgconfig", e.prefix, e.prefix),
-        )
-        .env(
-            "ACLOCAL_PATH",
-            format!("{}/share/aclocal:/usr/share/aclocal", e.prefix),
-        )
-        .env("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
-        .env("CARGO_HOME", "/opt/cargo")
-        .env("RUSTUP_HOME", "/opt/rustup");
+        // macros; CMake 4.x dropped <3.5 minimum-version compat
+        let libdir = if e.os == Os::Linux {
+            // Linux 的系统 .pc 是刻意 apt 装的开发包（x11/glib/vulkan 链）
+            // ——LIBDIR 整体替换会把它们全部遮没（vdpau 的 x11、lensfun 的
+            // glib-2.0 全查无）；前缀排第一，自建仓仍旧优先 / the system
+            // .pc files on Linux are deliberately apt-installed dev
+            // packages (the x11/glib/vulkan set) — a wholesale LIBDIR
+            // replace hides every one of them (vdpau's x11, lensfun's
+            // glib-2.0 all unresolvable); the prefix stays first so our
+            // own builds still win
+            format!(
+                "{}/lib/pkgconfig:{}/share/pkgconfig:{}",
+                e.prefix,
+                e.prefix,
+                system_pc_path()
+            )
+        } else {
+            // macOS 保持整体替换：/opt/homebrew 的 .pc 一概不见，防 brew
+            // 渗透 / macOS keeps the wholesale replace: no /opt/homebrew
+            // .pc can leak in
+            format!("{}/lib/pkgconfig:{}/share/pkgconfig", e.prefix, e.prefix)
+        };
+        c.env("PKG_CONFIG_LIBDIR", libdir)
+            .env(
+                "ACLOCAL_PATH",
+                format!("{}/share/aclocal:/usr/share/aclocal", e.prefix),
+            )
+            .env("CMAKE_POLICY_VERSION_MINIMUM", "3.5");
+    }
+    if e.os == Os::Linux {
+        // rustup/cargo-c 的家目录钉在 /opt 下随 deps 快照往返；macOS 不钉
+        // ——/opt 在 runner 上归 root，工具链走镜像自带的 ~/.rustup
+        // the rustup/cargo-c homes are pinned under /opt so they ride the
+        // deps snapshot; macOS does not pin — /opt is root-owned there and
+        // the toolchain lives in the image-provided ~/.rustup
+        c.env("CARGO_HOME", "/opt/cargo")
+            .env("RUSTUP_HOME", "/opt/rustup");
     }
     c
 }
@@ -392,15 +441,39 @@ pub fn capture_bytes(prog: &str, args: &[&str], dir: &Path) -> Result<Vec<u8>, S
     Ok(out.stdout)
 }
 
-/// 运行并把 stdout 同时写入文件（tee 语义）/ Run with stdout teed to a file
+/// 运行并把 stdout 同时写入文件（tee 语义；stderr 也并入同一日志——
+/// 诊断完整性优先于两流的严格时序）/ Run with stdout teed to a file
+/// (stderr joins the same log — diagnostic completeness beats strict
+/// interleave order)
 pub fn run_tee(prog: &str, args: &[&str], dir: &Path, logfile: &Path) -> Result<i32, String> {
     let mut c = cmd(prog, args);
     c.current_dir(dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::piped());
     let mut ch = c.spawn().map_err(|e| format!("spawn {prog}: {e}"))?;
     let mut so = ch.stdout.take().unwrap();
+    let mut se = ch.stderr.take().unwrap();
     let mut f = std::fs::File::create(logfile).map_err(|e| format!("{logfile:?}: {e}"))?;
+    // stderr 读线程：必须与 stdout 并行排空——管道写满而没人读时两条流
+    // 会互相堵死；同写日志文件并回显本进程 stderr
+    // the stderr reader thread must drain in parallel with stdout — a full
+    // pipe nobody reads deadlocks both streams; it appends to the same
+    // log file and echoes to our own stderr
+    let mut f_err = f.try_clone().map_err(|e| format!("{logfile:?}: {e}"))?;
+    let t = std::thread::spawn(move || {
+        let mut buf = [0u8; 65536];
+        let mut wr = std::io::stderr();
+        loop {
+            match se.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let _ = f_err.write_all(&buf[..n]);
+                    let _ = wr.write_all(&buf[..n]);
+                    let _ = wr.flush();
+                }
+            }
+        }
+    });
     let mut buf = [0u8; 65536];
     let mut wr = std::io::stdout();
     loop {
@@ -414,6 +487,7 @@ pub fn run_tee(prog: &str, args: &[&str], dir: &Path, logfile: &Path) -> Result<
             Err(_) => break,
         }
     }
+    let _ = t.join();
     ch.wait()
         .map(|s| s.code().unwrap_or(-1))
         .map_err(|e| format!("wait {prog}: {e}"))

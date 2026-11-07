@@ -1,5 +1,5 @@
-//! libcdio 配方：CD-ROM 访问库（旧 60-media-io.sh 移植）
-//! libcdio recipe: CD-ROM access library (port of 60-media-io.sh)
+//! libcdio 配方：CD-ROM 访问库
+//! libcdio recipe: CD-ROM access library
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

@@ -2,7 +2,6 @@
 //! （对象/数组/字符串/数字/true/false/null）。
 //! Minimal JSON parsing: recursive descent, zero dependencies, covering the
 //! full grammar (objects/arrays/strings/numbers/true/false/null).
-//!
 //! 用于 GitHub/GitLab CI API 的响应——响应体通常不大，性能不是目标。
 //! Used for the GitHub/GitLab CI API responses — bodies are small, speed is
 //! not the goal.

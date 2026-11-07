@@ -1,5 +1,5 @@
-//! ilbc 配方：iLBC 编解码（旧 30-audio.sh 移植）
-//! ilbc recipe: the iLBC codec (port of 30-audio.sh)
+//! ilbc 配方：iLBC 编解码
+//! ilbc recipe: the iLBC codec
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

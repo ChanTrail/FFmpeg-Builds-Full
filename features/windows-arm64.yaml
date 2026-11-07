@@ -10,4 +10,3 @@ cuda-llvm: enable       # libplacebo/glslang 路径的 CUDA 编译器支持 / CU
 cuvid: enable           # NVIDIA CUVID 解码（ffnvcodec 自动随之）/ NVIDIA CUVID decode (pulls ffnvcodec automatically)
 nvdec: enable           # NVIDIA NVDEC 硬件解码 / NVIDIA NVDEC hw decode
 nvenc: enable           # NVIDIA NVENC 硬件编码 / NVIDIA NVENC hw encode
-libxavs: enable         # AVS 编码（arm64 也支持）/ AVS encode, also works on arm64

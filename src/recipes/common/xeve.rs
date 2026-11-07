@@ -1,5 +1,5 @@
-//! xeve 配方：EVC 编码器（旧 50-video.sh 移植）
-//! xeve recipe: EVC encoder (port of 50-video.sh)
+//! xeve 配方：EVC 编码器
+//! xeve recipe: EVC encoder
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

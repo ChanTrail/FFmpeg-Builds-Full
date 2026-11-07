@@ -1,10 +1,8 @@
 //! Windows 平台共享助手：MSYS2 环境探测、pacman 包栈、deps 覆盖层。
-//! 两个 windows_*_* 入口模块各自独立，但 msys2 探测逻辑共享在此——
-//! 与 os 级共享的旧 lib.sh 对应。
+//! 两个 windows_*_* 入口模块各自独立，但 msys2 探测逻辑共享在此。
 //! Shared helpers for the Windows platform: MSYS2 env probing, the pacman
 //! package stack and deps overlays. Both windows_*_* entry modules stay
-//! independent but share the msys2 probing logic here — the counterpart
-//! of the old OS-level lib.sh.
+//! independent but share the msys2 probing logic here.
 
 use crate::fsx;
 use crate::log;
@@ -97,15 +95,33 @@ pub fn init_env(arch: Arch) -> Result<(), String> {
     // 子进程 PATH：前缀 bin 优先，其次是 msys2 /usr/bin（Windows 分号形
     // 式，Command 直接用）/ child PATH: prefix bin first, then msys2
     // /usr/bin — Windows ';' form, used verbatim by Command
-    let child_path = format!(
+    let mut child_path = format!(
         "{};{}",
         prefix_win.join("bin").to_string_lossy(),
         root.join("usr/bin").to_string_lossy()
     );
+    // gh 只住原生 Windows 侧（GitHub CLI 目录），child_path 刻意收窄后
+    // 它够不着——从进程 PATH 把含 gh.exe 的那一格并进来：该目录只有
+    // gh.exe 一个可执行文件，泄漏面最小；找不到则 deps 发布照旧按
+    // have_gh 空操作处理 / gh lives only on the native Windows side
+    // (the GitHub CLI dir) which the deliberately narrow child_path
+    // cannot reach — fold the one PATH entry holding gh.exe into
+    // child_path: that directory carries gh.exe alone, minimal leakage;
+    // absent, deps publishing stays a have_gh no-op as before
+    if let Some(ghdir) = std::env::var("PATH")
+        .unwrap_or_default()
+        .split(';')
+        .map(|d| PathBuf::from(d.trim()).join("gh.exe"))
+        .find(|p| p.is_file())
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        child_path.push(';');
+        child_path.push_str(&ghdir.to_string_lossy());
+    }
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let work = std::env::var("FFBUILD_WORK")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| repo_root.join("ffwork"));
+        .unwrap_or_else(|_| repo_root.join(format!("ffmpeg-windows-{}", arch.name())));
     let dist = std::env::var("FFBUILD_DIST")
         .map(PathBuf::from)
         .unwrap_or_else(|_| repo_root.join("artifacts"));
@@ -142,25 +158,13 @@ pub fn init_env(arch: Arch) -> Result<(), String> {
     Ok(())
 }
 
-/// packages/windows.txt 行：`name|archs|flags`。flags 列只作记录——
-/// FFmpeg configure 旗标真源在 features/，不再由包表汇集。
-/// A packages/windows.txt row: `name|archs|flags`. The flags column is
-/// kept for documentation only — the FFmpeg configure flag source of
-/// truth lives in features/, not in this table.
-fn package_rows() -> Vec<(String, String, String)> {
-    include_str!("../../packages/windows.txt")
-        .lines()
-        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
-        .map(|l| {
-            let mut c = l.split('|');
-            (
-                c.next().unwrap_or("").trim().to_string(),
-                c.next().unwrap_or("").trim().to_string(),
-                c.next().unwrap_or("").trim().to_string(),
-            )
-        })
-        .filter(|(n, _, _)| !n.is_empty())
-        .collect()
+/// packages/windows.yaml 项：`name: {archs, flags}`。flags 列只作记录——
+/// FFmpeg configure 旗标真源在 features/，不由包表汇集。
+/// A packages/windows.yaml entry: `name: {archs, flags}`. The flags
+/// field is kept for documentation only — the FFmpeg configure flag
+/// source of truth lives in features/, not in this table.
+fn package_rows() -> Result<Vec<crate::manifest::packages::Pkg>, String> {
+    crate::manifest::packages::load("windows.yaml")
 }
 
 /// pacman -S 重试包装：--needed 幂等安装，pacover 在半安装恢复态时带
@@ -242,11 +246,10 @@ fn apply_mirror(e: &Env, mirror: &str) {
     log::log(&format!("pacman mirror -> {base} ({touched} mirrorlists)"));
 }
 
-/// packages 阶段：装工具链 + packages/windows.txt 里本架构可用的 pacman
-/// 包（旧 windows build.sh install_packages 移植）
+/// packages 阶段：装工具链 + packages/windows.yaml 里本架构可用的 pacman
+/// 包
 /// Packages stage: install the toolchain plus every pacman package from
-/// packages/windows.txt available for this arch (port of the old windows
-/// build.sh install_packages)
+/// packages/windows.yaml available for this arch
 pub fn packages() -> Result<(), String> {
     let e = sys::env();
     fsx::install_d(&e.work)?;
@@ -352,8 +355,8 @@ pub fn packages() -> Result<(), String> {
         pacman_install(e, &pacover, &tcr, 3)?;
     }
 
-    // 仓库可用清单——packages.txt 里仓库没有的包记 skipped，不算错。
-    // Repo availability list — packages.txt entries absent from the repo
+    // 仓库可用清单——包表里仓库没有的包记 skipped，不算错。
+    // Repo availability list — package-table entries absent from the repo
     // are recorded as skipped, not fatal.
     let mut avail: Vec<String> = sys::capture("pacman", &["-Slq", &e.pacrepo], &e.work)?
         .lines()
@@ -363,18 +366,18 @@ pub fn packages() -> Result<(), String> {
     fsx::write(&e.work.join("pacman-available.txt"), &avail.join("\n"))?;
     let availset: HashSet<&str> = avail.iter().map(String::as_str).collect();
 
-    let rows = package_rows();
+    let rows = package_rows()?;
     let mut want: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
-    for (name, archs, _) in &rows {
-        if archs != "all" && archs != e.arch.name() {
+    for p in &rows {
+        if p.archs != "all" && p.archs != e.arch.name() {
             continue;
         }
-        let full = format!("{}-{}", e.pkgprefix, name);
+        let full = format!("{}-{}", e.pkgprefix, p.name);
         if availset.contains(full.as_str()) {
             want.push(full);
         } else {
-            skipped.push(name.clone());
+            skipped.push(p.name.clone());
         }
     }
 
@@ -410,9 +413,9 @@ pub fn packages() -> Result<(), String> {
         .collect();
     let missing: Vec<String> = rows
         .iter()
-        .filter(|(_, archs, _)| archs == "all" || archs == e.arch.name())
-        .filter(|(name, _, _)| !installed.contains(&format!("{}-{}", e.pkgprefix, name)))
-        .map(|(name, _, _)| name.clone())
+        .filter(|p| p.archs == "all" || p.archs == e.arch.name())
+        .filter(|p| !installed.contains(&format!("{}-{}", e.pkgprefix, p.name)))
+        .map(|p| p.name.clone())
         .collect();
     fsx::write(&e.work.join("missing-packages.txt"), &missing.join("\n"))?;
     if !missing.is_empty() {
@@ -432,15 +435,13 @@ pub fn packages() -> Result<(), String> {
 }
 
 /// FFmpeg 阶段：取源码 → features 旗标 + 平台工具链参数 → 丢包重试
-/// configure → 编译安装（旧 windows build.sh ff_ffmpeg 移植）
+/// configure → 编译安装
 /// The FFmpeg stage: fetch sources → features flags + platform toolchain
-/// args → drop-and-retry configure → compile+install (port of the old
-/// windows build.sh ff_ffmpeg)
+/// args → drop-and-retry configure → compile+install
 pub fn ffmpeg() -> Result<(), String> {
     let e = sys::env();
-    // 必需的库——丢包重试不得丢它们（旧 FF_REQUIRED）
+    // 必需的库——丢包重试不得丢它们
     // required libraries — the drop-and-retry loop must never drop them
-    // (the old FF_REQUIRED)
     const REQUIRED: &[&str] = &[
         "libx264",
         "libx265",
@@ -541,9 +542,9 @@ pub fn ffmpeg() -> Result<(), String> {
 }
 
 /// package 阶段：收集二进制/文档/预设 → DLL 导入白名单 → 冒烟测试 →
-/// BUILDINFO → zip + sha256（旧 package_and_verify 移植）
+/// BUILDINFO → zip + sha256
 /// Package stage: collect binaries/docs/presets -> DLL import allowlist ->
-/// smoke test -> BUILDINFO -> zip + sha256 (port of package_and_verify)
+/// smoke test -> BUILDINFO -> zip + sha256
 pub fn package() -> Result<(), String> {
     let e = sys::env();
     // 源码身份（ffmpeg() 落的盘；独立调用 package 时凭它命名）

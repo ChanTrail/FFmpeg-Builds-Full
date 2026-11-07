@@ -1,6 +1,5 @@
-//! libdvdcss 配方：DVD 解扰（1.6.0 只有 meson；旧 60-media-io.sh 移植）
-//! libdvdcss recipe: DVD descrambling, 1.6.0 ships meson only (port of
-//! 60-media-io.sh)
+//! libdvdcss 配方：DVD 解扰（1.6.0 只有 meson）
+//! libdvdcss recipe: DVD descrambling, 1.6.0 ships meson only
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

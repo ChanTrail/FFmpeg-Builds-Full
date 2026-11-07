@@ -1,5 +1,5 @@
-//! tesseract 配方：OCR 库（旧 40-imaging.sh 移植）
-//! tesseract recipe: OCR library (port of 40-imaging.sh)
+//! tesseract 配方：OCR 库
+//! tesseract recipe: OCR library
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

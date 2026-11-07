@@ -1,19 +1,16 @@
 //! extras 引擎：配方表驱动——跳过不适用平台的项，按
 //! provided/cached/需构建三分支处理，跑配方、收尾 postfix、落状态文件。
-//! 完全自包含的 Rust 实现，不调用任何旧 .sh。
 //! Extras engine: drive the recipe table — skip entries that don't apply to
 //! this platform, classify each as provided/cached/to-build, run recipes,
-//! postfix, write status files. Self-contained Rust; no legacy .sh invoked.
-//!
-//! 与旧引擎的两处刻意不同 / Deliberate differences from the old engine:
-//! * FFmpeg 旗标不再由配方收集——features/*.json 是旗标真源，配方表里的
+//! postfix, write status files.
+//! 两处引擎约定 / Two engine conventions:
+//! * FFmpeg 旗标不由配方收集——features/*.json 是旗标真源，配方表里的
 //!   flags 字段只作归属记录（仍写 flags.txt 备查）
-//!   FFmpeg flags are no longer collected from recipes — features/*.json is
-//!   the flag source of truth; the table's flags field is provenance only
+//!   FFmpeg flags are not collected from recipes — features/*.json is the
+//!   flag source of truth; the table's flags field is provenance only
 //!   (flags.txt still written for the record)
-//! * 不跑补丁环节——先保持干净源码构建（patches 留 old/ 备查）
-//!   no patch phase — clean upstream sources only for now (patches stay in
-//!   old/ for reference)
+//! * 不跑补丁环节——先保持干净源码构建
+//!   no patch phase — clean upstream sources only for now
 
 use crate::fsx;
 use crate::log;
@@ -185,6 +182,28 @@ pub fn run_all() -> Result<(), String> {
                 format!("{}/share/aclocal:{aclocal}", e.prefix)
             },
         );
+        if e.os != sys::Os::Windows {
+            // 前缀不在编译器默认搜索路径上——跨配方探测（nettle 找
+            // -lgmp、libpng 找 zlib.h 这类不经 pkg-config 的原始检查）
+            // 需要显式 -I/-L。Windows 的 msys env_prefix 已在编译器
+            // 路径上，无需重复 / the prefix is not on the compiler's
+            // default search path — cross-recipe probes that bypass
+            // pkg-config (nettle's raw -lgmp check, libpng looking for
+            // zlib.h) need explicit -I/-L. The msys env_prefix already
+            // sits on the compiler path on Windows
+            let inc = format!("-I{}/include", e.prefix);
+            let lib = format!("-L{}/lib", e.prefix);
+            for var in ["CPPFLAGS", "CFLAGS", "CXXFLAGS"] {
+                let cur = std::env::var(var).unwrap_or_default();
+                if !cur.contains(&inc) {
+                    std::env::set_var(var, format!("{cur} {inc}").trim());
+                }
+            }
+            let cur = std::env::var("LDFLAGS").unwrap_or_default();
+            if !cur.contains(&lib) {
+                std::env::set_var("LDFLAGS", format!("{cur} {lib}").trim());
+            }
+        }
     }
 
     // 先修好重复的 .pc 键行——恢复的前缀可能带着重复 Libs.private 的
@@ -196,7 +215,12 @@ pub fn run_all() -> Result<(), String> {
 
     let status = state.join("status.txt");
     let flagsf = state.join("flags.txt");
-    let mut failed: Vec<String> = Vec::new();
+    // (配方名, 失败原因)——原因要进末尾的失败明细与 step summary，
+    // status.txt 仍只写 "name failed" 两词（下游按词尾判定）/ (name,
+    // reason) — the reason feeds the closing failure detail and the step
+    // summary; status.txt keeps the bare "name failed" pair (downstream
+    // code matches the line suffix)
+    let mut failed: Vec<(String, String)> = Vec::new();
 
     let table = crate::recipes::table();
     // 预取全部适用配方的源码——下载/CI 查询在后台并发，配方编译在
@@ -272,17 +296,59 @@ pub fn run_all() -> Result<(), String> {
             name: r.name,
         };
 
-        // 配方体是进程内 Rust 函数：子命令输出直通本进程日志（旧版按
-        // 配方落 .log 文件的做法不再需要——CI 折叠组已经提供了隔离）
-        // the recipe body is an in-process Rust fn: child output streams to
-        // our own log (the old per-recipe .log is unnecessary — CI fold
-        // groups already isolate it)
-        let rc = (r.run)(&ctx);
+        // 配方体是进程内 Rust 函数，但为了给每配方落一份完整日志，用
+        // `recipe-run` 子命令把它作为子进程重入：输出仍直通本进程日志
+        // （CI 折叠组提供隔离），run_tee 同步写 <work>/extras/<name>.log
+        // ——失败时日志包里就有完整现场，而不是只剩 status.txt 一行
+        // "failed"
+        // the recipe body is an in-process Rust fn, but to land a complete
+        // per-recipe log it is re-entered as a subprocess via the
+        // `recipe-run` subcommand: output still streams to our log (CI fold
+        // groups isolate it) while run_tee mirrors it into
+        // <work>/extras/<name>.log — a failure leaves the whole scene in the
+        // log bundle instead of a lone "failed" line in status.txt
+        // 预取句柄在父进程——派生前先等本配方的源码落地 done 标记，
+        // 让子进程的 materialize 走磁盘缓存命中而不是重复下载
+        // the prefetch handle lives in the parent — await this recipe's
+        // done marker before spawning so the child's materialize hits
+        // the on-disk cache instead of downloading twice
+        crate::sources::wait_prefetch(r.name);
+        let rlog = work.join(format!("{}.log", r.name));
+        let rc = match std::env::current_exe() {
+            Ok(exe) => {
+                match sys::run_tee(&exe.to_string_lossy(), &["recipe-run", r.name], &wd, &rlog) {
+                    Ok(code) => Ok(code),
+                    Err(spawn_err) => {
+                        // 派生失败退回进程内执行——日志少了但配方不丢 / spawn
+                        // failure falls back to the in-process call — the log
+                        // is lost but the recipe still runs
+                        log::warn(&format!(
+                            "recipe-run spawn failed ({spawn_err}); running in-process"
+                        ));
+                        (r.run)(&ctx).map(|_| 0)
+                    }
+                }
+            }
+            Err(spawn_err) => {
+                log::warn(&format!(
+                    "current_exe failed ({spawn_err}); running in-process"
+                ));
+                (r.run)(&ctx).map(|_| 0)
+            }
+        };
 
-        if rc.is_ok()
-            && pkgcfg::check_spec(r.check).is_ok()
-            && pkgcfg::static_libs_ok(r.check).is_ok()
-        {
+        // 验收错误先拎出来——它才是"为什么算失败"的答案，后面得补进
+        // .log / lift the acceptance error out first — it is the answer
+        // to "why did this count as failed" and must reach the .log
+        let check_err = if rc == Ok(0) {
+            pkgcfg::check_spec(r.check)
+                .err()
+                .or_else(|| pkgcfg::static_libs_ok(r.check).err())
+        } else {
+            None
+        };
+
+        if rc == Ok(0) && check_err.is_none() {
             fsx::write(&okf, &format!("{rsum}\n"))?;
             if r.flags != "-" {
                 fsx::append_line(&flagsf, r.flags)?;
@@ -290,31 +356,103 @@ pub fn run_all() -> Result<(), String> {
             fsx::append_line(&status, &format!("{} ok", r.name))?;
             log::log(&format!("[extras] {}: ok", r.name));
         } else {
-            if let Err(e) = rc {
-                println!("recipe error: {e}");
-            }
+            let reason = match &rc {
+                Err(e) => format!("recipe error: {e}"),
+                Ok(0) => format!(
+                    "post-build acceptance check failed: {}",
+                    check_err.as_deref().unwrap_or("unknown")
+                ),
+                // 非零退出本身不说明任何事——把 .log 的错误尾行带进原因，
+                // CI 上点开折叠组之前就能看见具体错 / a bare exit code
+                // explains nothing — carry the log's error tail in the
+                // reason so the concrete failure is visible without
+                // opening the fold group
+                Ok(code) => {
+                    let tail = error_tail(&rlog, 6);
+                    if tail.is_empty() {
+                        format!("recipe error: recipe-run exited {code}")
+                    } else {
+                        format!("recipe-run exited {code}: {tail}")
+                    }
+                }
+            };
+            println!("{reason}");
+            // 验收失败时 .log 里只有一段干净的构建输出——把失败结论也补进
+            // 去，否则日志包看得见成功、看不见为什么算失败 / on an
+            // acceptance failure the .log holds only a clean build —
+            // append the verdict so the bundle shows why it counts as
+            // failed
+            let _ = fsx::append_line(&rlog, &format!("recipe-run {}: {reason}", r.name));
             fsx::append_line(&status, &format!("{} failed", r.name))?;
             log::warn(&format!(
                 "optional library '{}' failed to build and is left out of this build",
                 r.name
             ));
-            failed.push(r.name.to_string());
+            failed.push((r.name.to_string(), reason.clone()));
+            // 失败现场在 wd 删除前抢救：<name>.log 只是输出流，
+            // config.log 这类文件才是"检查为何没过"的答案
+            // salvage the scene before wd is deleted: <name>.log is the
+            // output stream; files like config.log answer why the checks
+            // failed
+            salvage_failure(&wd, r.name);
         }
         log::group_end();
         fsx::rm_rf(&wd);
     }
 
-    if let Err(e) = postfix() {
+    // postfix（.pc 元数据修补+归档去重）与配方同权：group + run_tee 落
+    // extras/postfix.log——它动的是全配方共享的 .pc/归档，出问题光看单
+    // 配方日志根本定位不到 / postfix (.pc-metadata patch + archive dedup)
+    // gets recipe-grade treatment: its own group + run_tee into
+    // extras/postfix.log — it mutates .pc files/archives shared by every
+    // recipe, and a breakage is undiagnosable from any single recipe log
+    log::group_begin("extras: postfix (patch pkg-config metadata)");
+    let plog = work.join("postfix.log");
+    let prc = match std::env::current_exe() {
+        Ok(exe) => match sys::run_tee(&exe.to_string_lossy(), &["postfix-run"], &work, &plog) {
+            Ok(code) => Ok(code),
+            Err(spawn_err) => {
+                log::warn(&format!(
+                    "postfix-run spawn failed ({spawn_err}); running in-process"
+                ));
+                postfix().map(|_| 0)
+            }
+        },
+        Err(spawn_err) => {
+            log::warn(&format!(
+                "current_exe failed ({spawn_err}); running in-process"
+            ));
+            postfix().map(|_| 0)
+        }
+    };
+    log::group_end();
+
+    if prc != Ok(0) {
+        // Ok(非零) 是子进程失败；Err 是进程内调用失败——两种口径归一成
+        // 一句原因 / Ok(nonzero) = subprocess failure; Err = in-process
+        // call failure — fold both into one reason
+        let why = match &prc {
+            Err(e) => e.clone(),
+            Ok(code) => {
+                let tail = error_tail(&plog, 6);
+                if tail.is_empty() {
+                    format!("postfix-run exited {code}")
+                } else {
+                    format!("postfix-run exited {code}: {tail}")
+                }
+            }
+        };
+        println!("archive post-processing failed: {why}");
         fsx::append_line(&status, "postfix failed")?;
+        let _ = fsx::append_line(&plog, &format!("postfix-run: {why}"));
         let _ = std::fs::copy(&status, work.join("extras-status.txt"));
         let _ = std::fs::copy(&flagsf, work.join("extras-flags.txt"));
+        step_summary_failures(e, &[("archive post-processing".to_string(), why.clone())]);
         return Err(format!(
-            "archive post-processing failed, refusing to configure FFmpeg: {e}"
+            "archive post-processing failed, refusing to configure FFmpeg: {why}"
         ));
     }
 
-    // 本趟跑完了（各配方结果在 status.txt）/ the pass ran to completion
-    fsx::write(&state.join("done"), "")?;
     log::log("[extras] summary:");
     print!("{}", fsx::read(&status));
     let _ = std::fs::copy(&status, work.join("extras-status.txt"));
@@ -326,12 +464,179 @@ pub fn run_all() -> Result<(), String> {
     // were collected without stopping so one run shows all of them; this
     // gate turns them fatal before FFmpeg is even configured
     if !failed.is_empty() {
+        // 明细再打一次——summary 段是折叠组外最容易被看到的地方；同时写
+        // $GITHUB_STEP_SUMMARY，run 首页直接给出具体错因 / print the
+        // reasons once more under the summary — the spot most likely to
+        // be seen outside fold groups — and into $GITHUB_STEP_SUMMARY so
+        // the run page shows the concrete cause
+        log::log("[extras] failure details:");
+        for (n, why) in &failed {
+            log::log(&format!("  {n}: {why}"));
+        }
+        step_summary_failures(e, &failed);
         return Err(format!(
             "required libraries failed to build, refusing to continue: {}",
-            failed.join(" ")
+            failed
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
         ));
     }
+
+    // 全绿才算跑完——done 是 save-deps 的"完成快照"判定。此前它在失败
+    // 检查之前无条件落盘，脏前缀被打上"完成"时间戳快照发出去 / only an
+    // all-green pass earns done — save-deps reads it as the complete-
+    // snapshot signal. It used to be written unconditionally before the
+    // failure check, so dirty prefixes shipped as timestamped "complete"
+    // snapshots
+    fsx::write(&state.join("done"), "")?;
     Ok(())
+}
+
+/// 把失败明细追加到 $GITHUB_STEP_SUMMARY（CI run 首页）；本地运行/未设
+/// 时静默跳过。reason 可能含 `|`，用列表不用表格 / Append the failure
+/// detail to $GITHUB_STEP_SUMMARY (the CI run's front page); quietly skip
+/// when unset (local runs). Reasons may contain `|` — a bullet list, not
+/// a table
+fn step_summary_failures(e: &sys::Env, failed: &[(String, String)]) {
+    let Ok(path) = std::env::var("GITHUB_STEP_SUMMARY") else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    let mut md = format!(
+        "## deps extras — {} — failed recipes / 失败配方\n\n",
+        e.plat()
+    );
+    for (n, why) in failed {
+        md.push_str(&format!("- **{n}** — {why}\n"));
+    }
+    md.push_str("\n详见日志工件中的 `<name>.log` / see `<name>.log` in the logs artifact\n");
+    let _ = fsx::append_line(Path::new(&path), &md);
+}
+
+/// 从 <name>.log 抽"像错误"的尾行：非零退出的配方在日志里只留下整段
+/// 构建输出，光报 "exited 1" 没人知道为什么。取最后几行匹配错误样式
+/// 的内容（编译/链接/配置器的标准措辞），都没有就退化为末尾非空行。
+/// Extract the error-looking tail lines from <name>.log: a recipe that
+/// exited nonzero leaves a wall of build output, and a bare "exited 1"
+/// says nothing. Take the last lines matching stock error phrasing from
+/// compilers/linkers/configurers; fall back to the last non-empty lines.
+fn error_tail(log: &Path, max_lines: usize) -> String {
+    const PATTERNS: &[&str] = &[
+        "error",
+        "failed",
+        "undefined",
+        "not found",
+        "no such",
+        "cannot",
+        "fatal",
+        "missing",
+        "ld returned",
+        "ninja: build stopped",
+    ];
+    let text = fsx::read(log);
+    let lines: Vec<&str> = text.lines().collect();
+    // 小写化匹配——Error/ERROR/error 一族措辞全收 / case-folded matching
+    // — catches the Error/ERROR/error family uniformly
+    let mut hits: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| {
+            let t = l.trim();
+            if t.is_empty() {
+                return false;
+            }
+            let low = t.to_lowercase();
+            PATTERNS.iter().any(|p| low.contains(p))
+        })
+        .collect();
+    if hits.is_empty() {
+        hits = lines
+            .iter()
+            .copied()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+    }
+    let tail: Vec<&str> = hits
+        .iter()
+        .rev()
+        .take(max_lines)
+        .copied()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    // 单行汇总、限长——要进 status 行外的失败明细与 step summary，不能
+    // 变成又一面日志墙 / one-line digest, length-capped — this feeds the
+    // failure detail and the step summary, it must not become another
+    // log wall
+    let joined = tail
+        .iter()
+        .map(|l| l.trim())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let mut s: String = joined.chars().take(400).collect();
+    if joined.chars().count() > 400 {
+        s.push('…');
+    }
+    s
+}
+
+/// `recipe-run` 子命令（内部）：按名执行单个配方。run_all 把每个配方
+/// 作为子进程重入——输出经 run_tee 直通父进程日志并同步落
+/// <name>.log；子进程 exit code 即配方成败。
+/// The internal `recipe-run` subcommand: run one recipe by name. run_all
+/// re-enters every recipe through it as a subprocess so run_tee can pass
+/// the output through to the parent's log while landing it in
+/// <name>.log; the child exit code is the recipe's verdict.
+pub fn run_recipe(name: &str) -> Result<(), String> {
+    let table = crate::recipes::table();
+    let r = table
+        .iter()
+        .find(|r| r.name == name)
+        .ok_or_else(|| format!("unknown recipe '{name}'"))?;
+    let wd = work_dir().join(r.name);
+    fsx::install_d(&wd)?;
+    let ctx = Ctx { wd, name: r.name };
+    (r.run)(&ctx)
+}
+
+/// `postfix-run` 子命令入口：与 recipe-run 同款子进程重入，让 run_tee
+/// 能把整个修补过程逐字落进 extras/postfix.log / entry point of the
+/// `postfix-run` subcommand: same subprocess re-entry as recipe-run so
+/// run_tee can land the whole fixup verbatim in extras/postfix.log
+pub fn run_postfix() -> Result<(), String> {
+    postfix()
+}
+
+/// 配方失败后、工作目录被删前，把构建系统留下的诊断日志（config.log /
+/// meson-log.txt / CMake 的 Error/Output/ConfigureLog 等）抢救到
+/// <work>/failed/<name>/——<name>.log 是输出流，这些文件才是"检查为
+/// 何没过"的现场。
+/// After a recipe fails — before its work dir is deleted — salvage the
+/// diagnostic logs the build systems left behind (config.log /
+/// meson-log.txt / CMake's Error/Output/ConfigureLog etc.) into
+/// <work>/failed/<name>/: <name>.log is the output stream; these files
+/// are the scene of why the checks failed.
+fn salvage_failure(wd: &Path, name: &str) {
+    let dst = sys::env().work.join("failed").join(name);
+    for f in fsx::walk(wd) {
+        let n = f
+            .file_name()
+            .map(|x| x.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let keep = n.ends_with(".log") || n == "meson-log.txt" || n == "cmakeconfigchangelog.yaml";
+        if !keep {
+            continue;
+        }
+        let Ok(rel) = f.strip_prefix(wd) else {
+            continue;
+        };
+        let _ = fsx::install(&f, &dst.join(rel));
+    }
 }
 
 /// extras_vendored_manifest <前缀相对路径> <stamp>：把 <stamp> 之后写进
@@ -348,9 +653,9 @@ pub fn vendored_manifest(rel: &str, stamp: SystemTime) -> Result<(), String> {
     fsx::write(&root.join(rel), &format!("{}\n", list.join("\n")))
 }
 
-/// 等长记号在归档成员里做字节级改名（perl 的 -0777pi 移植成纯 Rust）
+/// 等长记号在归档成员里做字节级改名
 /// Equal-length byte rename inside every archive member that carries the
-/// token (the perl -0777pi pass ported to plain Rust)
+/// token
 fn byte_rename(lib: &Path, pairs: &[(&str, &str)], dir: &Path) -> Result<usize, String> {
     let tmp = dir.join(format!("bytern{}", std::process::id()));
     fsx::install_d(&tmp)?;
@@ -413,6 +718,33 @@ fn nm_has(lib: &Path, sym: &str, dir: &Path) -> bool {
     crate::ar::has_sym(lib, sym, dir)
 }
 
+/// postfix 专属显迹 libs_private：目标 .pc 缺席时落一行跳过；token 已在
+/// 文件里落一行已存在——postfix.log 是 .pc 修补的唯一现场，"没动这个
+/// 文件、为什么没动"与"动了什么"一样要能查 / postfix-only traced
+/// libs_private: log a skip line when the target .pc is absent and an
+/// already-present line for carried tokens — postfix.log is the sole
+/// scene of .pc surgery, so "untouched, and why" must be as auditable
+/// as "touched"
+fn libs_private_tr(name: &str, libs: &[&str]) {
+    let f = pkgcfg::pc_file(name);
+    if !f.is_file() {
+        log::log(&format!(
+            "[extras] postfix: {name}.pc absent — {} skipped",
+            libs.join(" ")
+        ));
+        return;
+    }
+    let mut pending: Vec<&str> = Vec::new();
+    for t in libs {
+        if pkgcfg::token_present(&f, t) {
+            log::log(&format!("[extras] postfix: {name}.pc already carries {t}"));
+        } else {
+            pending.push(*t);
+        }
+    }
+    pkgcfg::libs_private(name, &pending);
+}
+
 /// extras_postfix：对已装归档和 .pc 文件做去重/修补——针对单个配方看不
 /// 见的链接期问题 / dedup/fixup pass over the installed archives and pc
 /// files for link-time problems no single recipe can see
@@ -420,15 +752,25 @@ fn postfix() -> Result<(), String> {
     let e = sys::env();
     let libdir = e.prefix_win.join("lib");
     let work = e.work.clone();
+    // 起止两行必须无条件落——全部分支都跳过时这是 run_tee 落进
+    // postfix.log 的唯一字节，空文件跟"根本没跑"无法区分
+    // the start/end pair must be unconditional — when every branch skips
+    // they are the only bytes run_tee lands in postfix.log, and an empty
+    // file is indistinguishable from "never ran"
+    log::log(&format!(
+        "[extras] postfix: start — .pc metadata + archive fixups under {}",
+        e.prefix
+    ));
 
     // macOS Rust dedup（librav1e/librsvg Mach-O 符号改名）在平台模块实现
-    // ——windows 的 COFF 去重走 deps_fixup / the macOS Rust dedup lives in
-    // the platform module; Windows COFF dedup happens in deps_fixup
+    // ——windows 的 COFF 去重在本函数尾部调 windows_deps::fixup /
+    // the macOS Rust dedup lives in the platform module; Windows COFF
+    // dedup is invoked at the tail of this fn via windows_deps::fixup
     let _ = work;
 
     // libdc1394-2 的上游 .pc 哪儿都不列 raw1394 / upstream libdc1394-2.pc
     // lists raw1394 nowhere
-    pkgcfg::libs_private("libdc1394-2", &["-lraw1394"]);
+    libs_private_tr("libdc1394-2", &["-lraw1394"]);
 
     // 上游 .pc 忘记运行时的 C++ 库 / C++ libraries whose .pc forgets the
     // runtime (CXXRT is -lstdc++ on GNU toolchains, -lc++ elsewhere)
@@ -441,14 +783,14 @@ fn postfix() -> Result<(), String> {
         "libchromaprint",
         "whisper",
     ] {
-        pkgcfg::libs_private(pc, &[&e.cxxrt]);
+        libs_private_tr(pc, &[&e.cxxrt]);
     }
-    pkgcfg::libs_private("twolame", &["-lm"]);
+    libs_private_tr("twolame", &["-lm"]);
     // soxr WITH_OPENMP 拖入 GOMP_* ——仅 GCC 运行时（windows/clangarm64/
     // macOS 跳过）/ soxr drags GOMP_* when built WITH_OPENMP — GCC runtimes
     // only (skipped on windows/clangarm64/macOS)
     if e.os == sys::Os::Linux {
-        pkgcfg::libs_private("soxr", &["-lgomp", "-lm"]);
+        libs_private_tr("soxr", &["-lgomp", "-lm"]);
     }
 
     // GnuTLS 的 ARM AES 汇编与 OpenSSL aesv8-armx 同源——导出 aes_v8_* 名
@@ -581,8 +923,8 @@ fn postfix() -> Result<(), String> {
         "openjp2", "webp", "webpmux", "sharpyuv", "png16", "png", "jpeg", "tiff", "gif", "z", "m",
     ] {
         if libdir.join(format!("lib{l}.a")).is_file() {
-            pkgcfg::libs_private("lept", &[&format!("-l{l}")]);
-            pkgcfg::libs_private("leptonica", &[&format!("-l{l}")]);
+            libs_private_tr("lept", &[&format!("-l{l}")]);
+            libs_private_tr("leptonica", &[&format!("-l{l}")]);
         }
     }
 
@@ -619,9 +961,27 @@ fn postfix() -> Result<(), String> {
         log::log(&format!("[extras] wrote flite.pc ({flibs})"));
     }
 
-    // 最后一道把关：合并所有重复键行 / last word on .pc health: merge any
-    // repeated keyword lines
+    // windows 的重活（Requires.private 补齐、.pc 系统库修补、impshim、
+    // rust_eh_personality、librsvg 自检）就是本道工序的一部分——在
+    // postfix-run 子进程里跑输出才进得了 postfix.log；留在
+    // extras_stage 尾部外置调用只落 CI 控制台，日志包里永远缺席
+    // the heavyweight Windows pass (Requires.private top-up, .pc
+    // system-lib patches, impshim, rust_eh_personality, librsvg
+    // self-check) is part of this very pass — only inside the
+    // postfix-run subprocess does its output land in postfix.log; called
+    // separately at the tail of extras_stage it only reaches the CI
+    // console and is forever absent from the log bundle
+    if e.os == sys::Os::Windows {
+        crate::platforms::windows_deps::fixup()?;
+    }
+
+    // 最后一道把关：合并所有重复键行（fixup 刚补的 Requires.private
+    // 也在归一范围内）/ last word on .pc health: merge any repeated
+    // keyword lines (including the Requires.private lines fixup just
+    // appended)
+    log::log("[extras] postfix: merging duplicated .pc key lines");
     pkgcfg::dedup_fields();
+    log::log("[extras] postfix: done");
     Ok(())
 }
 

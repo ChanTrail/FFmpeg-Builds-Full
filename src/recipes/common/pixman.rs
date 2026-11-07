@@ -1,5 +1,5 @@
-//! pixman 配方：cairo 的像素后端（旧 45-glib-stack.sh 移植）
-//! pixman recipe: cairo's pixel backend (port of 45-glib-stack.sh)
+//! pixman 配方：cairo 的像素后端
+//! pixman recipe: cairo's pixel backend
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

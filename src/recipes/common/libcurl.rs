@@ -1,5 +1,5 @@
-//! libcurl 配方：HTTP/HTTPS 客户端（仅 macOS；旧 60-media-io.sh 移植）
-//! libcurl recipe: HTTP/HTTPS client, macOS only (port of 60-media-io.sh)
+//! libcurl 配方：HTTP/HTTPS 客户端（仅 macOS）
+//! libcurl recipe: HTTP/HTTPS client, macOS only
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

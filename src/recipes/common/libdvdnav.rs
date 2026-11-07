@@ -1,5 +1,5 @@
-//! libdvdnav 配方：DVD 导航（旧 60-media-io.sh 移植）
-//! libdvdnav recipe: DVD navigation (port of 60-media-io.sh)
+//! libdvdnav 配方：DVD 导航
+//! libdvdnav recipe: DVD navigation
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

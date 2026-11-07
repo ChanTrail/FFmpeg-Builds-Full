@@ -1,5 +1,5 @@
-//! rabbitmq 配方：AMQP 客户端（旧 60-media-io.sh 移植）
-//! rabbitmq recipe: AMQP client (port of 60-media-io.sh)
+//! rabbitmq 配方：AMQP 客户端
+//! rabbitmq recipe: AMQP client
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

@@ -1,7 +1,7 @@
 //! glib 配方：lensfun、pango、cairo-gobject 依赖（macOS 构建 +
-//! Windows vendored 覆盖；旧 45-glib-stack.sh 移植）
+//! Windows vendored 覆盖）
 //! glib recipe: dependency of lensfun/pango/cairo-gobject (macOS build +
-//! Windows vendored overlay; port of 45-glib-stack.sh)
+//! Windows vendored overlay)
 
 use crate::buildsys;
 use crate::extras::{self, Ctx, Recipe};

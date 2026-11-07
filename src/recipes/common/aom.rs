@@ -1,9 +1,9 @@
 //! aom 配方：AV1 编解码（Windows 用源码自建代替 MSYS2 包：UCRT64 预编
 //! 译版在链进大号静态 ffmpeg 时在 aom_codec_enc_init 内崩溃——嫌疑在
-//! MSYS2 构建旗标而非上游源码；旧 50-video.sh 移植）
+//! MSYS2 构建旗标而非上游源码）
 //! aom recipe: AV1 codec (vendored on Windows because the UCRT64 prebuilt
 //! crashes inside aom_codec_enc_init in our fat static ffmpeg — the
-//! suspect is MSYS2's build flags, not upstream; port of 50-video.sh)
+//! suspect is MSYS2's build flags, not upstream)
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

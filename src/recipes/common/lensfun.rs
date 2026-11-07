@@ -1,7 +1,6 @@
-//! lensfun 配方：镜头畸变校正（master 快照；FFmpeg 探测 lf_db_create；
-//! 旧 45-glib-stack.sh 移植）
+//! lensfun 配方：镜头畸变校正（master 快照；FFmpeg 探测 lf_db_create）
 //! lensfun recipe: lens distortion correction (master snapshot; FFmpeg
-//! probes lf_db_create; port of 45-glib-stack.sh)
+//! probes lf_db_create)
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

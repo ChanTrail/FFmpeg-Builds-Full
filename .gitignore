@@ -2,7 +2,10 @@
 .cifacts/
 .devin/
 target/
-
+errorlog/
+# 本地跑驱动时落在仓内的默认工作根 / default in-repo work roots from
+# local driver runs
+/ffmpeg-*-*/
 # 本地参照：退役的旧 shell 流水线快照（不入库）
 # Local reference: snapshot of the retired shell pipeline (not committed)
 old/

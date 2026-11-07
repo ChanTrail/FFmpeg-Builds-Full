@@ -1,5 +1,5 @@
-//! vvenc 配方：VVC 编码器（旧 50-video.sh 移植）
-//! vvenc recipe: VVC encoder (port of 50-video.sh)
+//! vvenc 配方：VVC 编码器
+//! vvenc recipe: VVC encoder
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

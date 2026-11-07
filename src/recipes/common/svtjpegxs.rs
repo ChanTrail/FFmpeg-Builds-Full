@@ -1,6 +1,5 @@
-//! svtjpegxs 配方：SVT-JPEG-XS 低延迟夹层编码（旧 50-video.sh 移植）
-//! svtjpegxs recipe: SVT-JPEG-XS low-latency mezzanine codec (port of
-//! 50-video.sh)
+//! svtjpegxs 配方：SVT-JPEG-XS 低延迟夹层编码
+//! svtjpegxs recipe: SVT-JPEG-XS low-latency mezzanine codec
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

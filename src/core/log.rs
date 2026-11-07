@@ -1,5 +1,5 @@
-//! 日志与 CI 注解（lib.sh 的 log/warn/die/group 移植）
-//! Logging and CI annotations (port of lib.sh's log/warn/die/group)
+//! 日志与 CI 注解
+//! Logging and CI annotations
 
 /// 打印构建日志行（[build] 前缀）
 /// Print a build log line ([build] prefix)

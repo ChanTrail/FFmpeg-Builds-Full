@@ -1,5 +1,5 @@
-//! xevd 配方：EVC 解码器（旧 50-video.sh 移植）
-//! xevd recipe: EVC decoder (port of 50-video.sh)
+//! xevd 配方：EVC 解码器
+//! xevd recipe: EVC decoder
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

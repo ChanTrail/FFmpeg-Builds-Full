@@ -1,10 +1,10 @@
 //! vulkan 配方：Vulkan 头文件 + BtbN 的 Vulkan-Shim-Loader（shim 冒充
 //! 真加载器 libvulkan-1.a + vulkan.pc，实际是小静态库：真请求设备时才
-//! LoadLibrary vulkan-1.dll；旧 80-windows.sh 移植）
+//! LoadLibrary vulkan-1.dll）
 //! vulkan recipe: Vulkan headers + BtbN's Vulkan-Shim-Loader (the shim
 //! impersonates the real loader — libvulkan-1.a + vulkan.pc — but is a
 //! small static lib that only LoadLibrarys vulkan-1.dll when a device is
-//! actually requested; port of 80-windows.sh)
+//! actually requested)
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

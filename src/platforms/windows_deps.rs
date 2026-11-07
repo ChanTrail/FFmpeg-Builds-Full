@@ -1,9 +1,9 @@
-//! Windows deps overlay：deps release 的恢复/发布 + deps_fixup 全量移植。
+//! Windows deps overlay：deps release 的恢复/发布与产物修正。
 //! 库前缀构建一次被每轮复用（deps-<platform>-*.tar.zst），pacman 拥有的
 //! 路径永远不上 overlay 的车——恢复时跳过、发布时剔除。deps_fixup 在
 //! pacman 新装的文件上每轮重新推导全部 .pc/归档补丁。
-//! Windows deps overlay: restore/publish of the deps release plus the full
-//! deps_fixup port. The library prefix is built once and reused every run
+//! Windows deps overlay: restore/publish of the deps release plus the
+//! fixups. The library prefix is built once and reused every run
 //! (deps-<platform>-*.tar.zst); pacman-owned paths never ride the overlay —
 //! skipped at restore, dropped from the publish manifest. deps_fixup
 //! re-derives every .pc/archive patch on pacman's fresh files each run.
@@ -29,7 +29,7 @@ fn sig() -> String {
         srcs.push('\n');
     }
     deps::key(&[
-        &e.repo_root.join("packages/windows.txt").to_string_lossy(),
+        &crate::manifest::packages::file_path("windows.yaml").to_string_lossy(),
         &srcs,
         &format!("{}-engine", env!("CARGO_PKG_VERSION")),
         &e.msystem,
@@ -192,10 +192,16 @@ pub fn restore() -> Result<(), String> {
         log::group_end();
     }
     fsx::write(&e.prefix_win.join(".deps-sig"), &sig)?;
-    // 恢复的 status 是旧 run 的；发布只要本轮真跑过的配方
-    // a restored status file is stale — publish wants only recipes that
-    // actually ran this time
+    // 恢复的 status 是旧 run 的；发布只要本轮真跑过的配方。done 同样
+    // 无条件清：历史 partial 快照可能带着"跑完但带失败"的旧标记——
+    // extras 没跑时它会被 save() 误读成完成（status 非空那条防线挡不
+    // 住 status.txt 也恢复了旧内容的边角）/ a restored status file is
+    // stale — publish wants only recipes that ran this time. done is
+    // dropped unconditionally too: historical partial snapshots can carry
+    // the old "finished with failures" marker — with extras never run it
+    // could be misread as complete
     fsx::rm_rf(&e.prefix_win.join(".extras/status.txt"));
+    fsx::rm_rf(&e.prefix_win.join(".extras/done"));
     shaderc_shadow(e);
     // 前缀快照 + 时间戳：发布差集与 dirty 检查的基线
     // prefix snapshot + stamp: the publish delta and dirty-check baseline
@@ -207,9 +213,9 @@ pub fn restore() -> Result<(), String> {
     Ok(())
 }
 
-/// archive_redefine_sym 移植：逐成员提取→nm 判定→objcopy 改名→ar r 原位
+/// 逐成员提取→nm 判定→objcopy 改名→ar r 原位
 /// 替换→ranlib（CLANGARM64 的整归档 objcopy 静默不干，必须逐成员）
-/// Port of archive_redefine_sym: extract each member -> nm check ->
+/// Extract each member -> nm check ->
 /// objcopy rename -> `ar r` in place -> ranlib (whole-archive objcopy is a
 /// silent no-op on CLANGARM64, so member by member it is)
 fn redefine_sym(lib: &Path, old: &str, new: &str, tools: &Toolchain) -> bool {
@@ -219,8 +225,16 @@ fn redefine_sym(lib: &Path, old: &str, new: &str, tools: &Toolchain) -> bool {
     if fsx::install_d(&mdir).is_err() {
         return false;
     }
-    let lib_abs = std::fs::canonicalize(lib).unwrap_or_else(|_| lib.to_path_buf());
-    let lib_s = lib_abs.to_string_lossy().to_string();
+    // 绝不用 canonicalize：它返回 \\?\ verbatim 路径，ar 的 tempname
+    // 往目录拼 "/stXXXXXX" 后 verbatim 语义不规范化斜杠 → 文件名成非法
+    // 组件 → mkstemp EINVAL（"could not create temporary file whilst
+    // writing archive"）。lib 本就是 prefix_win 下的绝对路径
+    // Never canonicalize: it yields a \\?\ verbatim path — ar's tempname
+    // appends "/stXXXXXX" to the dir, and verbatim paths never normalize
+    // the slash -> an illegal "lib/stXXXXXX" component -> mkstemp EINVAL
+    // ("could not create temporary file whilst writing archive"). lib is
+    // already absolute under prefix_win
+    let lib_s = lib.to_string_lossy().to_string();
     let members = sys::capture(&tools.ar, &["t", &lib_s], &e.work).unwrap_or_default();
     let mut hit = 0u32;
     for m in members.lines() {
@@ -312,7 +326,7 @@ fn tools(e: &Env) -> Toolchain {
     }
 }
 
-/// deps_fixup 全量移植：清旧 shim → pc 私有依赖/静态 cflag/系统库 →
+/// 清旧 shim → pc 私有依赖/静态 cflag/系统库 →
 /// 归档手术（dll.a 重写、sha1 改名、__imp_ 注入、rust personality、
 /// blake2b 去重、kvazaar）→ librsvg 自检。在 overlay 恢复和 extras 之后
 /// 跑——更早做会被它们写的文件覆盖。
@@ -467,13 +481,17 @@ pub fn fixup() -> Result<(), String> {
             let out = e.work.join("omp-probe.exe");
             let _ = fsx::write(&tmp, "int main(void){return 0;}\n");
             for cand in ["-lgomp", "-lomp"] {
-                if sys::run(
+                // capture 吃掉 lld "unable to find library" 噪音——探测
+                // 失败本来就是预期分支，不该像真错误一样进日志
+                // / capture swallows lld's "unable to find library"
+                // noise — a probe miss is an expected branch and should
+                // not land in the log looking like a real error
+                if sys::capture(
                     &e.cc,
                     &[&tmp.to_string_lossy(), "-o", &out.to_string_lossy(), cand],
                     &e.work,
                 )
-                .unwrap_or(1)
-                    == 0
+                .is_ok()
                 {
                     *gomp = cand.to_string();
                     break;
@@ -566,7 +584,42 @@ pub fn fixup() -> Result<(), String> {
         "gio-2.0",
         &["-lintl", "-lshlwapi", "-ldnsapi", "-liphlpapi", "-lws2_32"],
     );
-    pkgcfg::libs_private("glib-2.0", &["-lintl", "-latomic", "-lm"]);
+    // -latomic 探测：clangarm64 没有独立 libatomic.a（原子内建收进
+    // compiler-rt），写死的 -latomic 让 lld 直接报 unable to find
+    // library——-print-file-name 判真伪（gcc/clang 都支持）；解析不到
+    // 就从 .pc 剥掉字面值并跳过 glib-2.0 的补录 / probe -latomic:
+    // clangarm64 has no standalone libatomic.a (the atomic builtins live
+    // inside compiler-rt) and a hardcoded -latomic makes lld fail with
+    // "unable to find library" — -print-file-name decides (supported by
+    // gcc and clang alike); when unresolvable, strip literal tokens
+    // from .pc files and skip the glib-2.0 top-up
+    let atomic = sys::capture(&e.cc, &["-print-file-name=libatomic.a"], &e.work)
+        .map(|p| std::path::Path::new(p.trim()).is_file())
+        .unwrap_or(false);
+    if !atomic {
+        for pc in fsx::walk(&pcdir) {
+            if pc.extension().map(|x| x == "pc").unwrap_or(false) {
+                let c = fsx::read(&pc);
+                if c.contains("-latomic") {
+                    let out: Vec<String> = c
+                        .split(' ')
+                        .filter(|w| *w != "-latomic")
+                        .map(String::from)
+                        .collect();
+                    let _ = std::fs::write(&pc, out.join(" "));
+                    log::log(&format!(
+                        "patched {}: dropped -latomic (no libatomic.a in toolchain)",
+                        pc.file_name().unwrap().to_string_lossy()
+                    ));
+                }
+            }
+        }
+    }
+    if atomic {
+        pkgcfg::libs_private("glib-2.0", &["-lintl", "-latomic", "-lm"]);
+    } else {
+        pkgcfg::libs_private("glib-2.0", &["-lintl", "-lm"]);
+    }
     pkgcfg::libs_private("gobject-2.0", &["-lintl"]);
     pkgcfg::libs_private("gmodule-no-export-2.0", &["-lintl"]);
     // shaderc_combined 漏了自己对象要的 SPIRV-Tools + glslang 树（MSYS2
@@ -728,10 +781,16 @@ pub fn fixup() -> Result<(), String> {
             }
             c
         };
-        // 每个归档线程的产物：(需删成员, 需替换为符号, 需保留符号)
-        // per-archive thread yield: (members to drop, symbols to redefine,
-        // symbols to keep)
-        type ScanOut = (Vec<String>, Vec<(String, String)>, HashSet<String>);
+        // 每个归档线程的产物：(need 列表, (归档,符号) 定义对, 导入库集合,
+        // 导入库拥有的 __imp_ 裸名集合)
+        // per-archive thread yield: (needs, (archive,sym) def pairs,
+        // import-lib set, plain names the import libs own)
+        type ScanOut = (
+            Vec<String>,
+            Vec<(String, String)>,
+            HashSet<String>,
+            HashSet<String>,
+        );
         let results: Vec<ScanOut> = std::thread::scope(|sc| {
             let handles: Vec<_> = chunks
                 .into_iter()
@@ -741,9 +800,17 @@ pub fn fixup() -> Result<(), String> {
                         let mut need = Vec::new();
                         let mut defs = Vec::new();
                         let mut implib = HashSet::new();
+                        let mut implib_syms = HashSet::new();
                         for la in chunk {
                             let a = la.file_name().unwrap().to_string_lossy().to_string();
-                            let out = sys::capture(&nmt, &[&la.to_string_lossy()], &la)
+                            // current_dir 必须是目录——&la 是归档文件，
+                            // spawn 会 ENOTDIR 被 unwrap_or_default 静默
+                            // 吞掉（整个扫描空转，从不注入）
+                            // current_dir must be a directory — &la is
+                            // the archive FILE; the spawn fails ENOTDIR
+                            // and unwrap_or_default swallows it silently
+                            // (the whole scan goes dead, never injects)
+                            let out = sys::capture(&nmt, &[&la.to_string_lossy()], &e.work)
                                 .unwrap_or_default();
                             for l in out.lines() {
                                 let f: Vec<&str> = l.split_whitespace().collect();
@@ -751,6 +818,7 @@ pub fn fixup() -> Result<(), String> {
                                     need.push(f[1][6..].to_string());
                                 } else if f.len() >= 3 && f[2].starts_with("__imp_") {
                                     implib.insert(a.clone());
+                                    implib_syms.insert(f[2][6..].to_string());
                                 } else if f.len() >= 3
                                     && f[1].len() == 1
                                     && f[1].chars().next().unwrap().is_ascii_alphabetic()
@@ -759,7 +827,7 @@ pub fn fixup() -> Result<(), String> {
                                 }
                             }
                         }
-                        (need, defs, implib)
+                        (need, defs, implib, implib_syms)
                     })
                 })
                 .collect();
@@ -767,11 +835,13 @@ pub fn fixup() -> Result<(), String> {
         });
         let mut need: HashSet<String> = HashSet::new();
         let mut implib: HashSet<String> = HashSet::new();
+        let mut implib_syms: HashSet<String> = HashSet::new();
         let mut prov: std::collections::HashMap<String, HashSet<String>> =
             std::collections::HashMap::new();
-        for (n, d, i) in results {
+        for (n, d, i, is) in results {
             need.extend(n);
             implib.extend(i);
+            implib_syms.extend(is);
             for (a, s) in d {
                 prov.entry(a).or_default().insert(s);
             }
@@ -792,24 +862,57 @@ pub fn fixup() -> Result<(), String> {
             }
             let shimc = e.work.join("shim.c");
             let shimo = e.work.join("shim.o");
-            let body: String = wants
-                .iter()
-                .map(|s| format!("extern char {s}[];\nvoid *__imp_{s} = (void*){s};\n"))
-                .collect();
-            let _ = fsx::write(&shimc, &body);
+            // -fno-builtin -w：clang 把 printf/scanf/sprintf 家族认作内建
+            // 函数，extern char <名>[] 声明成数组会撞 "redefinition as
+            // different kind of symbol" 硬错——gcc 容忍、clangarm64 直接
+            // 拒，整归档的 shim 连坐清空。关掉内建认知并压掉诊断噪音
+            // / -fno-builtin -w: clang knows the printf/scanf/sprintf
+            // family as builtins, so declaring extern char <name>[] hits
+            // a hard "redefinition as different kind of symbol" error —
+            // gcc tolerates it, clangarm64 refuses outright and the
+            // whole archive's shims went down with it. Drop builtin
+            // knowledge and hush the diagnostic noise
+            let compile_shim = |body: &str| -> bool {
+                let _ = fsx::write(&shimc, body);
+                sys::run(
+                    &e.cc,
+                    &[
+                        "-fno-builtin",
+                        "-w",
+                        "-c",
+                        &shimc.to_string_lossy(),
+                        "-o",
+                        &shimo.to_string_lossy(),
+                    ],
+                    &e.work,
+                )
+                .unwrap_or(1)
+                    == 0
+            };
+            let one = |s: &str| format!("extern char {s}[];\nvoid *__imp_{s} = (void*){s};\n");
+            // 逐符号预检再编合集：单个编不过的名字不能让整归档的 shim
+            // 陪葬 / preflight per-symbol then compile the survivors
+            // together: one uncompilable name must not take the whole
+            // archive's shims down with it
+            let mut ok: Vec<String> = Vec::new();
+            let mut dropped: Vec<String> = Vec::new();
+            for s in &wants {
+                if compile_shim(&one(s)) {
+                    ok.push(s.clone());
+                } else {
+                    dropped.push(s.clone());
+                }
+            }
+            if !dropped.is_empty() {
+                log::warn(&format!(
+                    "impshim: {a}: dropped {} uncompilable shim symbol(s): {}",
+                    dropped.len(),
+                    dropped.join(" ")
+                ));
+            }
             let prov_a = libdir.join(a);
-            if sys::run(
-                &e.cc,
-                &[
-                    "-c",
-                    &shimc.to_string_lossy(),
-                    "-o",
-                    &shimo.to_string_lossy(),
-                ],
-                &e.work,
-            )
-            .unwrap_or(1)
-                == 0
+            if !ok.is_empty()
+                && compile_shim(&ok.iter().map(|s| one(s)).collect::<String>())
                 && sys::run(
                     &t.ar,
                     &["rcs", &prov_a.to_string_lossy(), &shimo.to_string_lossy()],
@@ -822,9 +925,11 @@ pub fn fixup() -> Result<(), String> {
                 shimmed.push(prov_a);
                 log::log(&format!(
                     "injected {} __imp_* shim symbol(s) into {a}",
-                    wants.len()
+                    ok.len()
                 ));
             }
+            let _ = std::fs::remove_file(&shimc);
+            let _ = std::fs::remove_file(&shimo);
         }
         // 保险闸：注入过的归档不能弄坏平凡链接；坏了全部撤回 / sanity
         // gate: injected archives must not break a trivial link — else
@@ -859,22 +964,36 @@ pub fn fixup() -> Result<(), String> {
                 }
             }
         }
-        // 真孤儿：无静态提供者且无导入库拥有的 need / true orphans: needs
-        // no static archive provides and no import lib owns
-        let mut provided: HashSet<String> = implib.iter().map(|_| String::new()).collect();
-        provided.clear();
+        // 覆盖核算：静态归档不提供的 need 还要看导入库收不收——kernel32/
+        // msvcrt 这类 Win32 系统导入在 -static 下照常经工具链 .dll.a
+        // 解析，本来就不该有静态提供者；只有两边都没有的才算真孤儿
+        // / coverage accounting: a need with no static provider can still
+        // be covered by an import lib — kernel32/msvcrt-class Win32
+        // imports resolve through the toolchain's .dll.a under -static
+        // as usual and were never meant to have a static provider; only
+        // names owned by neither count as real orphans
+        let mut provided: HashSet<String> = HashSet::new();
         for (a, syms) in &prov {
             if !a.ends_with(".dll.a") && !implib.contains(a) {
                 provided.extend(syms.intersection(&need).cloned());
             }
         }
-        let orphans: Vec<String> = need.difference(&provided).cloned().collect();
+        let uncovered: HashSet<String> = need.difference(&provided).cloned().collect();
+        let implib_covered = uncovered.intersection(&implib_syms).count();
+        let orphans: Vec<String> = uncovered.difference(&implib_syms).cloned().collect();
+        log::log(&format!(
+            "impshim: {} need(s) — {} shimmed, {} import-lib covered, {} orphaned",
+            need.len(),
+            provided.len(),
+            implib_covered,
+            orphans.len()
+        ));
         if !orphans.is_empty() {
             let mut o = orphans;
             o.sort();
             o.truncate(40);
             log::warn(&format!(
-                "impshim: no static provider for __imp_{} (first 40)",
+                "impshim: no provider for __imp_{} (first 40)",
                 o.join(" __imp_")
             ));
         }
@@ -1016,13 +1135,30 @@ pub fn fixup() -> Result<(), String> {
                 &c,
                 "extern char rsvg_handle_new_from_data;\nint main(void){return (char*)&rsvg_handle_new_from_data!=0;}\n",
             );
-            let mut args: Vec<String> = vec![
+            // gcc/clang 都认 @file 响应文件：--libs --static 把整棵依赖
+            // 树摊成几百个 token，拼出的 argv 直接撞 Windows
+            // CreateProcess 的 32767 字符上限——os error 206 "filename or
+            // extension is too long"，进程还没 spawn 就死了。旗标落盘
+            // 成响应文件后 argv 只剩一个 @路径
+            // / both gcc and clang expand @file response files:
+            // --libs --static flattens the whole dependency tree into
+            // hundreds of tokens whose joined argv slams Windows'
+            // 32767-char CreateProcess limit — os error 206 "filename or
+            // extension is too long" kills the spawn before it starts.
+            // Park the flags in a response file so argv is just @path
+            let rsp = e.work.join("rsvgprobe.rsp");
+            // 响应文件里 \ 是转义符——反斜杠路径要先翻倍；含空格的 token
+            // 不支持（msys 前缀无空格）/ backslash is the escape char in
+            // response files — double path separators first; space-bearing
+            // tokens are unsupported (the msys prefix has none)
+            let _ = fsx::write(&rsp, &plibs.replace('\\', "\\\\"));
+            let args: Vec<String> = vec![
                 "-static".into(),
                 "-o".into(),
                 x.to_string_lossy().to_string(),
                 c.to_string_lossy().to_string(),
+                format!("@{}", rsp.to_string_lossy()),
             ];
-            args.extend(plibs.split_whitespace().map(|s| s.to_string()));
             let argrefs: Vec<&str> = args.iter().map(String::as_str).collect();
             // stderr 单独捕获给日志 / capture stderr for the log
             let mut cm = sys::cmd(&e.cc, &argrefs);
@@ -1042,7 +1178,7 @@ pub fn fixup() -> Result<(), String> {
                 }
                 Err(err) => log::warn(&format!("librsvg self-check spawn failed: {err}")),
             }
-            for f in [&c, &x, &er] {
+            for f in [&c, &x, &er, &rsp] {
                 let _ = std::fs::remove_file(f);
             }
         }
@@ -1063,19 +1199,20 @@ pub fn fixup() -> Result<(), String> {
     Ok(())
 }
 
-/// extras 阶段入口：恢复 deps overlay → 跑配方引擎 → deps_fixup 收尾。
+/// extras 阶段入口：恢复 deps overlay → 跑配方引擎（fixup 由引擎收尾
+/// 的 postfix 工序内调，输出才进得了 extras/postfix.log）。
 /// The extras stage entry: restore the deps overlay -> run the recipe
-/// engine -> finish with deps_fixup.
+/// engine (fixup is invoked from inside the engine's trailing postfix
+/// pass so its output lands in extras/postfix.log).
 pub fn extras_stage() -> Result<(), String> {
     restore()?;
-    crate::extras::run_all()?;
-    fixup()
+    crate::extras::run_all()
 }
 
-/// save_deps 移植：差集清单 → 剔 pacman 拥有 → tar -19 → deps::publish。
+/// 差集清单 → 剔 pacman 拥有 → tar -19 → deps::publish。
 /// complete = 配方表零失败走完（.extras/done + status 无 failed）；
 /// dirty = 本轮有改动（status 行或文件差集/新时间戳）。
-/// Port of save_deps: delta manifest -> drop pacman-owned -> tar -19 ->
+/// Delta manifest -> drop pacman-owned -> tar -19 ->
 /// deps::publish. complete = the recipe table finished with zero failures
 /// (.extras/done + no failed status lines); dirty = anything moved this
 /// run (status lines or the file delta/newer-than-stamp set).

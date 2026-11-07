@@ -1,7 +1,6 @@
-//! aribb24 配方：ARIB STD-B24 字幕（FFmpeg 要的版本比最后一个 tag 新；
-//! 旧 60-media-io.sh 移植）
+//! aribb24 配方：ARIB STD-B24 字幕（FFmpeg 要的版本比最后一个 tag 新）
 //! aribb24 recipe: ARIB STD-B24 captions; FFmpeg wants a version newer
-//! than the last tag (port of 60-media-io.sh)
+//! than the last tag
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

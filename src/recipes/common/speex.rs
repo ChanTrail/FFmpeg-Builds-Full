@@ -1,5 +1,5 @@
-//! speex 配方：Speex 语音编解码（旧 30-audio.sh 移植）
-//! speex recipe: the Speex speech codec (port of 30-audio.sh)
+//! speex 配方：Speex 语音编解码
+//! speex recipe: the Speex speech codec
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

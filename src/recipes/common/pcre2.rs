@@ -1,5 +1,5 @@
-//! pcre2 配方：glib 的正则后端（旧 45-glib-stack.sh 移植）
-//! pcre2 recipe: glib's regex backend (port of 45-glib-stack.sh)
+//! pcre2 配方：glib 的正则后端
+//! pcre2 recipe: glib's regex backend
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

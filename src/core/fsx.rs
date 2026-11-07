@@ -92,6 +92,16 @@ pub fn sed_i(expr: &str, file: &Path, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// 就地 sed -E（ERE 变体；(...) 分组、| 选择、? 量词裸写，GNU/BSD 通用）
+/// In-place sed -E (ERE variant; bare (...) groups, | alternation,
+/// ? quantifier, GNU/BSD portable)
+pub fn sed_i_ere(expr: &str, file: &Path, dir: &Path) -> Result<(), String> {
+    let f = file.to_string_lossy().to_string();
+    crate::sys::run_ok("sed", &["-i.bak", "-E", expr, &f], dir)?;
+    let _ = fs::remove_file(format!("{f}.bak"));
+    Ok(())
+}
+
 /// find <dir> -newer <stamp>：输出 POSIX 相对路径（./x 形式，按 C 序排）
 /// find <dir> -newer <stamp>: POSIX relative paths (./x form, C-sorted)
 pub fn find_newer(dir: &Path, stamp_mtime: std::time::SystemTime) -> Vec<String> {

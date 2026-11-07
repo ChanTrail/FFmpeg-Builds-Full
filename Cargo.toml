@@ -3,7 +3,7 @@ name = "FFmpeg-Builds-Full"
 version = "0.1.0"
 authors = ["ChanTrail"]
 edition = "2024"
-description = "FFmpeg-Builds-Full native build driver (Rust port of the .sh pipeline)"
+description = "FFmpeg-Builds-Full native build driver"
 
 [dependencies]
 # HTTPS 客户端（异步）：rustls 纯 Rust TLS，流式下载，代理走环境变量

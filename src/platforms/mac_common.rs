@@ -1,12 +1,8 @@
 //! macOS arm64 平台共享助手：brew 工具链、deps 工作区快照（整目录
-//! tar.zst）、FFmpeg 编排与打包。唯一入口 mac_arm64 使用——对应旧
-//! scripts/macos/build.sh（markus-perl vendored 生态已弃用：统一走本
-//! 仓 Rust 配方）。
+//! tar.zst）、FFmpeg 编排与打包。唯一入口 mac_arm64 使用。
 //! Shared helpers for macOS arm64: the brew toolchain, deps workspace
 //! snapshots (whole-directory tar.zst), FFmpeg orchestration and
-//! packaging. The single mac_arm64 entry uses it — the counterpart of
-//! the old scripts/macos/build.sh (the markus-perl vendored ecosystem is
-//! retired: this repo's Rust recipes drive every platform uniformly).
+//! packaging. The single mac_arm64 entry uses it.
 
 use crate::fsx;
 use crate::log;
@@ -14,29 +10,37 @@ use crate::sys::{self, Arch, Env, Os};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
-/// 工作根目录：$RUNNER_TEMP/ffmpeg-macos（旧 WORK）/ the work root:
-/// $RUNNER_TEMP/ffmpeg-macos (the old WORK)
-pub fn work_root() -> PathBuf {
+/// 工作根目录：$RUNNER_TEMP/ffmpeg-macos-<arch>（与日志包根目录同名，
+/// runner 路径和包内路径逐字对应）/ the work root:
+/// $RUNNER_TEMP/ffmpeg-macos-<arch> (same name as the log-bundle root,
+/// so runner paths map to bundle paths verbatim)
+pub fn work_root(arch: Arch) -> PathBuf {
     std::env::var("RUNNER_TEMP")
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("ffmpeg-macos")
+        .join(format!("ffmpeg-macos-{}", arch.name()))
 }
 
 /// 库前缀：工作区快照整树打包它（.extras/ 标记在树内）。runner 用户对
-/// /opt 无写权限，所以前缀放 RUNNER_TEMP 下——与旧 WS_CACHE 等价
+/// /opt 无写权限，所以前缀放 RUNNER_TEMP 下
 /// The library prefix: deps snapshots tar this whole tree (the .extras/
 /// markers ride inside). The runner user cannot write /opt, so the
-/// prefix lives under RUNNER_TEMP — the old WS_CACHE equivalent
-pub fn prefix_dir() -> PathBuf {
+/// prefix lives under RUNNER_TEMP
+pub fn prefix_dir(arch: Arch) -> PathBuf {
     std::env::var("RUNNER_TEMP")
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("ffmpeg-macos-workspace")
+        .join(format!("ffmpeg-macos-{}-workspace", arch.name()))
+}
+
+/// 前缀捷径：init 之后的调用点都从全局 Env 取 arch / prefix shortcut:
+/// call sites after init pull the arch from the global Env
+fn prefix() -> PathBuf {
+    prefix_dir(crate::sys::env().arch)
 }
 
 /// FFmpeg 默认安装前缀（configure 不传 --prefix）/ FFmpeg's default
@@ -50,12 +54,12 @@ pub fn init_env(arch: Arch) -> Result<(), String> {
         return Err("/bin/bash not found".into());
     }
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let prefix = prefix_dir();
+    let prefix = prefix_dir(arch);
     let work = std::env::var("FFBUILD_WORK")
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(work_root);
+        .unwrap_or_else(|| work_root(arch));
     let dist = std::env::var("FFBUILD_DIST")
         .ok()
         .filter(|s| !s.is_empty())
@@ -101,25 +105,22 @@ pub fn init_env(arch: Arch) -> Result<(), String> {
     Ok(())
 }
 
-/// packages/macos.txt 行：每行一个 brew 包名 / packages/macos.txt rows:
-/// one brew package per line
-fn package_rows() -> Vec<String> {
-    include_str!("../../packages/macos.txt")
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|l| l.to_string())
-        .collect()
+/// packages/macos.yaml 项：每行一个 brew 包名 / packages/macos.yaml
+/// entries: one brew package per line
+fn package_rows() -> Result<Vec<String>, String> {
+    Ok(crate::manifest::packages::load("macos.yaml")?
+        .into_iter()
+        .map(|p| p.name)
+        .collect())
 }
 
 /// packages 阶段：brew 装 autotools 系（配方从零 autoreconf；runner 镜像
 /// 不带 autotools，brew 的 libtool 是 g- 前缀的）+ `brew link --force
-/// gettext`。失败不致命——旧脚本 `|| true` 语义保留：镜像漂移时单包
-/// 缺失不拖死构建 / the packages stage: brew installs the autotools
-/// family (recipes autoreconf from scratch; the runner image ships none
-/// and brew's libtool is g-prefixed) + `brew link --force gettext`.
-/// Failures are non-fatal — the old script's `|| true` semantics stay:
-/// a package missing on a drifting image must not stop the build
+/// gettext`。失败不致命——镜像漂移时单包缺失不拖死构建 / the packages
+/// stage: brew installs the autotools family (recipes autoreconf from
+/// scratch; the runner image ships none and brew's libtool is g-prefixed),
+/// then `brew link --force gettext`. Failures are non-fatal — a package
+/// missing on a drifting image must not stop the build
 pub fn packages() -> Result<(), String> {
     let e = sys::env();
     // work/prefix/dist 在任何子进程以它们为 cwd 前就得在场——首个
@@ -128,14 +129,14 @@ pub fn packages() -> Result<(), String> {
     // the first run()'s current_dir on a missing dir dies as
     // "spawn prog: ENOENT"
     fsx::install_d(&e.work)?;
-    fsx::install_d(&prefix_dir())?;
+    fsx::install_d(&prefix())?;
     fsx::install_d(&e.dist)?;
     if sys::which("brew").is_none() {
         log::warn("brew not found; assuming the runner image already provides the toolchain");
         return Ok(());
     }
     log::group_begin("Install brew tools");
-    let pkgs = package_rows();
+    let pkgs = package_rows()?;
     let refs: Vec<&str> = pkgs.iter().map(String::as_str).collect();
     let mut args = vec!["install"];
     args.extend(&refs);
@@ -176,9 +177,9 @@ pub fn extras_stage() -> Result<(), String> {
     crate::extras::run_all()
 }
 
-/// restore_deps 移植：拉本平台 deps 产物解进 RUNNER_TEMP → .deps-sig
+/// 拉本平台 deps 产物解进 RUNNER_TEMP → .deps-sig
 /// 不符时清整表完成标记（每个 .ok 自带配方哈希自会复验）
-/// Port of restore_deps: pull this platform's deps asset and untar into
+/// Pull this platform's deps asset and untar into
 /// RUNNER_TEMP -> on a .deps-sig mismatch drop the whole-table done
 /// marker (each .ok carries its recipe hash and revalidates itself)
 pub fn restore() -> Result<(), String> {
@@ -193,7 +194,7 @@ pub fn restore() -> Result<(), String> {
         }
     };
     log::group_begin(&format!("Restore deps workspace ({restored})"));
-    let parent = prefix_dir().parent().unwrap().to_path_buf();
+    let parent = prefix().parent().unwrap().to_path_buf();
     sys::bash_ok(
         &format!(
             "tar -C '{}' -xf '{}'",
@@ -204,33 +205,54 @@ pub fn restore() -> Result<(), String> {
     )?;
     fsx::write(&e.work.join("deps-restored"), &restored)?;
 
-    let sig_file = prefix_dir().join(".deps-sig");
+    let sig_file = prefix().join(".deps-sig");
     if fsx::read(&sig_file).trim() != deps_sig() {
         log::log("deps workspace was built for different inputs; revalidating recipe markers");
-        let state = prefix_dir().join(".extras");
+        let state = prefix().join(".extras");
         let _ = std::fs::remove_file(state.join("done"));
         let _ = std::fs::remove_file(state.join("status.txt"));
         let _ = std::fs::remove_file(state.join("flags.txt"));
     }
     fsx::write(&sig_file, &format!("{}\n", deps_sig()))?;
+    // 恢复的 status 是旧 run 的；save() 的 dirty 判定只看本轮真跑过的
+    // 配方——与 Windows/Linux 同款无条件清。done 同样无条件清：历史
+    // partial 快照可能带着"跑完但带失败"的旧标记 / the restored status
+    // file is stale — save()'s dirty check only counts recipes that ran
+    // this time; cleared unconditionally, same as Windows/Linux. done is
+    // dropped unconditionally too: historical partial snapshots can carry
+    // the old "finished with failures" marker
+    let _ = std::fs::remove_file(prefix().join(".extras/status.txt"));
+    let _ = std::fs::remove_file(prefix().join(".extras/done"));
     log::group_end();
     Ok(())
 }
 
-/// save_deps 移植：工作区整树 tar -19 → deps::publish（complete =
-/// .extras/done 在场）/ port of save_deps: whole-workspace `tar -19` ->
-/// deps::publish (complete = the .extras/done marker exists)
+/// 工作区整树 tar -19 → deps::publish（complete = 本轮
+/// 配方表零失败——done 在场 + status 非空且无 failed 行，与 Windows/
+/// Whole-workspace `tar -19` ->
+/// deps::publish (complete = this run's recipe table finished green —
+/// done present + status non-empty with no failed lines, same predicate
+/// as Windows/Linux)
 pub fn save() -> Result<(), String> {
     let e = sys::env();
     let platform = e.plat().to_string();
-    let ws = prefix_dir();
+    let ws = prefix();
     if !ws.is_dir() {
         log::log("no workspace to publish");
         return Ok(());
     }
-    let complete = ws.join(".extras/done").is_file();
     let restored = fsx::read(&e.work.join("deps-restored")).trim().to_string();
-    let dirty = false;
+    // status 在 restore 已清——" ok"/" failed" 行只可能来自本轮：有进度
+    // 但未全绿时 partial 快照才能发出去 / status was cleared at restore —
+    // " ok"/" failed" lines can only come from this run: progress without
+    // a green sweep must still publish a partial snapshot
+    let status = fsx::read(&ws.join(".extras/status.txt"));
+    let complete = ws.join(".extras/done").is_file()
+        && !status.is_empty()
+        && !status.lines().any(|l| l.ends_with(" failed"));
+    let dirty = status
+        .lines()
+        .any(|l| l.ends_with(" ok") || l.ends_with(" failed"));
     if !restored.is_empty() && restored != format!("deps-{platform}-partial.tar.zst") && !dirty {
         log::log("deps workspace unchanged since restored snapshot; skipping pack+upload");
         return Ok(());
@@ -239,13 +261,22 @@ pub fn save() -> Result<(), String> {
         log::warn("GH_TOKEN/gh missing; skipping deps upload");
         return Ok(());
     }
+    if sys::which("zstd").is_none() {
+        log::warn("zstd missing; skipping deps publish");
+        return Ok(());
+    }
     let tarball = e.work.join("deps-upload.tar.zst");
+    // macOS 的 tar 是 bsdtar：没有 GNU tar 的 -I/--use-compress-program，
+    // 会把 'zstd -19 -T0' 当文件名去开——走管道等价物，两族 tar 通吃 /
+    // macOS tar is bsdtar: no GNU -I/--use-compress-program — it opens
+    // 'zstd -19 -T0' as a filename. The pipe equivalent works on both
+    // tar families.
     sys::bash_ok(
         &format!(
-            "tar -C '{}' -I 'zstd -19 -T0' -cf '{}' '{}'",
+            "tar -C '{}' -cf - '{}' | zstd -19 -T0 > '{}'",
             ws.parent().unwrap().to_string_lossy(),
-            tarball.to_string_lossy(),
-            ws.file_name().unwrap().to_string_lossy()
+            ws.file_name().unwrap().to_string_lossy(),
+            tarball.to_string_lossy()
         ),
         &e.work,
     )?;
@@ -331,11 +362,10 @@ pub fn ffmpeg() -> Result<(), String> {
 
 /// package 阶段：收集二进制/文档/man 页/预设 → otool -L 白名单（只允许
 /// /usr/lib/ 与 /System/Library/）→ 冒烟测试 → BUILDINFO → tar.xz +
-/// sha256（旧 macos package 移植）
+/// sha256
 /// The package stage: collect binaries/docs/man pages/presets -> the
 /// `otool -L` allowlist (only /usr/lib/ and /System/Library/ may appear)
-/// -> smoke test -> BUILDINFO -> tar.xz + sha256 (port of the old macOS
-/// package step)
+/// -> smoke test -> BUILDINFO -> tar.xz + sha256
 pub fn package() -> Result<(), String> {
     let e = sys::env();
     let mut hash = "unknown".to_string();
@@ -448,7 +478,7 @@ pub fn package() -> Result<(), String> {
     )
     .unwrap_or_default();
     let dropped = fsx::read(&e.work.join("dropped-libs.txt"));
-    let status = fsx::read(&prefix_dir().join(".extras/status.txt"));
+    let status = fsx::read(&prefix().join(".extras/status.txt"));
     let swvers = sys::capture("sw_vers", &["-productVersion"], &e.work)
         .unwrap_or_default()
         .trim()

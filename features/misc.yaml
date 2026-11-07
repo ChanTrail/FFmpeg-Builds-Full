@@ -13,7 +13,7 @@ windows-x86_64:
   openssl: disable         # TLS 走 gnutls；openssl 库仍会作为 srt/rist 依赖构建 / TLS via gnutls; openssl still builds as an srt/rist dep
   mbedtls: disable
   gcrypt: disable
-  schannel: disable        # Windows 系统 TLS 后端，旧构建未启用 / system TLS backend, not enabled historically
+  schannel: disable        # Windows 系统 TLS 后端
   libshaderc: disable      # vulkan 着色器走 SPIRV-Cross，不用 shaderc 链 / shaders via SPIRV-Cross
   libglslang: disable
   cuda-nvcc: disable
@@ -58,7 +58,7 @@ linux-x86_64:
   mbedtls: disable
   gcrypt: disable
   libpulse: enable         # Linux 桌面音频主力栈 / the desktop audio stack
-  libjack: disable         # 音频工作站场景，旧构建未启用 / pro-audio; not enabled historically
+  libjack: disable         # 音频工作站场景 / pro-audio
   sndio: disable
   libshaderc: disable
   libglslang: disable
@@ -102,7 +102,7 @@ linux-arm64:
   ladspa: disable
 
 
-mac-arm64:
+macos-arm64:
   libfdk-aac: disable
   gnutls: disable        # mac TLS 走 Secure Transport/ mac TLS via Secure Transport
   openssl: disable

@@ -6,12 +6,10 @@
 //! tag fallback; or fixed archives); this module resolves a spec into an
 //! actual checkout and offers background prefetch — downloads run
 //! concurrently with compilation.
-//!
 //! 布局 / layout:
 //!   sources/common.yaml         {lib: {git|archive: ..., ref:, sha256:, submodules:}}
 //!   sources/misc.yaml           {<os>-<arch>: {lib: spec}}   —— 按平台分节
 //!   sources/<os>-<arch>.yaml    {lib: spec}                  —— 整值覆盖
-//!
 //! git 解析策略 / git resolution:
 //!   1) ref 是 40-hex sha → 钉死检出
 //!   2) ref 是 tag → 钉 tag；ref 是分支 → 该分支 HEAD 走第 3 步
@@ -23,6 +21,7 @@ use crate::log;
 use crate::net;
 use crate::sys;
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use yaml_rust2::{Yaml, YamlLoader};
@@ -220,29 +219,119 @@ fn resolve_git(url: &str, ref_: Option<&str>) -> Result<Checkout, String> {
 
 /// 把规格物化成 <wd>/src 检出 / materialise a spec into <wd>/src
 fn fetch_into(wd: &Path, spec: &Spec) -> Result<PathBuf, String> {
-    if let Some(url) = &spec.archive {
-        return net::fetch_tar(wd, url, spec.sha256.as_deref());
-    }
-    let url = spec.git.as_ref().unwrap();
-    let src = match resolve_git(url, spec.ref_.as_deref())? {
-        Checkout::Commit(sha) => net::fetch_git_commit(wd, url, &sha)?,
-        Checkout::Tag(tag) => net::fetch_git(wd, url, &tag, None)?,
+    let src = if let Some(url) = &spec.archive {
+        net::fetch_tar(wd, url, spec.sha256.as_deref())?
+    } else {
+        let url = spec.git.as_ref().unwrap();
+        let src = match resolve_git(url, spec.ref_.as_deref())? {
+            Checkout::Commit(sha) => net::fetch_git_commit(wd, url, &sha)?,
+            Checkout::Tag(tag) => net::fetch_git(wd, url, &tag, None)?,
+        };
+        if spec.submodules {
+            sys::run_ok(
+                "git",
+                &[
+                    "submodule",
+                    "update",
+                    "--init",
+                    "--recursive",
+                    "--depth=1",
+                    "--filter=blob:none",
+                ],
+                &src,
+            )?;
+        }
+        src
     };
-    if spec.submodules {
-        sys::run_ok(
-            "git",
-            &[
-                "submodule",
-                "update",
-                "--init",
-                "--recursive",
-                "--depth=1",
-                "--filter=blob:none",
-            ],
-            &src,
-        )?;
-    }
+    normalize_autotools_stamps(&src);
     Ok(src)
+}
+
+/// autotools 生成物清单：make 的维护者规则会按时间戳对这些文件调
+/// aclocal-X.Y/automake-X.Y 重生成——版本号是"当年生成时"的，几乎从
+/// 不与环境安装的一致
+/// autotools generated files: make's maintainer rules regenerate these
+/// via aclocal-X.Y/automake-X.Y keyed on timestamps — the version is the
+/// one that generated them and almost never matches what's installed
+/// 中间档：aclocal.m4 是双重身份——它由 configure.ac+m4/*.m4 生成
+/// （须晚于全部输入），又是 Makefile.in/configure 的依赖
+/// （am__configure_deps 含 $(ACLOCAL_M4)，须早于生成物）。放输入档
+/// 会让它自己的重生成规则触发（walk 序 aclocal.m4 先于 configure.ac
+/// 被 touch→更旧）；放生成档会让 Makefile.in 永远过期。只有独占一档
+/// 卡在两者中间才同时满足。
+/// Middle tier: aclocal.m4 is dual-natured — generated FROM
+/// configure.ac+m4/*.m4 (must postdate all inputs) yet a prereq OF
+/// Makefile.in/configure (am__configure_deps carries $(ACLOCAL_M4),
+/// must predate generated files). At input tier its own regen rule
+/// fires (walk order touches aclocal.m4 before configure.ac); at gen
+/// tier Makefile.in goes permanently stale. A dedicated middle tier
+/// satisfies both.
+const AUTOTOOLS_MID: &[&str] = &["aclocal.m4"];
+
+const AUTOTOOLS_GEN: &[&str] = &[
+    "configure",
+    "Makefile.in",
+    "config.h.in",
+    "config.hi.in",
+    "config.hin",
+    "stamp-h.in",
+    "depcomp",
+    "missing",
+    "install-sh",
+    "ltmain.sh",
+    "config.guess",
+    "config.sub",
+    "compile",
+    "ar-lib",
+    "mkinstalldirs",
+    "test-driver",
+    "ylwrap",
+];
+
+/// 把 <p> 的 mtime 抬到当前时间 / bump <p>'s mtime to now
+fn touch(p: &Path) {
+    let _ = std::fs::File::options()
+        .write(true)
+        .open(p)
+        .and_then(|f| f.set_modified(std::time::SystemTime::now()));
+}
+
+/// 时间戳归一化：tarball/git 源的 mtime 次序不可信（git checkout 全体等
+/// 于检出时刻，copy_dir 又只看内容），一旦"输入"（configure.ac/*.am/
+/// *.m4）比"生成物"（aclocal.m4/configure/Makefile.in）新，make 就走维
+/// 护者规则调 aclocal-<生成版本>——生成版本几乎从不在环境里（镜像
+/// automake 1.18 vs 包要 aclocal-1.16/1.10）。两遍 touch：先全体齐平，
+/// 再把生成物抬新，输入永远不比生成物新 → 永不重生成。
+/// Timestamp normalization: tarball/git mtime order is untrustworthy
+/// (git checkouts stamp everything at checkout time, and copy_dir only
+/// carries content) — once an input (configure.ac/*.am/*.m4) looks newer
+/// than a generated file (aclocal.m4/configure/Makefile.in), make takes
+/// the maintainer rule and invokes aclocal-<generating-version>, which
+/// is virtually never installed (image has automake 1.18 while packages
+/// demand aclocal-1.16/1.10). Three passes: equalize everything, lift
+/// the middle tier (aclocal.m4), then lift the generated files — inputs
+/// never look newer, so nothing regenerates.
+fn normalize_autotools_stamps(src: &Path) {
+    let files = fsx::walk(src);
+    for f in &files {
+        touch(f);
+    }
+    for f in &files {
+        if f.file_name()
+            .map(|n| AUTOTOOLS_MID.contains(&n.to_string_lossy().as_ref()))
+            .unwrap_or(false)
+        {
+            touch(f);
+        }
+    }
+    for f in &files {
+        if f.file_name()
+            .map(|n| AUTOTOOLS_GEN.contains(&n.to_string_lossy().as_ref()))
+            .unwrap_or(false)
+        {
+            touch(f);
+        }
+    }
 }
 
 // ==================== 预取缓存 / prefetch cache ====================
@@ -252,8 +341,16 @@ fn cache_dir() -> PathBuf {
     sys::env().work.join("src-cache")
 }
 
-/// 单个预取任务的句柄类型 / the join-handle type of one prefetch task
-type Prefetch = tokio::task::JoinHandle<Result<(), String>>;
+/// 单个预取任务的句柄类型：std::thread——fetch_into 整条链路是同步的
+/// （git/tar/HTTP 同步包装），跑在 tokio 线程上反而会让它内部的
+/// block_on 撞 "Cannot start a runtime from within a runtime"；原生
+/// 线程没有运行时上下文，block_on 合法。
+/// The join-handle type of one prefetch task: a std::thread — fetch_into
+/// is synchronous end to end (git/tar/sync HTTP wrappers); on a tokio
+/// thread its inner block_on hits "Cannot start a runtime from within
+/// a runtime", while a native thread carries no runtime context and may
+/// legally block_on.
+type Prefetch = std::thread::JoinHandle<Result<(), String>>;
 
 /// 预取任务登记表：lib → JoinHandle / in-flight prefetch tasks
 fn tasks() -> &'static Mutex<HashMap<String, Prefetch>> {
@@ -262,6 +359,8 @@ fn tasks() -> &'static Mutex<HashMap<String, Prefetch>> {
 }
 
 /// 并发上限：下载+CI 查询同时在跑不超过 4 个 / bound in-flight prefetches
+/// （std::thread 里用 blocking_acquire 取用——它专为非 async 上下文设计）
+/// (threads take it via blocking_acquire — built for non-async contexts)
 fn sema() -> &'static tokio::sync::Semaphore {
     static S: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
     S.get_or_init(|| tokio::sync::Semaphore::new(4))
@@ -292,24 +391,45 @@ pub fn prefetch<I: IntoIterator<Item = String>>(names: I) {
         let name2 = name.clone();
         t.insert(
             name,
-            net::rt().spawn(async move {
-                let _permit = sema().acquire().await.expect("semaphore closed");
-                let r = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            std::thread::spawn(move || {
+                let _permit = sema().blocking_acquire().expect("semaphore closed");
+                let r = (|| -> Result<(), String> {
                     let spec = spec(&name2)?;
                     fsx::rm_rf(&cd);
                     fsx::install_d(&cd)?;
                     fetch_into(&cd, spec)?;
                     fsx::write(&cd.join("done"), "")?;
                     Ok(())
-                })
-                .await
-                .map_err(|e| format!("prefetch task: {e}"))?;
+                })();
                 if let Err(e) = &r {
                     log::warn(&format!("[prefetch] {e}"));
                 }
                 r
             }),
         );
+    }
+}
+
+/// 只等一个预取任务落地（不复制）。recipe-run 子进程模式下父进程在
+/// 派生配方前调用：预取句柄留在父进程，done 标记落盘，子进程的
+/// materialize 走磁盘缓存命中而不是再次解析下载。
+/// Await one prefetch without copying. Under the recipe-run subprocess
+/// model the parent calls this before spawning the recipe: the handle
+/// stays in the parent, the done marker lands on disk, and the child's
+/// materialize hits the on-disk cache instead of resolving again.
+pub fn wait_prefetch(name: &str) {
+    let handle = tasks().lock().unwrap().remove(name);
+    if let Some(h) = handle {
+        match h.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => log::warn(&format!(
+                "[sources] prefetch {name} failed: {e} — child resolves inline"
+            )),
+            Err(p) => log::warn(&format!(
+                "[sources] prefetch {name} panicked: {}",
+                panic_msg(&p)
+            )),
+        }
     }
 }
 
@@ -320,26 +440,94 @@ pub fn materialize(wd: &Path, name: &str) -> Result<PathBuf, String> {
     let handle = tasks().lock().unwrap().remove(name);
     let cd = cache_dir().join(name);
     if let Some(h) = handle {
-        match net::rt().block_on(h) {
+        match h.join() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => log::warn(&format!(
                 "[sources] prefetch {name} failed: {e} — resolving inline"
             )),
-            Err(e) => log::warn(&format!("[sources] prefetch {name} join failed: {e}")),
+            Err(p) => log::warn(&format!(
+                "[sources] prefetch {name} panicked: {}",
+                panic_msg(&p)
+            )),
         }
     }
     let dst = wd.join("src");
     if cd.join("done").is_file() && cd.join("src").is_dir() {
         fsx::rm_rf(&dst);
         copy_dir(&cd.join("src"), &dst)?;
-        return Ok(dst);
+    } else {
+        // 未预取/预取失败：现场解析 / no (or failed) prefetch: resolve inline
+        fetch_into(wd, spec(name)?)?;
     }
-    // 未预取/预取失败：现场解析 / no (or failed) prefetch: resolve inline
-    fetch_into(wd, spec(name)?)
+    // 残壳 .git 比没有更糟：骗过上游构建脚本的 EXISTS 检查，然后
+    // --git-dir 暴毙于 "not a git repository"。剥成缺席——上游改走
+    // 非 git 回退路径，需要真仓库的配方（avisynth/libplacebo）自行
+    // 修复 / a gutted .git is worse than none: it fools the EXISTS check
+    // in upstream build scripts, then --git-dir dies on "not a git
+    // repository". Reduce it to absent — upstream falls back to its
+    // non-git path, and recipes needing a real repo (avisynth/libplacebo)
+    // repair it themselves
+    let git = dst.join(".git");
+    // .git 在场就用探活定生死——目录形状（HEAD+objects）不够：copy_dir
+    // 只收文件，全空的 refs/ 层蒸发后该形状仍在却已是死库。探针必须
+    // 钉住 .git 本体（--git-dir）：裸 rev-parse 会沿父目录发现外层仓
+    // 库（工作根就在 checkout 内），exit 0 把死壳当活库放行
+    // / with a .git present, a liveness probe decides its fate — the
+    // dir shape (HEAD+objects) isn't enough: copy_dir carries files
+    // only, so an all-empty refs/ layer vanishes and the same shape is
+    // already a dead repo. The probe must pin .git itself (--git-dir):
+    // a bare rev-parse walks up into an enclosing repo (the work root
+    // lives inside the checkout), exits 0, and keeps the corpse alive
+    let probe = format!("--git-dir={}", git.display());
+    if git.exists() && sys::run("git", &[&probe, "rev-parse", "--git-dir"], &dst) != Ok(0) {
+        log::warn(&format!(
+            "[sources] {name}: shipped .git fails rev-parse — removing it"
+        ));
+        fsx::rm_rf(&git);
+    }
+    // 补丁打在 wd 副本上——src-cache 保持原始检出干净 / patches land on
+    // the wd copy — src-cache stays a pristine checkout
+    crate::patches::apply(&dst, name)?;
+    Ok(dst)
 }
 
-/// 递归复制目录 / recursive directory copy
+/// 把 join 收回的 panic payload 压成可读文本 / render a joined panic
+/// payload into readable text
+fn panic_msg(p: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = p.downcast_ref::<&'static str>() {
+        s.to_string()
+    } else if let Some(s) = p.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
+    }
+}
+
+/// 递归复制目录：先建全目录树（含空目录）再拷文件——walk 只产文件，
+/// 空目录不复制会留下语义差异：.git/refs/heads|tags 在 packed-ref 检出
+/// 里就是空目录，整层蒸发让 .git 变死库（is_git_directory 要求 refs/
+/// 存在），配方再去 init 只是补救 / recursive directory copy: build the
+/// full dir tree (empties included) before files — walk yields files
+/// only, and skipping empty dirs changes semantics: .git/refs/heads|tags
+/// ARE empty under a packed-ref checkout; losing them turns .git into a
+/// dead repo (is_git_directory requires refs/), with recipe re-init as
+/// mere remediation
 fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
+    let mut dirs = vec![src.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        for e in fs::read_dir(&d).map_err(|e| format!("read_dir {}: {e}", d.display()))? {
+            let e = e.map_err(|e| format!("read_dir {}: {e}", d.display()))?;
+            let p = e.path();
+            let ft = e
+                .file_type()
+                .map_err(|e| format!("file_type {}: {e}", p.display()))?;
+            if ft.is_dir() {
+                let rel = p.strip_prefix(src).map_err(|e| e.to_string())?;
+                fsx::install_d(&dst.join(rel))?;
+                dirs.push(p);
+            }
+        }
+    }
     for f in fsx::walk(src) {
         let rel = f.strip_prefix(src).map_err(|e| e.to_string())?;
         let to = dst.join(rel);
@@ -347,9 +535,96 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
             fsx::install_d(&to)?;
         } else {
             fsx::install(&f, &to)?;
+            // 保留 mtime：fs::copy 不保留时间戳，而 autotools 的
+            // aclocal.m4/configure.ac 次序全靠它——次序一旦反转 make 会
+            // 走维护者模式调 aclocal 重生成，在没装 automake 的环境直接炸
+            // preserve mtime: fs::copy drops timestamps and autotools'
+            // aclocal.m4/configure.ac ordering depends on them — reversed
+            // order makes make invoke aclocal via maintainer rules, which
+            // explodes where automake isn't installed
+            if let Ok(md) = f.metadata()
+                && let Ok(mt) = md.modified()
+            {
+                let _ = std::fs::File::options()
+                    .write(true)
+                    .open(&to)
+                    .and_then(|h| h.set_modified(mt));
+            }
+        }
+    }
+    copy_symlinks(src, dst)?;
+    Ok(())
+}
+
+/// 复制 `src` 树里的全部符号链接——`walk` 只产真实文件/目录，链接会
+/// 被静默丢弃（tarball 里常见：mysofa 的 default.sofa 数据文件、
+/// alsa 的 include/alsa→. 头文件布局）。POSIX 原地重建链接；Windows
+/// 物化成内容（fs::copy 跟随链接）——文件链接落成副本，目录链接
+/// 落成真实目录副本，且内部再遇链接按文件策略逐个处理，不会环。
+/// Copy every symlink under `src` — `walk` only yields real
+/// files/dirs, links would be silently dropped (tarballs carry them:
+/// mysofa's default.sofa data file, alsa's include/alsa->. header
+/// layout). POSIX recreates links in place; Windows materializes
+/// content (fs::copy dereferences) — a file link becomes a copy, a dir
+/// link becomes a real dir copy, links nested inside are handled
+/// per-file, no cycles.
+fn copy_symlinks(src: &Path, dst: &Path) -> Result<(), String> {
+    let mut stack = vec![src.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for e in fs::read_dir(&dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))? {
+            let e = e.map_err(|e| format!("read_dir {}: {e}", dir.display()))?;
+            let p = e.path();
+            let ft = e
+                .file_type()
+                .map_err(|e| format!("file_type {}: {e}", p.display()))?;
+            if ft.is_dir() {
+                stack.push(p);
+            } else if ft.is_symlink() {
+                let rel = p.strip_prefix(src).map_err(|e| e.to_string())?;
+                let to = dst.join(rel);
+                if let Some(parent) = to.parent() {
+                    fsx::install_d(parent)?;
+                }
+                if copy_one_symlink(&p, &to).is_err() {
+                    log::warn(&format!(
+                        "symlink {} dropped (dangling or unreadable)",
+                        p.display()
+                    ));
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// 物化单个符号链接 / Materialize one symlink
+fn copy_one_symlink(from: &Path, to: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let target = fs::read_link(from).map_err(|e| e.to_string())?;
+        std::os::unix::fs::symlink(&target, to).map_err(|e| e.to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        // 目录链接→真实目录副本，且只拷真实文件（walk 跳过链接）——
+        // 自指链接如 include/alsa->. 不会无限递归；文件链接→内容
+        // dir link -> real dir copy of real files only (walk skips
+        // links) — self-referential links like include/alsa->. cannot
+        // recurse forever; file link -> content
+        if from.is_dir() {
+            fsx::install_d(to)?;
+            for f in fsx::walk(from) {
+                if f.is_dir() {
+                    continue;
+                }
+                let rel = f.strip_prefix(from).map_err(|e| e.to_string())?;
+                fsx::install(&f, &to.join(rel))?;
+            }
+            Ok(())
+        } else {
+            fsx::install(from, to)
+        }
+    }
 }
 
 /// `ffbuild sources` 调试子命令：打印解析结果
@@ -367,32 +642,4 @@ pub fn dump() -> Result<(), String> {
         );
     }
     Ok(())
-}
-
-// ==================== 测试 / tests ====================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// libsndfile 解析实测：默认分支 HEAD → GitHub CI 验证 → 失败回退
-    /// 最新 tag。依赖外网+GitHub API，默认忽略。
-    /// Live libsndfile resolution: default-branch HEAD -> GitHub CI gate ->
-    /// fallback to the newest tag. Hits the network + GitHub API; ignored
-    /// by default.
-    #[test]
-    #[ignore = "hits github.com + the Actions API; run explicitly"]
-    fn libsndfile_resolve() {
-        crate::sys::smoke_env();
-        let (branch, sha) =
-            crate::net::default_branch("https://github.com/libsndfile/libsndfile.git").unwrap();
-        println!("default branch: {branch} @ {sha}");
-        let ci = crate::net::ci_green_sync("https://github.com/libsndfile/libsndfile.git", &sha);
-        println!("CI green: {ci:?}");
-        let co = resolve_git("https://github.com/libsndfile/libsndfile.git", None).unwrap();
-        match &co {
-            Checkout::Commit(s) => println!("resolved: commit {s}"),
-            Checkout::Tag(t) => println!("resolved: tag {t}"),
-        }
-    }
 }

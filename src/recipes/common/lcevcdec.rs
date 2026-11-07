@@ -1,5 +1,5 @@
-//! lcevcdec 配方：LCEVC 解码器（旧 80-windows.sh 移植）
-//! lcevcdec recipe: LCEVC decoder (port of 80-windows.sh)
+//! lcevcdec 配方：LCEVC 解码器
+//! lcevcdec recipe: LCEVC decoder
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

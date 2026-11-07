@@ -1,6 +1,5 @@
-//! librist 配方：RIST 传输协议（钉 0.2.20；旧 60-media-io.sh 移植）
-//! librist recipe: RIST transport protocol, pinned 0.2.20 (port of
-//! 60-media-io.sh)
+//! librist 配方：RIST 传输协议（钉 0.2.20）
+//! librist recipe: RIST transport protocol, pinned 0.2.20
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

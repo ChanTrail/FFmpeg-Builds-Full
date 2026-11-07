@@ -1,5 +1,5 @@
-//! bzip2 配方：libbz2 静态库（旧 10-compression.sh 移植）
-//! bzip2 recipe: libbz2 as a static library (port of 10-compression.sh)
+//! bzip2 配方：libbz2 静态库
+//! bzip2 recipe: libbz2 as a static library
 
 use crate::extras::{Ctx, Recipe};
 use crate::fsx;

@@ -1,5 +1,5 @@
-//! uavs3d 配方：AVS3 解码器（旧 50-video.sh 移植）
-//! uavs3d recipe: AVS3 decoder (port of 50-video.sh)
+//! uavs3d 配方：AVS3 解码器
+//! uavs3d recipe: AVS3 decoder
 
 use crate::extras::{Ctx, Recipe};
 use crate::fsx;

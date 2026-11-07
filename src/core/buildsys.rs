@@ -1,6 +1,5 @@
-//! 构建系统封装：autotools/cmake/meson 的标准静态构建（extras-lib.sh 移植）
+//! 构建系统封装：autotools/cmake/meson 的标准静态构建
 //! Build-system wrappers: standard static builds for autotools/cmake/meson
-//! (ported from extras-lib.sh)
 
 use crate::fsx;
 use crate::sys;

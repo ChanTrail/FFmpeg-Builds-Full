@@ -29,7 +29,6 @@ pub struct Info {
 /// N-<count>-g<hash> version string, files of the checked-out commit
 /// only), write version.sh, return the source identity. FFMPEG_REPO /
 /// FFMPEG_REF / FFMPEG_SHA env vars override the defaults.
-///
 /// 注意 / note: 不打任何补丁（patches 环节按新方针整体移除）— clean
 /// upstream sources only, per the rewrite policy.
 pub fn fetch(dest: &Path) -> Result<Info, String> {
@@ -127,7 +126,6 @@ pub fn fetch(dest: &Path) -> Result<Info, String> {
 /// with its config.log. Even when configure finally succeeds, drops make
 /// this an Err: an ffmpeg silently missing requested libraries must never
 /// ship.
-///
 /// `required` 里的库（FF_REQUIRED 语义，不带 --enable- 前缀）让枚举提前
 /// 中止 / names in `required` abort the enumeration early
 pub fn configure(

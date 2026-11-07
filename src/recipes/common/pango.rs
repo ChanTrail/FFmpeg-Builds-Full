@@ -1,6 +1,5 @@
-//! pango 配方：librsvg 的文本布局依赖（旧 45-glib-stack.sh 移植）
-//! pango recipe: librsvg's text layout dependency (port of
-//! 45-glib-stack.sh)
+//! pango 配方：librsvg 的文本布局依赖
+//! pango recipe: librsvg's text layout dependency
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

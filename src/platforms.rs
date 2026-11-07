@@ -1,7 +1,6 @@
 //! 平台构建模块分发：每个 <os>_<arch> 一个独立模块，接口形状一致。
 //! Platform build-module dispatch: one independent module per <os>_<arch>,
 //! all exposing the same Pipeline shape.
-//!
 //! 各模块内部可再分 os 级共享助手（如 platforms/windows_common.rs），
 //! 但入口永远按平台×架构独立——平台差异只进对应文件。
 //! A module may share OS-level helpers internally (e.g.
@@ -63,5 +62,9 @@ pub fn plat_key() -> String {
 pub fn work_root() -> PathBuf {
     std::env::var("FFBUILD_WORK")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| crate::sys::env().repo_root.join("ffwork"))
+        .unwrap_or_else(|_| {
+            crate::sys::env()
+                .repo_root
+                .join(format!("ffmpeg-{}", crate::sys::env().plat()))
+        })
 }

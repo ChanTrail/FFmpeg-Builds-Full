@@ -1,12 +1,10 @@
 //! FFmpeg 特性清单加载：features/*.yaml → configure 旗标
 //! FFmpeg feature lists: features/*.yaml → configure flags
-//!
 //! 布局 / layout:
 //!   features/base.yaml            [zlib, ...]                 —— 恒 enable
 //!   features/common.yaml          {libx264: enable, ...}      —— 通用库
 //!   features/misc.yaml            {<os>-<arch>: {libfoo: disable}}  —— 按平台分节的杂项
 //!   features/<os>-<arch>.yaml     {libvpl: enable, ...}       —— 平台×架构特化
-//!
 //! 规则 / rules:
 //! * 键 = FFmpeg configure 特性名（libx264、gnutls、avisynth……必须已知）
 //!   key = FFmpeg configure feature name (must be a known feature)
@@ -38,16 +36,15 @@ pub struct Feature {
     pub probe: &'static str,
 }
 
-/// 已知特性表：旧流水线（packages.txt 旗标列 + extras 配方表 + vendored
-/// 构建脚本）涉及的全部外部库与 autodetect 特性。JSON 里出现表外键直接
-/// 报错——笔误不能静默漏特性。probe="always" 表示该特性随平台头文件
-/// 天然可用（不探测，enable 即信任；FFmpeg configure 自己兜底）。
-/// Known-feature table: every external-library and autodetect feature the
-/// old pipeline referenced (packages.txt flag column + extras recipes +
-/// vendored build scripts). A JSON key outside this table is a hard error —
-/// typos must not silently drop. probe="always" means the feature is
-/// guaranteed by platform headers (no probe; FFmpeg's configure is the
-/// final arbiter).
+/// 已知特性表：packages/*.yaml 旗标列与 extras 配方表涉及的全部外部库
+/// 与 autodetect 特性。JSON 里出现表外键直接报错——笔误不能静默漏特性。
+/// probe="always" 表示该特性随平台头文件天然可用（不探测，enable 即
+/// 信任；FFmpeg configure 自己兜底）。
+/// Known-feature table: every external-library and autodetect feature that
+/// packages/*.yaml flag columns and the extras recipes reference. A JSON
+/// key outside this table is a hard error — typos must not silently drop.
+/// probe="always" means the feature is guaranteed by platform headers
+/// (no probe; FFmpeg's configure is the final arbiter).
 pub const FEATURES: &[Feature] = &[
     // ---- 压缩 / compression ----
     f("zlib", "zlib"),
@@ -79,7 +76,6 @@ pub const FEATURES: &[Feature] = &[
     f("libkvazaar", "kvazaar"),
     f("libopenh264", "openh264"),
     f("liboapv", "oapv"),
-    f("libxavs", "xavs"),
     f(
         "libsvtjpegxs",
         "SvtJpegxs,arsym:lib/libSvtJpegxs.a@svt_jpeg_xs_encoder_init",

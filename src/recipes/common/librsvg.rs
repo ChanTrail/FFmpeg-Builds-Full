@@ -1,7 +1,5 @@
-//! librsvg 配方：SVG 解码（Rust 部分经 cargo-c 驱动；旧
-//! 45-glib-stack.sh 移植）
-//! librsvg recipe: SVG decode, Rust part driven through cargo-c (port of
-//! 45-glib-stack.sh)
+//! librsvg 配方：SVG 解码（Rust 部分经 cargo-c 驱动）
+//! librsvg recipe: SVG decode, Rust part driven through cargo-c
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

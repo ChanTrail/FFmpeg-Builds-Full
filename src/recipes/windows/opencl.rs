@@ -1,7 +1,6 @@
-//! opencl 配方：OpenCL 头文件 + 静态 ICD 加载器（运行时才找厂商驱动；
-//! 旧 80-windows.sh 移植）
+//! opencl 配方：OpenCL 头文件 + 静态 ICD 加载器（运行时才找厂商驱动）
 //! opencl recipe: OpenCL headers + static ICD loader (vendor drivers
-//! found at run time; port of 80-windows.sh)
+//! found at run time)
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

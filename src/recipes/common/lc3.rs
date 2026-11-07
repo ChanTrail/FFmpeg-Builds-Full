@@ -1,5 +1,5 @@
-//! lc3 配方：LC3/LC3plus 蓝牙音频（旧 30-audio.sh 移植）
-//! lc3 recipe: LC3/LC3plus Bluetooth audio (port of 30-audio.sh)
+//! lc3 配方：LC3/LC3plus 蓝牙音频
+//! lc3 recipe: LC3/LC3plus Bluetooth audio
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

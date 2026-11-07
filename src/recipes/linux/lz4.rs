@@ -1,7 +1,6 @@
-//! lz4 配方：静态库 + liblz4.pc（被 libtiff 的 Libs.private 拖入；旧
-//! 70-linux-hw.sh 移植）
+//! lz4 配方：静态库 + liblz4.pc（被 libtiff 的 Libs.private 拖入）
 //! lz4 recipe: static lib + liblz4.pc (pulled in by libtiff's
-//! Libs.private; port of 70-linux-hw.sh)
+//! Libs.private)
 
 use crate::extras::{Ctx, Recipe};
 use crate::fsx;

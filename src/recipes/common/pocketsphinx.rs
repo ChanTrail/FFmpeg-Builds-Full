@@ -1,5 +1,5 @@
-//! pocketsphinx 配方：语音识别（旧 30-audio.sh 移植）
-//! pocketsphinx recipe: speech recognition (port of 30-audio.sh)
+//! pocketsphinx 配方：语音识别
+//! pocketsphinx recipe: speech recognition
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

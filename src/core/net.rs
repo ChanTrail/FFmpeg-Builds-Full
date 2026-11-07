@@ -3,7 +3,6 @@
 //! Network layer: async reqwest(rustls) downloads (streamed to disk, resume,
 //! retry with backoff), GitHub/GitLab CI queries, git ls-remote helpers and
 //! the tar/git source-fetch primitives.
-//!
 //! 同步/异步双形态：HTTP 是 async（供预取并发）；对外暴露 sync 包装
 //! （rt().block_on），配方与构建代码保持同步。
 //! Dual sync/async shape: HTTP is async (for prefetch concurrency); sync
@@ -305,6 +304,19 @@ fn vkey(tag: &str) -> Vec<u64> {
         .collect()
 }
 
+/// "版本样式"tag 判据：含 <数字>.<数字> 片段。单数字的修订号 tag
+/// （r2772-MT 的 [2772]）和日期戳 tag（2013-11-24 的 [2013,11,24]）在
+/// vkey 首元素就压过任何 v3.x.y——会把回退检出骗到上古快照
+/// "Version-looking" tag test: contains a <digits>.<digits> fragment.
+/// Bare revision tags (r2772-MT -> [2772]) and datestamp tags
+/// (2013-11-24 -> [2013,11,24]) outrank every v3.x.y on the first vkey
+/// element alone — fooling the fallback into a fossil checkout
+fn is_version_tag(t: &str) -> bool {
+    let b = t.as_bytes();
+    b.windows(3)
+        .any(|w| w[0].is_ascii_digit() && w[1] == b'.' && w[2].is_ascii_digit())
+}
+
 /// 远端最新 tag：全量 ls-remote --tags，取"像版本号"的最后一个（语义
 /// 版本优先；实在没有版本样式的 tag 才取字典序最大者）
 /// Latest remote tag: full ls-remote --tags, pick the last version-looking
@@ -329,7 +341,7 @@ pub fn latest_tag(url: &str) -> Result<Option<String>, String> {
         .collect();
     tags.sort();
     tags.dedup();
-    let mut ver: Vec<&String> = tags.iter().filter(|t| !vkey(t).is_empty()).collect();
+    let mut ver: Vec<&String> = tags.iter().filter(|t| is_version_tag(t)).collect();
     ver.sort_by_key(|t| vkey(t));
     if let Some(t) = ver.last() {
         return Ok(Some((*t).clone()));
@@ -409,9 +421,15 @@ pub async fn github_ci_green(owner: &str, repo: &str, sha: &str) -> Result<Optio
 }
 
 /// 判定该 git 主机是不是 GitLab 实例（探测 /api/v4/version；已知清单
-/// 快路径）/ decide whether a git host is a GitLab instance (probes
-/// /api/v4/version; a known-host list shortcuts the probe)
-fn is_gitlab(host: &str) -> bool {
+/// 快路径）。必须 async——同步版用 get_json_sync 会在调用方 block_on
+/// 里再压一层 block_on，直接 "Cannot start a runtime from within a
+/// runtime" panic。
+/// decide whether a git host is a GitLab instance (probes
+/// /api/v4/version; a known-host list shortcuts the probe). Must stay
+/// async — a sync version via get_json_sync nests a second block_on
+/// inside the caller's block_on and panics with "Cannot start a
+/// runtime from within a runtime".
+async fn is_gitlab(host: &str) -> bool {
     // 已知 GitLab 实例 / known GitLab instances
     const KNOWN: &[&str] = &[
         "gitlab.com",
@@ -436,7 +454,9 @@ fn is_gitlab(host: &str) -> bool {
     // hide even /version without it
     let h = gl_headers();
     let hp = hdr_pairs(&h);
-    let ok = get_json_sync(&format!("https://{host}/api/v4/version"), &hp).is_ok();
+    let ok = get_json(&format!("https://{host}/api/v4/version"), &hp)
+        .await
+        .is_ok();
     cache.lock().unwrap().insert(host.to_string(), ok);
     ok
 }
@@ -520,7 +540,7 @@ pub async fn ci_green(url: &str, sha: &str) -> Option<bool> {
                 None
             }
         }
-    } else if is_gitlab(host) {
+    } else if is_gitlab(host).await {
         match gitlab_ci_green(host, path, sha).await {
             Ok(v) => v,
             Err(e) => {
@@ -631,36 +651,4 @@ pub fn fetch_git_commit(wd: &Path, url: &str, sha: &str) -> Result<PathBuf, Stri
         &src,
     )?;
     Ok(src)
-}
-
-// ==================== 测试 / tests ====================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// SourceForge 镜像跳转链路实测：downloads.sourceforge.net 会 302 到
-    /// 镜像主机（或对某些 UA 回镜像选择页）。依赖外网、CI 里会拖慢且
-    /// 不稳定——默认忽略，按需 `cargo test -- --ignored` 运行。
-    /// SourceForge mirror-hop test: downloads.sourceforge.net 302s to a
-    /// mirror host (or serves a mirror-picker page to some UAs).
-    /// Network-dependent — ignored by default; run on demand with
-    /// `cargo test -- --ignored`.
-    #[test]
-    #[ignore = "hits the live SourceForge mirrors; run explicitly"]
-    fn sourceforge_download() {
-        let dest = std::env::temp_dir().join("lame-4.0-test.tar.gz");
-        let _ = std::fs::remove_file(&dest);
-        download_sync(
-            "https://downloads.sourceforge.net/lame/lame/4.0/lame-4.0.tar.gz",
-            &dest,
-        )
-        .expect("sourceforge download failed");
-        let size = std::fs::metadata(&dest).unwrap().len();
-        assert!(size > 1_000_000, "suspiciously small: {size}");
-        // gzip 魔数 / gzip magic
-        let head = std::fs::read(&dest).unwrap();
-        assert_eq!(&head[..2], &[0x1f, 0x8b], "not a gzip stream");
-        println!("OK: {size} bytes");
-    }
 }

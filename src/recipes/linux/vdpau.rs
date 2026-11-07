@@ -1,5 +1,5 @@
-//! vdpau 配方：Linux 硬件解码接口（旧 70-linux-hw.sh 移植）
-//! vdpau recipe: Linux hardware decode interface (port of 70-linux-hw.sh)
+//! vdpau 配方：Linux 硬件解码接口
+//! vdpau recipe: Linux hardware decode interface
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

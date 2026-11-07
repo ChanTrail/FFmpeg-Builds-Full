@@ -1,11 +1,10 @@
 //! FFmpeg-Builds-Full 构建驱动程序入口
 //! FFmpeg-Builds-Full build driver — entry point
-//!
-//! 取代 scripts/ 下整套 .sh：先构建本程序，再由它驱动各平台的 FFmpeg
-//! 原生构建。每个平台×架构一个独立建模块（platforms/<os>_<arch>.rs）。
-//! Replaces the whole scripts/*.sh pipeline: build this program first, then
-//! let it drive the native FFmpeg build per platform. Every platform×arch
-//! is an independent build module (platforms/<os>_<arch>.rs).
+//! 先构建本程序，再由它驱动各平台的 FFmpeg 原生构建。每个平台×架构
+//! 一个独立建模块（platforms/<os>_<arch>.rs）。
+//! Build this program first, then let it drive the native FFmpeg build
+//! per platform. Every platform×arch is an independent build module
+//! (platforms/<os>_<arch>.rs).
 //! Usage: FFmpeg-Builds-Full <build|packages|extras|ffmpeg|package|save-deps|smoke|features|sources|help>
 
 //! 模块布局：src/ 只留入口锚文件，功能实现全部进各功能目录。
@@ -23,7 +22,7 @@ mod stages;
 // untouched by the directory move
 pub use core::{ar, buildsys, fsx, json, log, net, pkgcfg, sys};
 pub use engine::extras;
-pub use manifest::{features, sources};
+pub use manifest::{features, patches, sources};
 pub use stages::{deps, ffmpeg, smoke};
 
 use std::process::exit;
@@ -68,7 +67,7 @@ FFmpeg-Builds-Full — FFmpeg 静态构建驱动 / static FFmpeg build driver
   help       显示本帮助 / show this help
 
 环境变量 / Environment variables:
-  FFBUILD_WORK   工作目录 / scratch dir      (默认 / default: <repo>/ffwork)
+  FFBUILD_WORK   工作目录 / scratch dir      (默认 / default: ffmpeg-<os>-<arch>)
   FFBUILD_DIST   产物输出目录 / artifact dir  (默认 / default: <repo>/artifacts)
   FFBUILD_MSYS2  MSYS2 根目录 / MSYS2 root    (Windows)
   FFBUILD_MIRROR pacman 镜像基址 / pacman mirror base (同 / as --mirror)
@@ -149,6 +148,35 @@ fn main() {
         "ffmpeg" => (p.ffmpeg)(),
         "package" => (p.package)(),
         "save-deps" => (p.save_deps)(),
+        // 内部子命令：extras 引擎把每个配方作为子进程重入，好让 run_tee
+        // 逐字落一份 <name>.log——exit code 即配方成败，故不走 log::die
+        // 的 ::error:: 注解（可选配方的失败由父进程 status/warn 呈现）
+        // internal subcommand: the extras engine re-enters each recipe as
+        // a subprocess so run_tee can land a verbatim <name>.log — the
+        // exit code IS the verdict, so it must not emit log::die's
+        // ::error:: annotation (an optional failure surfaces via the
+        // parent's status/warn instead)
+        "recipe-run" => {
+            let name = positional.first().map(String::as_str).unwrap_or_default();
+            match extras::run_recipe(name) {
+                Ok(()) => exit(0),
+                Err(e) => {
+                    eprintln!("recipe-run {name}: {e}");
+                    exit(1);
+                }
+            }
+        }
+        // 同上的 postfix 重入：.pc 元数据修补/归档去重单独落
+        // postfix.log，不进日志包就等于没发生过 / same re-entry for the
+        // postfix pass: the .pc-metadata patch/archive dedup gets its own
+        // postfix.log — without one in the bundle it never happened
+        "postfix-run" => match extras::run_postfix() {
+            Ok(()) => exit(0),
+            Err(e) => {
+                eprintln!("postfix-run: {e}");
+                exit(1);
+            }
+        },
         "features" => features::dump(),
         "sources" => sources::dump(),
         other => {

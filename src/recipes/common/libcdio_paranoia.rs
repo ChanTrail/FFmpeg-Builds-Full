@@ -1,6 +1,5 @@
-//! libcdio-paranoia 配方：纠错 CD 音频抓取（旧 60-media-io.sh 移植）
-//! libcdio-paranoia recipe: error-correcting CD audio ripping (port of
-//! 60-media-io.sh)
+//! libcdio-paranoia 配方：纠错 CD 音频抓取
+//! libcdio-paranoia recipe: error-correcting CD audio ripping
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

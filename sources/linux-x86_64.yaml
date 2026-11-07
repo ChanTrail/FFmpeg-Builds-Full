@@ -56,3 +56,4 @@ davs2:
   git: https://github.com/pkuvcl/davs2.git
 xavs2:
   git: https://github.com/pkuvcl/xavs2.git
+  ref: eae1e8b9d12468059bdd7dee893508e470fa83d8   # 上游停滞，固化末次提交（2019-04）/ upstream stalled, pinned at last commit

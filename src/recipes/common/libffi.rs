@@ -1,5 +1,5 @@
-//! libffi 配方：glib/gobject 依赖（旧 45-glib-stack.sh 移植）
-//! libffi recipe: glib/gobject dependency (port of 45-glib-stack.sh)
+//! libffi 配方：glib/gobject 依赖
+//! libffi recipe: glib/gobject dependency
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

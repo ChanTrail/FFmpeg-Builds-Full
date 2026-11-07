@@ -1,10 +1,8 @@
 //! libplacebo 配方：SPIRV-Cross + libplacebo（Vulkan 滤镜栈；MSYS2 的
-//! shaderc.pc 指向共享库而 FFmpeg 静态链接，改用 combined 静态版；旧
-//! 80-windows.sh 移植）
+//! shaderc.pc 指向共享库而 FFmpeg 静态链接，改用 combined 静态版）
 //! libplacebo recipe: SPIRV-Cross + libplacebo (Vulkan filter stack;
 //! MSYS2's shaderc.pc points at the shared lib but FFmpeg links
-//! statically, so substitute the combined static one; port of
-//! 80-windows.sh)
+//! statically, so substitute the combined static one)
 
 use crate::buildsys;
 use crate::extras::{self, Ctx, Recipe};

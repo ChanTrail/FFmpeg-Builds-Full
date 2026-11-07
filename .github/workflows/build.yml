@@ -16,10 +16,6 @@
 #     GitHub evaluates crons on the default branch alone — and only after
 #     one complete successful build (a `latest` release exists). Artifacts
 #     ship as a normal release.
-#   - workflow_run：非 master 分支的 rust CI（ci.yml）成功完成后发起——
-#     构建该分支的 FFmpeg，产物以 pre-release 发布。
-#     A non-master branch's rust CI (ci.yml) finishing successfully kicks
-#     off an FFmpeg build of that branch; artifacts ship as a pre-release.
 #   - workflow_dispatch：手动构建，可选 publish 发布（仅 master 有意义）。
 #     Manual builds, optionally publishing (only meaningful on master).
 #
@@ -41,11 +37,6 @@ on:
   # the link fired after the driver's release is published
   repository_dispatch:
     types: [Build FFmpeg]
-  workflow_run:
-    # rust CI 在非 master 分支成功 → 以 pre-release 构建该分支
-    # rust CI succeeding on a non-master branch -> build as a pre-release
-    workflows: ["CI"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       publish:
@@ -62,25 +53,15 @@ permissions:
   contents: read
 
 jobs:
-  # 分支判定：workflow_run 触发时取发起 CI 的分支与提交；其余情况是当前
-  # 分支。driver/build 都要 checkout 这个 ref——workflow_run 默认停在
-  # 默认分支上，不 checkout 就会拿 master 的驱动代码去构建别的分支。
-  # Branch resolution: for workflow_run, the branch+sha that ran CI; the
-  # current ref otherwise. driver/build must check out this ref —
-  # workflow_run lands on the default branch by default, and building
-  # master's driver code for another branch would be wrong.
+  # 分支判定：driver/build 都要 checkout 当前触发 ref——非 master 分支的
+  # 手动构建同样要拿该分支自己的驱动代码。
+  # Branch resolution: driver/build must check out the triggering ref —
+  # a manual build on a non-master branch must use that branch's own
+  # driver code.
   prepare:
     name: Resolve upstream commit + ref
     runs-on: ubuntu-26.04
     timeout-minutes: 10
-    # workflow_run 门：仅当发起方 CI 在非 master 分支成功时才放行整条
-    # 流水线——master 的 CI 完成和失败的 CI 都不该触发 FFmpeg 构建。
-    # prepare 被拒后下游 needs 全部跳过。
-    # The workflow_run gate: the pipeline only proceeds when the triggering
-    # CI run succeeded on a non-master branch — a completed master CI run
-    # or a failed one must not start an FFmpeg build. With prepare
-    # rejected, every downstream `needs` is skipped.
-    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch != 'master') }}
     outputs:
       sha: ${{ steps.up.outputs.sha }}
       hash: ${{ steps.up.outputs.hash }}
@@ -94,14 +75,15 @@ jobs:
         id: ref
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            echo "ref=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
-            echo "branch=${{ github.event.workflow_run.head_branch }}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=${{ github.sha }}" >> "$GITHUB_OUTPUT"
-            echo "branch=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          echo "ref=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "branch=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          # 非 master 分支的发布只能是 pre-release——不动 latest / a
+          # publish on a non-master branch can only be a pre-release —
+          # `latest` must not move
+          if [ "${{ github.ref_name }}" = "master" ]; then
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Resolve FFmpeg master
@@ -229,7 +211,7 @@ jobs:
         run: git config --global core.autocrlf false
 
       - name: Check out this repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.ref }}
 
@@ -307,7 +289,7 @@ jobs:
       - name: Restore MSYS2 env cache
         if: matrix.kind == 'windows'
         id: envcache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ runner.temp }}\msys64\${{ matrix.msysdir }}
@@ -319,7 +301,7 @@ jobs:
       - name: Build FFmpeg (Windows, MSYS2 ${{ matrix.msystem || '' }})
         if: matrix.kind == 'windows'
         env:
-          FFBUILD_WORK: ${{ github.workspace }}/ffwork
+          FFBUILD_WORK: ${{ github.workspace }}/ffmpeg-${{ matrix.platform }}
           FFBUILD_MSYS2: ${{ runner.temp }}\msys64
           GH_TOKEN: ${{ github.token }}
           # 驱动 packages() 用它决定要不要校验环境完成戳。
@@ -333,7 +315,7 @@ jobs:
       - name: Publish deps (Windows)
         if: matrix.kind == 'windows' && always()
         env:
-          FFBUILD_WORK: ${{ github.workspace }}/ffwork
+          FFBUILD_WORK: ${{ github.workspace }}/ffmpeg-${{ matrix.platform }}
           FFBUILD_MSYS2: ${{ runner.temp }}\msys64
           GH_TOKEN: ${{ github.token }}
         run: ./driver/FFmpeg-Builds-Full.exe save-deps
@@ -355,11 +337,11 @@ jobs:
       # that caching a root-owned download dir is not worth the plumbing.
       - name: Prepare tool cache dirs (Linux)
         if: matrix.kind == 'linux'
-        run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/pyenv /opt/cargo /opt/rustup /opt/ffbuild /work
+        run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/pyenv /opt/cargo /opt/rustup /opt/ffbuild /ffmpeg-${{ matrix.platform }}
 
       - name: Restore tool cache (Linux)
         if: matrix.kind == 'linux'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             /opt/pyenv
@@ -373,7 +355,7 @@ jobs:
           # (cargo-c, the pip list) cold-installs; a prefix fallback would
           # restore the OLD binaries and the "skip if binary exists"
           # probes would take them for the new version.
-          key: tools-${{ matrix.platform }}-${{ hashFiles('src/platforms/linux_common.rs', 'packages/linux.txt') }}
+          key: tools-${{ matrix.platform }}-${{ hashFiles('src/platforms/linux_common.rs', 'packages/linux.yaml') }}
 
       # The library prefix is restored from / published to the "deps" release
       # by the driver itself. That is durable (unlike the 10 GB shared
@@ -383,7 +365,7 @@ jobs:
         if: matrix.kind == 'linux'
         timeout-minutes: 325
         env:
-          FFBUILD_WORK: /work
+          FFBUILD_WORK: /ffmpeg-${{ matrix.platform }}
           FFBUILD_DIST: ${{ github.workspace }}/dist
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -391,21 +373,24 @@ jobs:
           # apt、/opt、/usr/local 安装都需要 root。新版 runner 的 sudo-rs
           # 不认 -E（直接忽略），改用 `sudo env` 显式透传——FFBUILD_DIST
           # 丢了产物会写进编译期烤进二进制的幽灵路径；GH_TOKEN 丢了
-          # deps 恢复/上传全体静默跳过。
+          # deps 恢复/上传全体静默跳过；GITHUB_STEP_SUMMARY 丢了
+          # 失败明细进不了 run 页。
           # apt, /opt and the /usr/local install all want root. sudo-rs on
           # newer runners silently ignores -E, so pass env through
           # `sudo env` explicitly — a lost FFBUILD_DIST sends artifacts to
           # the compile-time-baked phantom path, a lost GH_TOKEN silently
-          # disables deps restore/upload.
+          # disables deps restore/upload, a lost GITHUB_STEP_SUMMARY
+          # silently drops the failure details from the run page.
           sudo env FFBUILD_WORK="$FFBUILD_WORK" FFBUILD_DIST="$FFBUILD_DIST" \
             GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
             GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
             ./driver/FFmpeg-Builds-Full build
 
       - name: Publish deps (Linux)
         if: matrix.kind == 'linux' && always()
         env:
-          FFBUILD_WORK: /work
+          FFBUILD_WORK: /ffmpeg-${{ matrix.platform }}
           GH_TOKEN: ${{ github.token }}
         # sudo-rs 不认 -E —— env 显式透传 / sudo-rs ignores -E — pass env
         # through `sudo env` explicitly
@@ -425,11 +410,11 @@ jobs:
       # dependency rebuild several times faster.
       - name: Restore warm caches (macOS)
         if: matrix.kind == 'macos'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ runner.temp }}/ffmpeg-ccache
-            ${{ runner.temp }}/ffmpeg-macos-workspace
+            ${{ runner.temp }}/ffmpeg-${{ matrix.platform }}-workspace
           key: ${{ matrix.platform }}-warm-${{ github.run_id }}
           restore-keys: |
             ${{ matrix.platform }}-warm-
@@ -465,51 +450,86 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      # 日志路径按 kind 分步：布局跟着驱动实际写入走——work 下是
-      # ffmpeg-info/dropped-libs/extras-*/ffmpeg-build.log 与
-      # ffbuild-ffmpeg/**/config.log；配方状态 .extras/*.txt 在平台前缀
-      # 下（win: <msys64>/<envdir>，linux: /opt/ffbuild，mac: workspace 树）
-      # Log paths split per kind — they track what the driver actually
-      # writes: work holds ffmpeg-info/dropped-libs/extras-*/
-      # ffmpeg-build.log plus ffbuild-ffmpeg/**/config.log; the recipe
-      # state .extras/*.txt lives under the platform prefix (win:
-      # <msys64>/<envdir>, linux: /opt/ffbuild, mac: the workspace tree)
+      # 日志收集统一为"收进 workspace 再上传"，三平台共用
+      # .github/scripts/collect-logs.sh：驱动产物在工作区之外（win:
+      # ffmpeg-<platform> + <msys64>/<envdir>/.extras，linux:
+      # /ffmpeg-<platform> + /opt/ffbuild/.extras，mac:
+      # $RUNNER_TEMP/ffmpeg-<platform>{,-workspace}），
+      # 脚本产出 file-tree.txt 全量清单、errors.txt 出错索引（失败配方 →
+      # 其 .log、configure 丢包 → 其 config-log）、.extras 全量状态与
+      # failed/ 失败现场，全部收进 ffmpeg-<platform> 一个根目录——
+      # 早夭的空跑也有清单可看死在哪步。
+      # Log collection is unified as "gather into the workspace, then
+      # upload" via one shared script on all three platforms —
+      # .github/scripts/collect-logs.sh: the driver output lives outside
+      # the workspace (win: ffmpeg-<platform> +
+      # <msys64>/<envdir>/.extras, linux: /ffmpeg-<platform> +
+      # /opt/ffbuild/.extras, mac:
+      # $RUNNER_TEMP/ffmpeg-<platform>{,-workspace}); the script emits a
+      # file-tree.txt manifest, an errors.txt failure index (failed
+      # recipes -> their .log, configure drops -> their config-log), the
+      # whole .extras state and the failed/ salvage, all under one
+      # ffmpeg-<platform> root dir — even a run that died instantly
+      # leaves a manifest showing where.
+      - name: Collect logs (Windows)
+        if: always() && matrix.kind == 'windows'
+        # Git bash 恒在——MSYS2 装死的那条腿也能收得到日志 / Git bash is
+        # always present — even legs whose MSYS2 setup died get collected
+        shell: bash
+        env:
+          FFBUILD_MSYS2: ${{ runner.temp }}\msys64
+        run: |
+          # Git bash 里 env 给的 Windows 路径统一先转 POSIX 再用 / env
+          # vars arrive as Windows paths — convert them up front in git bash
+          ws="$(cygpath -u "$GITHUB_WORKSPACE")"
+          msys="$(cygpath -u "$FFBUILD_MSYS2")"
+          bash "$ws/.github/scripts/collect-logs.sh" \
+            "$ws/logs" "$ws/ffmpeg-${{ matrix.platform }}" "$msys/${{ matrix.msysdir }}/.extras" \
+            "ffmpeg-${{ matrix.platform }}"
+
       - name: Upload build logs (Windows)
         if: always() && matrix.kind == 'windows'
         uses: actions/upload-artifact@v7
         with:
           name: logs-${{ matrix.platform }}
-          path: |
-            ffwork/*.txt
-            ffwork/*.log
-            ffwork/ffbuild-ffmpeg/**/config.log
-            ${{ runner.temp }}\msys64\${{ matrix.msysdir }}\.extras\*.txt
+          path: logs/
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Collect logs (Linux)
+        if: always() && matrix.kind == 'linux'
+        run: |
+          # 驱动以 root 跑：产物归 root 但全体可读，runner 用户直接收
+          # the driver runs as root: files are root-owned but
+          # world-readable — the runner user collects them directly
+          bash "$GITHUB_WORKSPACE/.github/scripts/collect-logs.sh" \
+            "$GITHUB_WORKSPACE/logs" /ffmpeg-${{ matrix.platform }} /opt/ffbuild/.extras \
+            "ffmpeg-${{ matrix.platform }}"
 
       - name: Upload build logs (Linux)
         if: always() && matrix.kind == 'linux'
         uses: actions/upload-artifact@v7
         with:
           name: logs-${{ matrix.platform }}
-          path: |
-            /work/*.txt
-            /work/*.log
-            /work/ffbuild-ffmpeg/**/config.log
-            /opt/ffbuild/.extras/*.txt
+          path: logs/
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Collect logs (macOS)
+        if: always() && matrix.kind == 'macos'
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/collect-logs.sh" \
+            "$GITHUB_WORKSPACE/logs" \
+            "$RUNNER_TEMP/ffmpeg-${{ matrix.platform }}" \
+            "$RUNNER_TEMP/ffmpeg-${{ matrix.platform }}-workspace/.extras" \
+            "ffmpeg-${{ matrix.platform }}"
 
       - name: Upload build logs (macOS)
         if: always() && matrix.kind == 'macos'
         uses: actions/upload-artifact@v7
         with:
           name: logs-${{ matrix.platform }}
-          path: |
-            ${{ runner.temp }}/ffmpeg-macos/*.txt
-            ${{ runner.temp }}/ffmpeg-macos/*.log
-            ${{ runner.temp }}/ffmpeg-macos/ffbuild-ffmpeg/**/config.log
-            ${{ runner.temp }}/ffmpeg-macos-workspace/.extras/*.txt
+          path: logs/
           if-no-files-found: ignore
           retention-days: 7
 
@@ -613,13 +633,12 @@ jobs:
   #
   # 发布门槛 / publish gates:
   #   schedule → 正常 release（autobuild-*，最新滑动 latest）
-  #   workflow_dispatch + publish → 正常 release
-  #   workflow_run（非 master 分支 CI 完成）→ pre-release（autobuild-<branch>-*，
-  #   不动 latest）
+  #   workflow_dispatch + publish → 正常 release（非 master 分支强制
+  #   pre-release，不动 latest）
   release:
     name: Publish release
     needs: [prepare, verify]
-    if: ${{ success() && (github.event_name == 'schedule' || github.event_name == 'repository_dispatch' || inputs.publish || github.event_name == 'workflow_run') }}
+    if: ${{ success() && (github.event_name == 'schedule' || github.event_name == 'repository_dispatch' || inputs.publish) }}
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
@@ -636,7 +655,7 @@ jobs:
       KEEP_RELEASES: "30"
     steps:
       - name: Check out this repository (for .github/scripts/)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.ref }}
 

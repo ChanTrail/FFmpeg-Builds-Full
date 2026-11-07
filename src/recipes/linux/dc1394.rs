@@ -1,5 +1,5 @@
-//! dc1394 配方：1394 摄像机控制（旧 70-linux-hw.sh 移植）
-//! dc1394 recipe: 1394 camera control (port of 70-linux-hw.sh)
+//! dc1394 配方：1394 摄像机控制
+//! dc1394 recipe: 1394 camera control
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

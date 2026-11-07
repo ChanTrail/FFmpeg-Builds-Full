@@ -1,5 +1,5 @@
-//! xavs2 配方：AVS2 编码器（旧 50-video.sh 移植）
-//! xavs2 recipe: AVS2 encoder (port of 50-video.sh)
+//! xavs2 配方：AVS2 编码器
+//! xavs2 recipe: AVS2 encoder
 
 use crate::extras::{Ctx, Recipe};
 use crate::fsx;
@@ -54,7 +54,11 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     // same version.sh quirk as davs2: a tagless checkout yields "1.7."
     let pc = e.prefix_win.join("lib/pkgconfig/xavs2.pc");
     if pc.is_file() {
-        let _ = fsx::sed_i("s/^(Version:[[:space:]]*[0-9.]+)\\.$/\\1.0/", &pc, &e.work);
+        let _ = fsx::sed_i(
+            "s/^\\(Version:[[:space:]]*[0-9.]\\+\\)\\.$/\\1.0/",
+            &pc,
+            &e.work,
+        );
     }
     Ok(())
 }

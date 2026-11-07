@@ -1,5 +1,5 @@
-//! alsa 配方：Linux 音频采集（旧 70-linux-hw.sh 移植）
-//! alsa recipe: Linux audio capture (port of 70-linux-hw.sh)
+//! alsa 配方：Linux 音频采集
+//! alsa recipe: Linux audio capture
 
 use crate::extras::{Ctx, Recipe};
 use crate::recipes::r;

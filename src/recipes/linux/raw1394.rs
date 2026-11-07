@@ -1,5 +1,5 @@
-//! raw1394 配方：IEEE1394 采集（旧 70-linux-hw.sh 移植）
-//! raw1394 recipe: IEEE1394 capture (port of 70-linux-hw.sh)
+//! raw1394 配方：IEEE1394 采集
+//! raw1394 recipe: IEEE1394 capture
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

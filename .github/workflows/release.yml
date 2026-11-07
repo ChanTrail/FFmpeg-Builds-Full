@@ -1,11 +1,14 @@
 # Rust 驱动程序（FFmpeg-Builds-Full）的 CD：master 上 CI 测试成功完成
 # 后，若 Cargo.toml 版本对应的 tag 尚不存在（=版本变化），在全部五
-# 个平台/架构上构建驱动二进制并发布 v<版本> release。手动触发同理。
+# 个平台/架构上构建驱动二进制并发布 v<版本> release。手动触发同理，
+# 但同样受"CI 未绿不发布"约束（查本分支最近一次已完成 CI 的结论）。
 # CD for the Rust driver (FFmpeg-Builds-Full): after CI finishes
 # successfully on master, if the tag matching Cargo.toml's version does
 # not exist yet (= the version changed), build the driver on all five
 # platform/architectures and publish a v<version> release. A manual
-# dispatch works the same way.
+# dispatch works the same way — and is bound by the same "no release
+# without green CI" rule (it consults the newest completed CI run on
+# the branch).
 name: Release
 
 on:
@@ -48,10 +51,36 @@ jobs:
       # tested, not whatever master head is now (new pushes may have
       # landed in between).
       - name: Checkout tested commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
+
+      # 手动触发同样受"CI 未绿不 Release"约束：查本分支最近一次已完成
+      # 的 CI 结论，非 success 直接拦下。不要求 headSha 对齐——
+      # paths-ignore 跳过的提交（纯文档等）没有自己的 run，最近一次已
+      # 完成 run 就代表了可测状态；对不上时只发 notice。
+      # Manual dispatches obey "no release without green CI" as well:
+      # check the newest COMPLETED CI run on this branch and block unless
+      # it concluded success. headSha alignment is not required — commits
+      # skipped by paths-ignore (docs-only etc.) own no run, so the
+      # latest completed run speaks for the testable state; a drift only
+      # earns a notice.
+      - name: Gate manual dispatch on latest CI conclusion
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          row="$(gh run list --workflow ci.yml --branch "${{ github.ref_name }}" \
+            --status completed --limit 1 --json conclusion,headSha \
+            -q '.[0] | "\(.conclusion // "none") \(.headSha // "none")"')"
+          concl="${row%% *}"; sha="${row##* }"
+          echo "latest completed CI on ${{ github.ref_name }}: ${concl:-none} @ ${sha:0:10}"
+          [[ "$concl" == success ]] \
+            || { echo "::error::refusing to release: latest CI conclusion is '${concl:-none}'"; exit 1; }
+          [[ "$sha" == "${{ github.sha }}" ]] \
+            || echo "::notice::latest green CI is ${sha:0:10}, dispatched sha is ${GITHUB_SHA:0:10} (paths-ignore drift)"
 
       - name: Read version / probe tag
         id: v
@@ -104,7 +133,7 @@ jobs:
             exe: FFmpeg-Builds-Full
     steps:
       - name: Checkout tested commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.sha }}
 
@@ -149,7 +178,7 @@ jobs:
       TAG: ${{ needs.version.outputs.tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.sha }}
           # 需要历史 tag 来算 Full Changelog 区间 / history tags are

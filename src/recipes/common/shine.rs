@@ -1,5 +1,5 @@
-//! shine 配方：定点 MP3 编码器（旧 30-audio.sh 移植）
-//! shine recipe: fixed-point MP3 encoder (port of 30-audio.sh)
+//! shine 配方：定点 MP3 编码器
+//! shine recipe: fixed-point MP3 encoder
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

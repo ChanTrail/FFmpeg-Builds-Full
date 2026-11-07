@@ -37,7 +37,3 @@ sratom:
 lilv:
   git: https://github.com/lv2/lilv.git
   ref: 4b8f30055fa5cb4134a2eb45fc1555bc04289314
-
-# ---- arm64 也启用的库 ----
-xavs:
-  git: https://github.com/pkuvcl/xavs.git

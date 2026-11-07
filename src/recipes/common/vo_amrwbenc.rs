@@ -1,5 +1,5 @@
-//! vo-amrwbenc 配方：AMR-WB 编码（旧 30-audio.sh 移植）
-//! vo-amrwbenc recipe: AMR-WB encoding (port of 30-audio.sh)
+//! vo-amrwbenc 配方：AMR-WB 编码
+//! vo-amrwbenc recipe: AMR-WB encoding
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

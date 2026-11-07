@@ -1,5 +1,5 @@
-//! mysofa 配方：SOFA/HRTF 空间音频（旧 30-audio.sh 移植）
-//! mysofa recipe: SOFA/HRTF spatial audio (port of 30-audio.sh)
+//! mysofa 配方：SOFA/HRTF 空间音频
+//! mysofa recipe: SOFA/HRTF spatial audio
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

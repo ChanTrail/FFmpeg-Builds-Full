@@ -1,6 +1,5 @@
-//! flite 配方：语音合成（大量上游修补；旧 30-audio.sh 移植）
-//! flite recipe: speech synthesis (heavy upstream patching; port of
-//! 30-audio.sh)
+//! flite 配方：语音合成（大量上游修补）
+//! flite recipe: speech synthesis (heavy upstream patching)
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

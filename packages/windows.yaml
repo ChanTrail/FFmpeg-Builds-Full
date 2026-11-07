@@ -1,0 +1,140 @@
+# Windows 构建用的 MSYS2 包（x86_64 走 UCRT64，arm64 走 CLANGARM64）。
+# MSYS2 packages for the Windows builds (UCRT64 on x86_64, CLANGARM64 on arm64).
+#
+#   <package>: {archs: <all|x86_64|arm64>, flags: <FFmpeg configure flags>}
+#
+# <package> 是不带 mingw-w64-<env>- 前缀的包名；archs 默认 all、flags
+# 默认空，裸写 `name:` 即可。flags 只作记录——FFmpeg configure 旗标真源
+# 在 features/；只有真正装上的包才会贡献特性（仓库缺包记 skipped，不
+# 算错）。无 flags 的项是构建工具或下面这些包的依赖。
+# <package> is the name without the mingw-w64-<env>- prefix; archs
+# defaults to all and flags to empty, so a bare `name:` suffices. flags
+# is documentation only — the configure-flag source of truth is
+# features/; only packages that actually installed contribute features
+# (repo-missing entries are recorded as skipped, not fatal). Entries
+# without flags are build tools or dependencies of the ones below.
+#
+# FFmpeg allows exactly one TLS backend: the builds use GnuTLS (same backend
+# as the Linux build; it resolves the Windows certificate store through
+# CryptoAPI, so no CA bundle needs shipping). No OpenSSL/Schannel flag.
+#
+# Libraries that MSYS2 does not package, or only ships as DLLs, are built
+# from source by the extras recipes.
+
+# --- build tools ----------------------------------------------------------------
+cmake:
+ninja:
+meson:
+nasm: {archs: x86_64}
+yasm: {archs: x86_64}
+pkgconf:
+python:
+python-jinja:
+python-mako:
+python-markupsafe:
+autotools:
+libtool:
+clang: {archs: x86_64}
+
+# --- video codecs ---------------------------------------------------------------
+libx264: {flags: --enable-libx264}
+x265: {flags: --enable-libx265}
+aom: {flags: --enable-libaom}
+
+dav1d: {flags: --enable-libdav1d}
+libvpx: {flags: --enable-libvpx}
+svt-av1: {flags: --enable-libsvtav1}
+rav1e: {flags: --enable-librav1e}
+libjxl: {flags: --enable-libjxl}
+libwebp: {flags: --enable-libwebp}
+openjpeg2: {flags: --enable-libopenjpeg}
+libtheora: {flags: --enable-libtheora}
+xvidcore: {flags: --enable-libxvid}
+kvazaar: {flags: --enable-libkvazaar}
+openh264: {flags: --enable-libopenh264}
+openapv: {flags: --enable-liboapv}
+
+# --- audio codecs, speech, audio filters ---------------------------------------
+libvorbis: {flags: --enable-libvorbis}
+opus: {flags: --enable-libopus}
+lame: {flags: --enable-libmp3lame}
+speex: {flags: --enable-libspeex}
+shine: {flags: --enable-libshine}
+gsm: {flags: --enable-libgsm}
+liblc3: {flags: --enable-liblc3}
+libbs2b: {flags: --enable-libbs2b}
+libmodplug: {flags: --enable-libmodplug}
+libopenmpt: {flags: --enable-libopenmpt}
+libgme: {flags: --enable-libgme}
+opencore-amr: {flags: --enable-libopencore-amrnb --enable-libopencore-amrwb}
+vo-amrwbenc: {flags: --enable-libvo-amrwbenc}
+twolame: {flags: --enable-libtwolame}
+libsoxr: {flags: --enable-libsoxr}
+rubberband: {flags: --enable-librubberband}
+libmysofa: {flags: --enable-libmysofa}
+chromaprint: {flags: --enable-chromaprint}
+openal: {flags: --enable-openal}
+
+# --- subtitles, text, graphics, filters ----------------------------------------
+libass: {flags: --enable-libass}
+freetype: {flags: --enable-libfreetype}
+harfbuzz: {flags: --enable-libharfbuzz}
+fribidi: {flags: --enable-libfribidi}
+fontconfig: {flags: --enable-fontconfig}
+libunibreak:
+lcms2: {flags: --enable-lcms2}
+# librsvg 曾是 UCRT64-only（MSYS2 没有 clang-aarch64 构建），但
+# mingw-w64-clang-aarch64-librsvg 现在有了——两架构都启用。
+# librsvg used to be UCRT64-only (MSYS2 had no clang-aarch64 build), but
+# mingw-w64-clang-aarch64-librsvg exists now — enabled on both arches.
+librsvg: {flags: --enable-librsvg}
+SDL2: {flags: --enable-sdl2}
+zimg: {flags: --enable-libzimg}
+vid.stab: {flags: --enable-libvidstab}
+vmaf: {flags: --enable-libvmaf}
+frei0r-plugins: {flags: --enable-frei0r}
+lv2:
+libaribcaption: {flags: --enable-libaribcaption}
+aribb24: {flags: --enable-libaribb24}
+zvbi: {flags: --enable-libzvbi}
+vapoursynth: {flags: --enable-vapoursynth}
+tesseract-ocr: {flags: --enable-libtesseract}
+glib2:
+shaderc:
+spirv-tools:
+spirv-headers:
+spirv-cross:
+glslang:
+xxhash:
+
+# --- containers, protocols, discs ----------------------------------------------
+gnutls: {flags: --enable-gnutls}
+libxml2: {flags: --enable-libxml2}
+gmp: {flags: --enable-gmp}
+libssh: {flags: --enable-libssh}
+srt: {flags: --enable-libsrt}
+librist: {flags: --enable-librist}
+zeromq: {flags: --enable-libzmq}
+rabbitmq-c: {flags: --enable-librabbitmq}
+libbluray: {flags: --enable-libbluray}
+libdvdnav: {flags: --enable-libdvdnav}
+libdvdread: {flags: --enable-libdvdread}
+libdvdcss:
+libcdio-paranoia: {flags: --enable-libcdio}
+libcaca: {flags: --enable-libcaca}
+rtmpdump: {flags: --enable-librtmp}
+curl-winssl: {flags: --enable-libcurl}
+
+# --- compression, text encodings -----------------------------------------------
+zlib: {flags: --enable-zlib}
+bzip2: {flags: --enable-bzlib}
+xz: {flags: --enable-lzma}
+libiconv: {flags: --enable-iconv}
+brotli:
+zstd:
+snappy: {flags: --enable-libsnappy}
+
+# --- hardware acceleration / capture -------------------------------------------
+amf-headers: {flags: --enable-amf}
+ffnvcodec-headers: {flags: --enable-ffnvcodec}
+libvpl: {archs: x86_64, flags: --enable-libvpl}

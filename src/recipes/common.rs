@@ -16,10 +16,13 @@ pub mod cairo;
 pub mod codec2;
 pub mod davs2;
 pub mod flite;
+pub mod freetype;
+pub mod fribidi;
 pub mod glib;
 pub mod gmp;
 pub mod gnutls;
 pub mod gsm;
+pub mod harfbuzz;
 pub mod ilbc;
 pub mod kvazaar;
 pub mod lc3;
@@ -33,9 +36,11 @@ pub mod libdvdcss;
 pub mod libdvdnav;
 pub mod libdvdread;
 pub mod libffi;
+pub mod libpng;
 pub mod librist;
 pub mod librsvg;
 pub mod librtmp;
+pub mod libxml2;
 pub mod modplug;
 pub mod mysofa;
 pub mod nettle;
@@ -59,6 +64,7 @@ pub mod whisper;
 pub mod xavs2;
 pub mod xevd;
 pub mod xeve;
+pub mod zlib;
 pub mod zstd;
 
 use crate::extras::Recipe;
@@ -78,9 +84,12 @@ pub fn recipes() -> Vec<Recipe> {
         codec2::recipe(),
         davs2::recipe(),
         flite::recipe(),
+        freetype::recipe(),
+        fribidi::recipe(),
         gmp::recipe(),
         gnutls::recipe(),
         gsm::recipe(),
+        harfbuzz::recipe(),
         ilbc::recipe(),
         kvazaar::recipe(),
         lc3::recipe(),
@@ -94,9 +103,11 @@ pub fn recipes() -> Vec<Recipe> {
         libdvdnav::recipe(),
         libdvdread::recipe(),
         libffi::recipe(),
+        libpng::recipe(),
         librist::recipe(),
         librsvg::recipe(),
         librtmp::recipe(),
+        libxml2::recipe(),
         modplug::recipe(),
         mysofa::recipe(),
         nettle::recipe(),
@@ -120,6 +131,7 @@ pub fn recipes() -> Vec<Recipe> {
         xavs2::recipe(),
         xevd::recipe(),
         xeve::recipe(),
+        zlib::recipe(),
         zstd::recipe(),
     ];
     // glib 是双表项模块（mac+windows）/ glib is the two-entry module

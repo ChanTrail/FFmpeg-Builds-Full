@@ -1,10 +1,19 @@
 # Rust 驱动程序（FFmpeg-Builds-Full）的 CI：所有分支 push 与
-# PR→master 只跑测试；构建与发布在 release.yml（它监听本 workflow
-# 在 master 上的成功完成，并检查版本变化）。
+# PR→master 先跑五个平台的 fmt/check/clippy/test；全绿后各平台现编
+# release 驱动 → 按 build.yml 的 runner 布局做 FFmpeg 构建准备——
+# 环境就位 + packages + extras（止于 [extras] summary）→ save-deps
+# 把依赖前缀快照发回 "deps" release。FFmpeg 本体构建与发布在
+# build.yml（它监听本 workflow 在非 master 分支的成功完成，链出
+# pre-release 构建；release.yml 则在 master 上接棒做驱动发布）。
 # CI for the Rust driver (FFmpeg-Builds-Full): every branch push and
-# PRs to master run tests only; build & publish live in release.yml,
-# which listens for this workflow succeeding on master and checks for
-# a version change.
+# PRs to master first run fmt/check/clippy/test on all five platforms;
+# once all green, each platform builds the release driver in place and
+# finishes the FFmpeg build preparation on build.yml's runner layout —
+# env setup + packages + extras (stopping at the [extras] summary) ->
+# save-deps publishing the prefix snapshot back to the "deps" release.
+# The FFmpeg build/release itself lives in build.yml (it listens for
+# this workflow succeeding on non-master branches for pre-release
+# builds; release.yml chains on master for driver releases).
 name: CI
 
 on:
@@ -22,6 +31,12 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+
+# 只有 deps job 要把快照发回 "deps" release，它在 job 级再放宽。
+# Only the deps job writes back to the "deps" release — it widens
+# permissions at job level.
+permissions:
+  contents: read
 
 jobs:
   # fmt --check + cargo check + clippy -D warnings + cargo test，五个目标
@@ -57,7 +72,7 @@ jobs:
             runner: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -78,3 +93,429 @@ jobs:
 
       - name: Test
         run: cargo test --all-targets
+
+  # ── 驱动构建 / Driver build ───────────────────────────────────────────
+  # 测试全过后才编：每平台一份 release 二进制进 workflow artifact，下游
+  # deps 直接吃这个产物，不在它的 runner 里二次编译。--locked 钉住
+  # Cargo.lock，与仓库内容逐位一致。
+  # Build only after every test leg is green: one release binary per
+  # platform rides a workflow artifact straight into the deps legs, which
+  # never compile the driver themselves. --locked pins Cargo.lock so the
+  # binary is bit-faithful to the checked-in manifests.
+  driver:
+    name: Driver (${{ matrix.platform }})
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x86_64
+            runner: windows-latest
+            exe: FFmpeg-Builds-Full.exe
+          - platform: windows-arm64
+            runner: windows-11-arm
+            exe: FFmpeg-Builds-Full.exe
+          - platform: linux-x86_64
+            runner: ubuntu-26.04
+            exe: FFmpeg-Builds-Full
+          - platform: linux-arm64
+            runner: ubuntu-26.04-arm
+            exe: FFmpeg-Builds-Full
+          - platform: macos-arm64
+            runner: macos-latest
+            exe: FFmpeg-Builds-Full
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build driver (release)
+        run: cargo build --release --locked
+
+      - name: Upload driver
+        uses: actions/upload-artifact@v7
+        with:
+          name: driver-${{ matrix.platform }}
+          path: target/release/${{ matrix.exe }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── FFmpeg 构建准备 / FFmpeg build preparation ────────────────────────
+  # 与 build.yml 的 build job 同一 runner 布局、同一环境安装，但驱动只
+  # 走到 [extras] summary（packages + extras 两个子命令——build 子命令
+  # 的前半），然后 save-deps 把前缀快照发回 "deps" release。ffmpeg /
+  # package 阶段留给 build.yml；本 job 的产物就是预热好的 deps 缓存。
+  # The same runner layout and env installation as build.yml's build job,
+  # but the driver only walks to the [extras] summary (the packages +
+  # extras subcommands — the front half of `build`), then save-deps
+  # publishes the prefix snapshot back to the "deps" release. The
+  # ffmpeg/package stages stay in build.yml; this job's product is a
+  # warmed deps cache.
+  deps:
+    name: Deps ${{ matrix.platform }}
+    needs: driver
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    permissions:
+      # publish/restore the dependency prefix as assets of the "deps" release
+      contents: write
+    strategy:
+      # Let the other platforms finish even if one fails, so a single run shows
+      # every problem at once.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x86_64
+            runner: windows-latest
+            kind: windows
+            msystem: UCRT64
+            msysdir: ucrt64
+          - platform: windows-arm64
+            runner: windows-11-arm
+            kind: windows
+            msystem: CLANGARM64
+            msysdir: clangarm64
+          - platform: linux-x86_64
+            runner: ubuntu-26.04
+            kind: linux
+          - platform: linux-arm64
+            runner: ubuntu-26.04-arm
+            kind: linux
+          - platform: macos-arm64
+            runner: macos-latest
+            kind: macos
+    env:
+      FFBUILD_DIST: dist
+      # GitLab 源解析用的 PAT：secrets 优先、仓库变量兜底；都不设则匿名
+      # （公共项目可查但限流低）。自托管实例用同一 token。
+      # PAT for GitLab source resolution: secrets first, a repo variable as
+      # fallback; anonymous (public works, tighter rate limit) when unset.
+      # The same token is used for self-hosted instances.
+      GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN || vars.GITLAB_TOKEN }}
+    steps:
+      # Windows git would turn the shell scripts into CRLF before MSYS2 sees them.
+      - name: Keep line endings as they are (Windows)
+        if: matrix.kind == 'windows'
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - name: Check out this repository
+        uses: actions/checkout@v7
+
+      # 驱动吃本趟 driver job 的 artifact——CI 测的就是这版代码，不是
+      # 已发布 release / the driver is this run's own artifact — CI
+      # exercises the current code, not a published release
+      - name: Download driver
+        uses: actions/download-artifact@v8
+        with:
+          name: driver-${{ matrix.platform }}
+          path: driver
+
+      - name: Make driver executable (POSIX)
+        if: matrix.kind != 'windows'
+        run: chmod +x driver/FFmpeg-Builds-Full
+
+      # ---------------------------------------------------------------- Windows
+      - name: Set up MSYS2 (${{ matrix.msystem || 'none' }})
+        if: matrix.kind == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          # Windows PATH appended after MSYS2's own dirs: needed so that gh
+          # (GitHub CLI, a native Windows program) is reachable for the deps
+          # publish/restore steps.
+          path-type: inherit
+          # pacman-contrib carries `paccache`, which this action's post-run
+          # cache-save step shells out to; the CLANGARM64 base image does not
+          # ship it and the whole job then dies at step 1 with exit 127
+          # (run 41761588362).
+          install: >-
+            git
+            base-devel
+            pacman-contrib
+
+      # 已解包的 pacman 环境整个进 actions/cache：$MSYSTEM_PREFIX 子树 +
+      # pacman 本地库 /var/lib/pacman/local。命中后驱动 packages() 里的
+      # pacman -S --needed 全是同版本 no-op——只有上游真升级的包才重解压；
+      # action 自带的下载缓存照旧管那些增量。msys 内核（/usr）故意不缓
+      # 存：替换正在运行的 bash 已加载的 DLL 会炸，那部分是
+      # setup-msys2 的地盘。key 带 run_id + 前缀回退=滚动最新快照；
+      # 半截状态的缓存由驱动里的完成戳机制兜住。
+      # The unpacked pacman environment rides actions/cache wholesale: the
+      # $MSYSTEM_PREFIX subtree + pacman's local DB /var/lib/pacman/local.
+      # On a hit every `pacman -S --needed` in the driver's packages() is a
+      # same-version no-op — only packages upstream actually moved get
+      # re-extracted, while the action's own download cache still covers
+      # those deltas. The msys core (/usr) is deliberately NOT cached:
+      # overwriting DLLs the running bash already has loaded crashes, and
+      # that part belongs to setup-msys2 anyway. run_id key + prefix
+      # fallback = rolling newest snapshot; a half-written env is caught by
+      # the completion-stamp check inside the driver.
+      - name: Restore MSYS2 env cache
+        if: matrix.kind == 'windows'
+        id: envcache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ runner.temp }}\msys64\${{ matrix.msysdir }}
+            ${{ runner.temp }}\msys64\var\lib\pacman\local
+          key: env-${{ matrix.platform }}-${{ github.run_id }}
+          restore-keys: |
+            env-${{ matrix.platform }}-
+
+      - name: Install packages (Windows, MSYS2 ${{ matrix.msystem || '' }})
+        if: matrix.kind == 'windows'
+        env:
+          FFBUILD_WORK: ${{ github.workspace }}/ffmpeg-${{ matrix.platform }}
+          FFBUILD_MSYS2: ${{ runner.temp }}\msys64
+          GH_TOKEN: ${{ github.token }}
+          # 驱动 packages() 用它决定要不要校验环境完成戳。
+          # The driver's packages() uses it to decide whether the env
+          # completion stamp has to be verified.
+          MSYS_ENV_RESTORED: ${{ steps.envcache.outputs.cache-hit }}
+        run: ./driver/FFmpeg-Builds-Full.exe packages
+
+      # 第三方库前缀：restore 上轮 deps → 配方表 → [extras] summary。
+      # 本步超时给 save-deps 留出发 partial 快照的时间窗。
+      # The third-party prefix: restore last run's deps -> recipe table ->
+      # the [extras] summary. The step timeout leaves save-deps a window
+      # to publish a partial snapshot.
+      - name: Build deps [extras] (Windows)
+        if: matrix.kind == 'windows'
+        env:
+          FFBUILD_WORK: ${{ github.workspace }}/ffmpeg-${{ matrix.platform }}
+          FFBUILD_MSYS2: ${{ runner.temp }}\msys64
+          GH_TOKEN: ${{ github.token }}
+        run: ./driver/FFmpeg-Builds-Full.exe extras
+
+      # Publish the deps overlay (extras libs) even when the run died; the
+      # next run restores it before compiling.
+      - name: Publish deps (Windows)
+        if: matrix.kind == 'windows' && always()
+        env:
+          FFBUILD_WORK: ${{ github.workspace }}/ffmpeg-${{ matrix.platform }}
+          FFBUILD_MSYS2: ${{ runner.temp }}\msys64
+          GH_TOKEN: ${{ github.token }}
+        run: ./driver/FFmpeg-Builds-Full.exe save-deps
+
+      # ------------------------------------------------------------------ Linux
+      - name: Free disk space
+        if: matrix.kind == 'linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          sudo apt-get clean || true
+          df -h /
+
+      # 自建工具目录（python venv / rustup / cargo-c）走 actions/cache——
+      # 装一次 ~1-2 分钟，之后每轮探测到二进制就跳过。apt 包走 Azure 本地
+      # 镜像足够快，缓存 root 拥有的下载目录不值得折腾。
+      # Self-installed tool dirs (python venv / rustup / cargo-c) ride
+      # actions/cache — ~1-2 min once, then binary probes skip the steps.
+      # The apt packages come from the Azure-local mirror quickly enough
+      # that caching a root-owned download dir is not worth the plumbing.
+      - name: Prepare tool cache dirs (Linux)
+        if: matrix.kind == 'linux'
+        run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/pyenv /opt/cargo /opt/rustup /opt/ffbuild /ffmpeg-${{ matrix.platform }}
+
+      - name: Restore tool cache (Linux)
+        if: matrix.kind == 'linux'
+        uses: actions/cache@v6
+        with:
+          path: |
+            /opt/pyenv
+            /opt/cargo
+            /opt/rustup
+          # 不给 restore-keys：key 里哈希了驱动的 packages 实现，版本钉
+          # （cargo-c、pip 清单）一改自动冷装；前缀回退反而会把旧版二进
+          # 制恢复回来，而"二进制在场即跳过"探针会把它当成新版。
+          # No restore-keys on purpose: the key hashes the driver's
+          # packages implementation, so a bump of any pinned version
+          # (cargo-c, the pip list) cold-installs; a prefix fallback would
+          # restore the OLD binaries and the "skip if binary exists"
+          # probes would take them for the new version.
+          key: tools-${{ matrix.platform }}-${{ hashFiles('src/platforms/linux_common.rs', 'packages/linux.yaml') }}
+
+      # apt、/opt、/usr/local 安装都需要 root。新版 runner 的 sudo-rs
+      # 不认 -E（直接忽略），改用 `sudo env` 显式透传——FFBUILD_DIST
+      # 丢了产物会写进编译期烤进二进制的幽灵路径；GH_TOKEN 丢了
+      # deps 恢复/上传全体静默跳过；GITHUB_STEP_SUMMARY 丢了失败明细
+      # 进不了 run 页。
+      # apt, /opt and the /usr/local install all want root. sudo-rs on
+      # newer runners silently ignores -E, so pass env through `sudo env`
+      # explicitly — a lost FFBUILD_DIST sends artifacts to the
+      # compile-time-baked phantom path, a lost GH_TOKEN silently disables
+      # deps restore/upload, a lost GITHUB_STEP_SUMMARY silently drops the
+      # failure details from the run page.
+      - name: Install packages (Linux)
+        if: matrix.kind == 'linux'
+        env:
+          FFBUILD_WORK: /ffmpeg-${{ matrix.platform }}
+          FFBUILD_DIST: ${{ github.workspace }}/dist
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo env FFBUILD_WORK="$FFBUILD_WORK" FFBUILD_DIST="$FFBUILD_DIST" \
+            GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            GITHUB_SHA="$GITHUB_SHA" \
+            ./driver/FFmpeg-Builds-Full packages
+
+      - name: Build deps [extras] (Linux)
+        if: matrix.kind == 'linux'
+        timeout-minutes: 325
+        env:
+          FFBUILD_WORK: /ffmpeg-${{ matrix.platform }}
+          FFBUILD_DIST: ${{ github.workspace }}/dist
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo env FFBUILD_WORK="$FFBUILD_WORK" FFBUILD_DIST="$FFBUILD_DIST" \
+            GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
+            ./driver/FFmpeg-Builds-Full extras
+
+      - name: Publish deps (Linux)
+        if: matrix.kind == 'linux' && always()
+        env:
+          FFBUILD_WORK: /ffmpeg-${{ matrix.platform }}
+          GH_TOKEN: ${{ github.token }}
+        # sudo-rs 不认 -E —— env 显式透传 / sudo-rs ignores -E — pass env
+        # through `sudo env` explicitly
+        run: |
+          sudo env FFBUILD_WORK="$FFBUILD_WORK" GH_TOKEN="$GH_TOKEN" \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" \
+            ./driver/FFmpeg-Builds-Full save-deps
+
+      # ------------------------------------------------------------------ macOS
+      # The runner image ships a Homebrew tap that Homebrew warns about on
+      # every invocation; we do not use it.
+      - name: Remove untrusted Homebrew taps
+        if: matrix.kind == 'macos'
+        run: brew untap aws/tap || true
+
+      # ccache + the workspace snapshot cache make the otherwise from-scratch
+      # dependency rebuild several times faster.
+      - name: Restore warm caches (macOS)
+        if: matrix.kind == 'macos'
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ runner.temp }}/ffmpeg-ccache
+            ${{ runner.temp }}/ffmpeg-${{ matrix.platform }}-workspace
+          key: ${{ matrix.platform }}-warm-${{ github.run_id }}
+          restore-keys: |
+            ${{ matrix.platform }}-warm-
+
+      - name: Install packages (macOS)
+        if: matrix.kind == 'macos'
+        env:
+          # Oldest macOS the binaries are meant to run on.
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          GH_TOKEN: ${{ github.token }}
+        run: ./driver/FFmpeg-Builds-Full packages
+
+      - name: Build deps [extras] (macOS)
+        if: matrix.kind == 'macos'
+        timeout-minutes: 340
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          GH_TOKEN: ${{ github.token }}
+        run: ./driver/FFmpeg-Builds-Full extras
+
+      # Publish the deps workspace snapshot even when the run died; the
+      # next run restores it before compiling.
+      - name: Publish deps (macOS)
+        if: matrix.kind == 'macos' && always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./driver/FFmpeg-Builds-Full save-deps
+
+      # ----------------------------------------------------------------- common
+      # 日志收集统一为"收进 workspace 再上传"，三平台共用
+      # .github/scripts/collect-logs.sh：驱动产物在工作区之外（win:
+      # ffmpeg-<platform> + <msys64>/<envdir>/.extras，linux:
+      # /ffmpeg-<platform> + /opt/ffbuild/.extras，mac:
+      # $RUNNER_TEMP/ffmpeg-<platform>{,-workspace}），
+      # 脚本产出 file-tree.txt 全量清单、errors.txt 出错索引（失败配方 →
+      # 其 .log、configure 丢包 → 其 config-log）、.extras 全量状态与
+      # failed/ 失败现场，全部收进 ffmpeg-<platform> 一个根目录——
+      # 早夭的空跑也有清单可看死在哪步。
+      # Log collection is unified as "gather into the workspace, then
+      # upload" via one shared script on all three platforms —
+      # .github/scripts/collect-logs.sh: the driver output lives outside
+      # the workspace (win: ffmpeg-<platform> +
+      # <msys64>/<envdir>/.extras, linux: /ffmpeg-<platform> +
+      # /opt/ffbuild/.extras, mac:
+      # $RUNNER_TEMP/ffmpeg-<platform>{,-workspace}); the script emits a
+      # file-tree.txt manifest, an errors.txt failure index (failed
+      # recipes -> their .log, configure drops -> their config-log), the
+      # whole .extras state and the failed/ salvage, all under one
+      # ffmpeg-<platform> root dir — even a run that died instantly
+      # leaves a manifest showing where.
+      - name: Collect logs (Windows)
+        if: always() && matrix.kind == 'windows'
+        # Git bash 恒在——MSYS2 装死的那条腿也能收得到日志 / Git bash is
+        # always present — even legs whose MSYS2 setup died get collected
+        shell: bash
+        env:
+          FFBUILD_MSYS2: ${{ runner.temp }}\msys64
+        run: |
+          # Git bash 里 env 给的 Windows 路径统一先转 POSIX 再用 / env
+          # vars arrive as Windows paths — convert them up front in git bash
+          ws="$(cygpath -u "$GITHUB_WORKSPACE")"
+          msys="$(cygpath -u "$FFBUILD_MSYS2")"
+          bash "$ws/.github/scripts/collect-logs.sh" \
+            "$ws/logs" "$ws/ffmpeg-${{ matrix.platform }}" "$msys/${{ matrix.msysdir }}/.extras" \
+            "ffmpeg-${{ matrix.platform }}"
+
+      - name: Upload build logs (Windows)
+        if: always() && matrix.kind == 'windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-${{ matrix.platform }}
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Collect logs (Linux)
+        if: always() && matrix.kind == 'linux'
+        run: |
+          # 驱动以 root 跑：产物归 root 但全体可读，runner 用户直接收
+          # the driver runs as root: files are root-owned but
+          # world-readable — the runner user collects them directly
+          bash "$GITHUB_WORKSPACE/.github/scripts/collect-logs.sh" \
+            "$GITHUB_WORKSPACE/logs" /ffmpeg-${{ matrix.platform }} /opt/ffbuild/.extras \
+            "ffmpeg-${{ matrix.platform }}"
+
+      - name: Collect logs (macOS)
+        if: always() && matrix.kind == 'macos'
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/collect-logs.sh" \
+            "$GITHUB_WORKSPACE/logs" \
+            "$RUNNER_TEMP/ffmpeg-${{ matrix.platform }}" \
+            "$RUNNER_TEMP/ffmpeg-${{ matrix.platform }}-workspace/.extras" \
+            "ffmpeg-${{ matrix.platform }}"
+
+      - name: Upload build logs (Linux)
+        if: always() && matrix.kind == 'linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-${{ matrix.platform }}
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload build logs (macOS)
+        if: always() && matrix.kind == 'macos'
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-${{ matrix.platform }}
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,5 +1,5 @@
-//! qrencode 配方：二维码生成（旧 40-imaging.sh 移植）
-//! qrencode recipe: QR code generation (port of 40-imaging.sh)
+//! qrencode 配方：二维码生成
+//! qrencode recipe: QR code generation
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

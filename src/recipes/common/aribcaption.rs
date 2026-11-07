@@ -1,5 +1,5 @@
-//! aribcaption 配方：ARIB 字幕渲染（旧 60-media-io.sh 移植）
-//! aribcaption recipe: ARIB caption rendering (port of 60-media-io.sh)
+//! aribcaption 配方：ARIB 字幕渲染
+//! aribcaption recipe: ARIB caption rendering
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

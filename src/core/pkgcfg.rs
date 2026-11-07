@@ -1,5 +1,5 @@
-//! pkg-config 查询与 .pc 文件修补（extras-lib.sh 与 deps_fixup 共用件）
-//! pkg-config queries and .pc patching (shared by extras-lib.sh & deps_fixup)
+//! pkg-config 查询与 .pc 文件修补
+//! pkg-config queries and .pc patching
 
 use crate::fsx;
 use crate::sys;
@@ -42,7 +42,7 @@ pub fn variable(name: &str, var: &str) -> String {
 }
 
 /// 单个验收记号：pkg-config 模块 | file:<前缀内路径> | hdrsym:<头@符号> |
-/// arsym:<归档@符号> | "-" | "always"（extras_check 的移植）
+/// arsym:<归档@符号> | "-" | "always"
 /// One acceptance token: pkg-config module | file:<path under prefix> |
 /// hdrsym:<header@symbol> | arsym:<archive@symbol> | "-" | "always"
 pub fn check_token(c: &str) -> Result<(), String> {
@@ -151,7 +151,7 @@ pub fn requires_private(name: &str, reqs: &[&str]) {
     append_key(name, "Requires.private", reqs);
 }
 
-/// pc_require：依赖真装上了才往 Requires.private 追加（deps_fixup 语义）
+/// pc_require：依赖真装上了才往 Requires.private 追加
 /// Append to Requires.private only when the dep is actually installed
 pub fn require(name: &str, deps: &[&str]) {
     let f = pc_file(name);
@@ -182,6 +182,156 @@ pub fn dedup_fields() {
     }
 }
 
+/// 取参旗标清单：这些旗标吃掉后一个独立 token 作参数，去重/并入时
+/// 必须"旗标+参数"整体行动——把旗标当裸 token 去重会把配对打散
+/// （-framework A -framework B → -framework A B，clang 将 B 当输入文件
+/// 报 no such file or directory）
+/// Flags that consume the following standalone token as their argument —
+/// dedup/merge must move them as flag+argument pairs; deduping the flag
+/// itself as a bare token breaks the pairing (-framework A -framework B
+/// becomes -framework A B and clang reports B as a missing input file)
+const PAIR_FLAGS: &[&str] = &[
+    "-framework",
+    "-weak_framework",
+    "-iframework",
+    "-F",
+    "-isystem",
+    "-idirafter",
+    "-iquote",
+    "-imacros",
+    "-include",
+    "-isysroot",
+    "-iprefix",
+    "-iwithprefix",
+    "-iwithprefixbefore",
+    "-I",
+    "-L",
+    "-D",
+    "-U",
+    "-l",
+    "-u",
+    "-x",
+    "-B",
+    "-o",
+    "-Xlinker",
+    "-Xpreprocessor",
+    "-Xassembler",
+    "-Xclang",
+];
+
+/// Requires/Conflicts 关系符 / version operators used by Requires/Conflicts
+const REQ_OPS: &[&str] = &["=", "<", ">", "<=", ">=", "!="];
+
+/// 把键行值切成语义单元：取参旗标连参数一个单元；Requires* 键按
+/// "mod op ver" 三元组；其余 token 各自成单元
+/// Split a key-line value into semantic units: argument-taking flags pair
+/// with their argument; Requires* keys form "mod op ver" triples; every
+/// other token is its own unit
+fn units_for(key: &str, line: &str) -> Vec<String> {
+    let val = match line.find(':') {
+        Some(i) => &line[i + 1..],
+        None => line,
+    };
+    let toks: Vec<&str> = val.split_whitespace().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    let req = key.starts_with("Requires") || key == "Conflicts";
+    while i < toks.len() {
+        if req && i + 2 < toks.len() && REQ_OPS.contains(&toks[i + 1]) {
+            // "mod op ver" 三元组整体成单元 / keep "mod op ver" triples whole
+            out.push(format!("{} {} {}", toks[i], toks[i + 1], toks[i + 2]));
+            i += 3;
+        } else if PAIR_FLAGS.contains(&toks[i]) && i + 1 < toks.len() {
+            // 旗标+参数一个单元 / flag + its argument as one unit
+            out.push(format!("{} {}", toks[i], toks[i + 1]));
+            i += 2;
+        } else {
+            out.push(toks[i].to_string());
+            i += 1;
+        }
+    }
+    out
+}
+
+/// 周期折叠：旧版 dedup_one 的污染产物是"整个值重复 k 遍"
+/// （Name: aom aom、Libs.private: -framework A -framework B -framework A
+/// -framework B），找值 token 序列的最小周期保留一期即治愈；健康的
+/// "-framework A -framework B" 不是周期的，原样保留
+/// Collapse repetition periods: the old dedup_one's damage is always
+/// "whole value repeated k times" (Name: aom aom, Libs.private:
+/// -framework A -framework B -framework A -framework B) — find the
+/// smallest period of the value token sequence and keep one period;
+/// a healthy "-framework A -framework B" is not periodic and stays
+/// untouched
+fn collapse_repeats(line: &str) -> String {
+    let (head, val) = match line.find(':') {
+        Some(i) => (&line[..=i], line[i + 1..].trim()),
+        None => ("", line),
+    };
+    let toks: Vec<&str> = val.split_whitespace().collect();
+    for p in 1..=toks.len() / 2 {
+        if toks.len().is_multiple_of(p) && toks.iter().enumerate().all(|(i, t)| *t == toks[i % p]) {
+            return format!(
+                "{}{}{}",
+                head,
+                if head.is_empty() { "" } else { " " },
+                toks[..p].join(" ")
+            );
+        }
+    }
+    line.to_string()
+}
+
+/// 逆修被打散的 -framework 配对：-framework 只取一个参数，其后跟裸
+/// 单词（不是路径/变量/旗标）的，全是丢了旗标的框架名，各自补回
+/// "-framework "——上轮 token 级去重把 "-framework A -framework B"
+/// 压成 "-framework A B"，前缀里已存在的这种行据此原路复原
+/// Re-pair split -framework sequences: -framework takes exactly one
+/// argument; bare words (not paths/vars/flags) following its argument
+/// are framework names that lost their flag — give each its own
+/// "-framework ". The previous token-level dedup collapsed
+/// "-framework A -framework B" into "-framework A B"; this restores
+/// such lines already in prefixes
+fn repair_frameworks(line: &str) -> String {
+    let toks: Vec<&str> = line.split_whitespace().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < toks.len() {
+        let t = toks[i];
+        out.push(t.to_string());
+        i += 1;
+        if t == "-framework" && i < toks.len() {
+            // 正式参数 / the real argument
+            out.push(toks[i].to_string());
+            i += 1;
+            // 后续裸词补回旗标 / bare following words get their flag back
+            while i < toks.len()
+                && toks[i]
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                out.push(format!("-framework {}", toks[i]));
+                i += 1;
+            }
+        }
+    }
+    out.join(" ")
+}
+
+/// 发射前治愈键行：先周期折叠（旧 bug 的翻倍值），再 -framework 复原
+/// （token 级去重的断配对）；两阶段幂等，健康行原样通过
+/// Heal a key line before emit: repetition collapse first (the old bug's
+/// doubled values), then -framework re-pairing (the token-level dedup's
+/// broken pairings); both idempotent, healthy lines pass through
+fn heal_key_line(line: &str) -> String {
+    let r = collapse_repeats(line);
+    if r.contains("-framework") {
+        repair_frameworks(&r)
+    } else {
+        r
+    }
+}
+
 /// 单文件键行合并（值拼到首次出现处；k=v 变量行不动）
 /// Merge duplicate keyword lines of one file (values fold into first
 /// occurrence; k=v variable lines untouched)
@@ -208,22 +358,51 @@ fn dedup_one(f: &Path) {
         if is_key && !has_eq_before_colon {
             let key = &line[..line.find(':').unwrap()];
             if let Some(&first) = seen.get(key) {
-                let val = line[line.find(':').unwrap() + 1..].trim();
-                if !val.is_empty() {
-                    lines[first].push(' ');
-                    lines[first].push_str(val);
+                // 按语义单元并入首现行——Libs/Cflags 走旗标+参数对，
+                // Requires 走 "mod op ver" 三元组；裸 token 并入会把
+                // "-framework B" 拆成挂空旗标、把 ">= 2.0" 的版本约束
+                // 丢掉 / fold into the first occurrence in semantic
+                // units — flag+argument pairs for Libs/Cflags,
+                // "mod op ver" triples for Requires; bare-token merging
+                // would strand -framework arguments and drop version
+                // constraints like ">= 2.0"
+                let mut have = units_for(key, &lines[first]);
+                // 并入前先治愈 dup 行——否则 "-framework B C" 里的裸 C
+                // 会脱离旗标被并入 / heal the dup line before merging —
+                // otherwise a bare C in "-framework B C" would merge in
+                // stranded from its flag
+                for u in units_for(key, &heal_key_line(line)) {
+                    if !have.contains(&u) {
+                        have.push(u.clone());
+                        lines[first].push(' ');
+                        lines[first].push_str(&u);
+                    }
                 }
                 continue;
             }
             seen.insert(key.to_string(), lines.len());
-            order.push(lines.len());
+            // 注意：这里不能再 order.push——首现行由下面共用的
+            // order.push+lines.push 发射，双推会让每个首现键行输出两份
+            // （旧实现正是这样把 .pc 越"修"越重复）/ do NOT order.push
+            // here — the first-seen line is emitted by the shared
+            // order.push+lines.push below; a double push prints every
+            // first key line twice (the old implementation kept making
+            // .pc files *more* duplicated this way)
         }
         order.push(lines.len());
-        lines.push(line.to_string());
+        lines.push(if is_key && !has_eq_before_colon {
+            heal_key_line(line)
+        } else {
+            line.to_string()
+        });
     }
     let out: Vec<&str> = order.iter().map(|&i| lines[i].as_str()).collect();
     if out.join("\n") + "\n" != c {
         let _ = std::fs::write(f, out.join("\n") + "\n");
+        crate::log::log(&format!(
+            "[extras] merged duplicate key lines in {}",
+            f.file_name().unwrap().to_string_lossy()
+        ));
     }
 }
 
@@ -404,6 +583,9 @@ pub fn static_libs_ok(check: &str) -> Result<(), String> {
                     found = true;
                 }
             }
+            if !found && e.os != sys::Os::Windows && links_system(tok) {
+                found = true;
+            }
             if !found {
                 return Err(format!("{c} needs {tok} but no static archive resolves"));
             }
@@ -413,4 +595,36 @@ pub fn static_libs_ok(check: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// 系统库链接探针：-lm/-lc++/-lz/-ldl/-liconv 这类记号在 POSIX 上指向
+/// OS 随带的 dylib/tbd（libSystem），永远不会有 .a 落在搜索路径里。
+/// 空程序试链一次判断旗标是否在链接器默认路径上可解析——故意不带
+/// .pc 的 -L：指向前缀的 -L 会让 .dylib 蒙混过关（那是运行时依赖而非
+/// 静态输入），指向 brew 这类第三方前缀的 -L 同样不是系统库。
+/// System-library link probe: tokens like -lm/-lc++/-lz/-ldl/-liconv name
+/// OS-provided dylibs/tbd stubs (libSystem) that never ship a .a on the
+/// search path. Link an empty program to decide whether the flag resolves
+/// on the linker's default paths — deliberately WITHOUT the .pc's -L
+/// dirs: a -L into the prefix would let a .dylib slip through (a runtime
+/// dep, not a static input), and a -L into a third-party prefix like
+/// Homebrew is not a system library either.
+fn links_system(tok: &str) -> bool {
+    let e = sys::env();
+    let probe_c = e.work.join(".ffbuild-pkgprobe.c");
+    let probe_o = e.work.join(".ffbuild-pkgprobe");
+    if fsx::write(&probe_c, "int main(void){return 0;}\n").is_err() {
+        return false;
+    }
+    let args = [
+        "-x",
+        "c",
+        &probe_c.to_string_lossy(),
+        "-o",
+        &probe_o.to_string_lossy(),
+        tok,
+    ];
+    let ok = sys::run(&e.cc, &args, &e.work).unwrap_or(1) == 0;
+    let _ = std::fs::remove_file(&probe_o);
+    ok
 }

@@ -1,17 +1,14 @@
 //! 配方注册表：66 个 extras 表项——每库一个模块，按适用平台分目录
 //! （common/ 共享、linux/ 与 windows/ 平台专属）。
-//! 等价于旧 extras-recipes.sh 的 EXTRAS_TABLE + extras-recipes.d/*.sh。
 //! Recipe registry: the 66 extras entries — one module per library, split
 //! by applicable platform (common/ shared, linux/ and windows/
-//! platform-only). Replaces EXTRAS_TABLE + extras-recipes.d/*.sh.
-//!
+//! platform-only).
 //! 每库文件自带 `recipe()`（或 glib 的 `recipes()`，双表项），并用
 //! include_str! 把自身源码填进 src 字段——配方源一变 .ok 哈希就变，
-//! 缓存自动失效（旧版靠 `declare -f` 哈希达成同一效果）。
+//! 缓存自动失效。
 //! Each lib file carries `recipe()` (or `recipes()` for glib's two
 //! entries) and fills its own src field via include_str! — any recipe
-//! edit changes the .ok hash and invalidates the cache (the role
-//! `declare -f` hashing played before).
+//! edit changes the .ok hash and invalidates the cache.
 
 mod common;
 mod linux;
@@ -37,10 +34,10 @@ pub const fn r(
     }
 }
 
-/// 权威表序：与旧 EXTRAS_TABLE 逐行一致（第二列是 targets 必须包含的
-/// 子串，只为同名条目消歧——glib 在 mac/windows 各占一行）
-/// Canonical table order, line-for-line identical to the old EXTRAS_TABLE
-/// (second element is a substring the entry's targets must contain —
+/// 权威表序（第二列是 targets 必须包含的子串，只为同名条目消歧——
+/// glib 在 mac/windows 各占一行）
+/// Canonical table order (second element is a substring the entry's
+/// targets must contain —
 /// disambiguation only, e.g. glib appears once per OS)
 const ORDER: &[(&str, &str)] = &[
     ("bzip2", ""),
@@ -69,11 +66,17 @@ const ORDER: &[(&str, &str)] = &[
     ("glib", "mac"),
     ("glib", "windows"),
     ("lensfun", ""),
+    ("zlib", ""),
+    ("libpng", ""),
     ("leptonica", ""),
     ("tesseract", ""),
     ("pixman", ""),
     ("cairo", ""),
+    ("freetype", ""),
+    ("fribidi", ""),
+    ("harfbuzz", ""),
     ("pango", ""),
+    ("libxml2", ""),
     ("librsvg", ""),
     ("svtjpegxs", ""),
     ("openapv", ""),
@@ -111,10 +114,10 @@ const ORDER: &[(&str, &str)] = &[
     ("avisynth", ""),
 ];
 
-/// 组装全表：表序与旧 EXTRAS_TABLE 完全一致（依赖序敏感：whisper 必须在
-/// vulkan 后、libdvdcss 在 libdvdread 前……）
-/// Assemble the full table in exactly the old EXTRAS_TABLE order (order is
-/// dependency-sensitive: whisper after vulkan, libdvdcss before
+/// 组装全表：顺序即依赖序（敏感：whisper 必须在 vulkan 后、libdvdcss
+/// 在 libdvdread 前……）
+/// Assemble the full table in dependency order (sensitive: whisper after
+/// vulkan, libdvdcss before
 /// libdvdread, ...)
 pub fn table() -> Vec<Recipe> {
     let mut v = Vec::new();

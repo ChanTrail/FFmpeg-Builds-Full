@@ -1,7 +1,5 @@
-//! cairo 配方：必须带 quartz 字体后端供 pango 使用（旧
-//! 45-glib-stack.sh 移植）
-//! cairo recipe: must carry the quartz font backend for pango (port of
-//! 45-glib-stack.sh)
+//! cairo 配方：必须带 quartz 字体后端供 pango 使用
+//! cairo recipe: must carry the quartz font backend for pango
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

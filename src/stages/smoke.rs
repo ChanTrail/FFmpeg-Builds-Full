@@ -1,7 +1,5 @@
-//! 冒烟测试：对解压后的 FFmpeg 构建做体检（旧 smoke-test.sh 移植）
+//! 冒烟测试：对解压后的 FFmpeg 构建做体检
 //! Smoke test: sanity-check an extracted FFmpeg build
-//! (port of smoke-test.sh)
-//!
 //! 在每个发布的平台上运行，只依赖 ffmpeg/ffprobe 二进制本身。
 //! Runs on every shipped platform; relies only on the ffmpeg/ffprobe
 //! binaries themselves.

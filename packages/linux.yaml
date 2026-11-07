@@ -1,0 +1,100 @@
+# Linux apt 包栈（Debian/Ubuntu）。
+# Linux apt package stack (Debian/Ubuntu).
+#
+# 每行一个包名；{GCCV} 占位符替换成探测到的最新 GCC 主版本（16→15→14 降序）。
+# 配方假定这些工具存在：fftw3 的 codelet 生成器要 OCaml、glib 要
+# gtk-doc/introspection、若干配方 autoreconf 时要 /usr/share/aclocal 的 pkg.m4。
+# One package name per entry; {GCCV} expands to the newest probed GCC major
+# (16 -> 15 -> 14). Recipes assume these tools exist: fftw3's codelet
+# generator wants OCaml, glib wants gtk-doc/introspection, several recipes
+# autoreconf against /usr/share/aclocal's pkg.m4.
+- build-essential
+- gcc-{GCCV}
+- g++-{GCCV}
+- binutils
+- make
+- patch
+- diffutils
+- file
+- findutils
+- tar
+- xz-utils
+- bzip2
+- zip
+- unzip
+- zstd
+- ccache
+- git
+- curl
+- wget
+- rsync
+- jq
+- perl
+- pkg-config
+- gettext
+- autopoint
+- texinfo
+- texi2html
+- help2man
+- flex
+- bison
+- gperf
+- m4
+- nasm
+- yasm
+- subversion
+- mercurial
+- python3
+- python3-venv
+- python3-dev
+- clang
+- llvm
+- lld
+- mold
+- ragel
+- itstool
+- xxd
+- autoconf
+- automake
+- libtool
+- libtool-bin
+- libltdl-dev
+- groff
+- libxml2-utils
+- indent
+- p7zip-full
+- libarchive-tools
+- gawk
+- gtk-doc-tools
+- gobject-introspection
+- zlib1g-dev
+- libssl-dev
+- ocaml
+- ocaml-findlib
+- ocamlbuild
+- libnum-ocaml-dev
+- libasound2-dev
+- linux-libc-dev
+- ladspa-sdk
+# X11：vdpau meson 探 x11+xext；libxcb 由 libx11-dev 拉入
+# X11: vdpau's meson probes x11+xext; libxcb rides in via libx11-dev
+- libx11-dev
+- libxext-dev
+# Vulkan：whisper 的 ggml 后端要头+加载库+glslc+SPIRV-Headers cmake
+# 包+glslangValidator / Vulkan: whisper's ggml backend wants
+# headers+loader+glslc+the SPIRV-Headers cmake package+glslangValidator
+- libvulkan-dev
+- glslc
+- spirv-headers
+- glslang-tools
+- glslang-dev
+# glib：lensfun 要 glib-2.0.pc（含 .a）；其 Requires.private 的
+# pcre2/ffi 也须 -dev 才能被 pkg-config 传递解析
+# glib: lensfun wants glib-2.0.pc (+.a); its Requires.private needs
+# pcre2/ffi -dev for pkg-config to resolve transitively
+- libglib2.0-dev
+- libpcre2-dev
+- libffi-dev
+# dc1394 的 USB 后端（raw1394 缺它只丢 USB 不致命，但顺手补上）
+# dc1394's USB backend (raw1394-only loses USB, non-fatal, but cheap)
+- libusb-1.0-0-dev

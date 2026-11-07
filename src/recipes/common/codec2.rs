@@ -1,5 +1,5 @@
-//! codec2 配方：低码率语音编解码（旧 30-audio.sh 移植）
-//! codec2 recipe: low-bitrate speech codec (port of 30-audio.sh)
+//! codec2 配方：低码率语音编解码
+//! codec2 recipe: low-bitrate speech codec
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};

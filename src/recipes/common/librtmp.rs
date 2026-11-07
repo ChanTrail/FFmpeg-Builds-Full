@@ -1,5 +1,5 @@
-//! librtmp 配方：RTMP 流媒体（rtmpdump；旧 60-media-io.sh 移植）
-//! librtmp recipe: RTMP streaming, rtmpdump (port of 60-media-io.sh)
+//! librtmp 配方：RTMP 流媒体（rtmpdump）
+//! librtmp recipe: RTMP streaming, rtmpdump
 
 use crate::extras::{Ctx, Recipe};
 use crate::fsx;
@@ -39,7 +39,9 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         // nettle's *_digest(ctx,LEN,out) — nettle 4.0 removed the length
         // parameter. Rewrite every call site.
         for f in ["librtmp/rtmp.c", "librtmp/handshake.h", "librtmp/hashswf.c"] {
-            fsx::sed_i(
+            // ERE：裸 (...) 分组 / | 选择，\( 为字面左括号
+            // ERE: bare (...) groups / | alternation, \( is literal lparen
+            fsx::sed_i_ere(
                 "s/(hmac_)?(md5|sha1|sha256)_digest\\(([^,()]+),[[:space:]]*[A-Z0-9_]*_DIGEST_LENGTH,[[:space:]]*/\\1\\2_digest(\\3, /g",
                 &src.join(f),
                 &src,

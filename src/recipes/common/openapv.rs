@@ -1,7 +1,7 @@
 //! openapv 配方：APV 编解码（Linux 由 BtbN 构建、MSYS2 有包；extras
-//! 供 macOS 并兜底；旧 50-video.sh 移植）
+//! 供 macOS 并兜底）
 //! openapv recipe: APV codec (BtbN builds it on Linux, MSYS2 packages it;
-//! extras provides macOS and is the fallback; port of 50-video.sh)
+//! extras provides macOS and is the fallback)
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};
