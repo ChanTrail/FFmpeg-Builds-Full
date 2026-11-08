@@ -35,14 +35,24 @@ struct Row {
     body: &'static str,
 }
 
-static TABLE: &[Row] = &[Row {
-    name: "gmp",
-    // 对 gmp-6.3.0.tar.xz 钉死 sha256——源一换版本此补丁必须人工复核 /
-    // pinned to gmp-6.3.0.tar.xz's sha256 — bumping the source forces a
-    // human re-verification of this patch
-    pin: Some("a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898"),
-    body: include_str!("../../patches/gmp/0001-configure-c23-long-long-test.patch"),
-}];
+static TABLE: &[Row] = &[
+    Row {
+        name: "gmp",
+        // 对 gmp-6.3.0.tar.xz 钉死 sha256——源一换版本此补丁必须人工复核 /
+        // pinned to gmp-6.3.0.tar.xz's sha256 — bumping the source forces a
+        // human re-verification of this patch
+        pin: Some("a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898"),
+        body: include_str!("../../patches/gmp/0001-configure-c23-long-long-test.patch"),
+    },
+    Row {
+        name: "zvbi",
+        // git 浮动源没钉 ref——靠补丁自身的 context 匹配兜底 /
+        // floating git source has no pinned ref — the patch's own context
+        // match is the guard
+        pin: None,
+        body: include_str!("../../patches/zvbi/0001-drop-contrib-subdir.patch"),
+    },
+];
 
 /// 校验补丁行 <row> 的钉死版本仍与 <name> 的清单一致
 /// verify <row>'s pin still matches <name>'s manifest-declared source
