@@ -14,7 +14,11 @@ libxcb-xfixes: enable
 xlib: enable
 liblcevc-dec: enable    # LCEVC 有 arm64 支持 / LCEVC ships arm64 support
 libuavs3d: enable       # AVS3 解码有 arm64 汇编 / AVS3 decode has arm64 asm
-v4l2m2m: enable
+# v4l2m2m 不声明：本仓库钉的 FFmpeg 版本已无此选项（上游移除了整个
+# v4l2_m2m 栈），always 盲启只换来 configure 的 unknown-option 噪音
+# / v4l2m2m is not declared: the pinned FFmpeg has no such option left
+# (upstream removed the whole v4l2_m2m stack) — an `always` blind
+# enable only buys unknown-option noise from configure
 nvdec: enable
 nvenc: enable
 cuvid: enable

@@ -349,6 +349,17 @@ pub fn ffmpeg() -> Result<(), String> {
     // may remain dynamic (the otool allowlist catches violations)
     args.extend([
         "--extra-cflags=-DLIBTWOLAME_STATIC".into(),
+        // 两类"同名同码"冲突在 macOS 只有 ld 开关可解：librav1e 与
+        // librsvg-2.a 同嵌 rustc std/alloc/gimli 对象（同一 rustc 的逐
+        // 字节相同单态化，297 个 dup），xevd/xeve 再叠一层共享 mc/recon
+        // 撞名。suppress 取首定义——逐字节相同的对象选谁等价 / two
+        // "same-name same-code" collision classes only an ld switch can
+        // cure on macOS: librav1e and librsvg-2.a embed the same rustc
+        // std/alloc/gimli objects (byte-identical monomorphs, 297 dups)
+        // and xevd/xeve pile shared mc/recon symbols on top. suppress
+        // keeps the first definition — equivalent picks among identical
+        // objects
+        "--extra-ldflags=-Wl,-multiply_defined,suppress".into(),
         format!("--extra-libs={} -lm -liconv -lz", e.cxxrt),
         "--disable-stripping".into(),
     ]);

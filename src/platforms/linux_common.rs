@@ -491,7 +491,15 @@ pub fn ffmpeg() -> Result<(), String> {
     let gomp = e.gomp.read().unwrap().clone();
     args.extend([
         "--extra-cflags=-DLIBTWOLAME_STATIC".into(),
-        "--extra-ldflags=-static-libgcc -static-libstdc++".into(),
+        // xevd/xeve 同族源码撞名（padding/prefetch_for_mc 等共享 mc/recon
+        // 非 static 符号），静态归档同链必 multiple definition——windows
+        // 在 fixup 改名去重，这里用 GNU ld 的宽容开关兜底 / xevd and
+        // xeve share source files whose non-static symbols collide
+        // (padding, prefetch_for_mc, ... mc/recon helpers) — statically
+        // archiving both into one link is a guaranteed multiple
+        // definition; windows dedupes by renaming in fixup, here GNU
+        // ld's tolerant switch is the umbrella
+        "--extra-ldflags=-static-libgcc -static-libstdc++ -Wl,--allow-multiple-definition".into(),
         format!("--extra-libs={gomp} -lm -lpthread -lz"),
         "--disable-stripping".into(),
     ]);

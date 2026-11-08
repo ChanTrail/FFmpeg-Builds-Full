@@ -824,6 +824,15 @@ fn postfix() -> Result<(), String> {
         "chromaprint",
         "libchromaprint",
         "whisper",
+        // libjxl 全 C++：libjxl_threads.pc 不带 C++ 运行时，--enable-libjxl
+        // 显式声明下链测一死 configure 整体中止（实证：linux 的
+        // std::__throw_system_error/std::thread 未解析）/ libjxl is all
+        // C++: libjxl_threads.pc forgets the C++ runtime, and with an
+        // explicit --enable-libjxl a failed link test aborts configure
+        // outright (empirical: unresolved std::__throw_system_error /
+        // std::thread on linux)
+        "libjxl",
+        "libjxl_threads",
     ] {
         libs_private_tr(pc, &[&e.cxxrt]);
     }

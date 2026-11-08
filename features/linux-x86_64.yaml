@@ -18,7 +18,11 @@ liblcevc-dec: enable    # LCEVC（x86 only）
 libuavs3d: enable       # AVS3 解码（x86 only）
 libdavs2: enable        # AVS2 解码（x86 only）
 libxavs2: enable        # AVS2 编码（x86 only）
-v4l2m2m: enable         # V4L2 mem2mem 硬件加速 / V4L2 mem2mem hwaccel
+# v4l2m2m 不声明：本仓库钉的 FFmpeg 版本已无此选项（上游移除了整个
+# v4l2_m2m 栈），always 盲启只换来 configure 的 unknown-option 噪音
+# / v4l2m2m is not declared: the pinned FFmpeg has no such option left
+# (upstream removed the whole v4l2_m2m stack) — an `always` blind
+# enable only buys unknown-option noise from configure
 nvdec: enable
 nvenc: enable
 cuvid: enable

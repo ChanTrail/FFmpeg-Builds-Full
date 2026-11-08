@@ -1128,6 +1128,62 @@ pub fn fixup() -> Result<(), String> {
         }
     }
 
+    // libxevd 与 libxeve 共享 mc/recon 源码——padding/prefetch_for_mc/
+    // processDMVR 等同名非 static 符号同链必 multiple definition（实证：
+    // x86_64 ffmpeg_g 链接全灭）。交集中的每个符号在 libxeve.a 里加
+    // xeve_ 前缀改名——成员内引用一致换名，xeve_* API 不在交集不受影响；
+    // linux 走 ld --allow-multiple-definition，mac 走
+    // -multiply_defined,suppress / libxevd and libxeve share mc/recon
+    // source — same-named non-static symbols (padding, prefetch_for_mc,
+    // processDMVR, ...) are a guaranteed multiple definition in one
+    // link (empirical: the x86_64 ffmpeg_g link died on them). Rename
+    // every shared symbol inside libxeve.a with an xeve_ prefix —
+    // member-internal references are renamed consistently, and the
+    // xeve_* API is not in the intersection so callers stay intact;
+    // linux rides ld --allow-multiple-definition and mac
+    // -multiply_defined,suppress
+    let xevd = libdir.join("libxevd.a");
+    let xeve = libdir.join("libxeve.a");
+    if xevd.is_file() && xeve.is_file() {
+        let defined = |p: &Path| -> HashSet<String> {
+            sys::capture(
+                &t.nm,
+                &["--defined-only", "-g", &p.to_string_lossy()],
+                &e.work,
+            )
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                if f.len() >= 3 {
+                    Some(f[2].to_string())
+                } else {
+                    None
+                }
+            })
+            .collect()
+        };
+        let shared: Vec<String> = defined(&xevd)
+            .intersection(&defined(&xeve))
+            .cloned()
+            .collect();
+        let mut rc = 0u32;
+        for s in shared {
+            if redefine_sym(&xeve, &s, &format!("xeve_{s}"), &t) {
+                rc += 1;
+            } else {
+                log::warn(&format!(
+                    "could not rename '{s}' in libxeve.a — final link may collide"
+                ));
+            }
+        }
+        if rc > 0 {
+            log::log(&format!(
+                "renamed {rc} xevd-shared symbol(s) in libxeve.a (xeve_*)"
+            ));
+        }
+    }
+
     // kvazaar.pc 缺上游配方自己加的静态链接位 / kvazaar.pc lacks the
     // static-linkage bits its own upstream recipe adds
     let kvz = pcdir.join("kvazaar.pc");
