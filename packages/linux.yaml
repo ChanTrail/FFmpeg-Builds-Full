@@ -80,6 +80,20 @@
 # X11: vdpau's meson probes x11+xext; libxcb rides in via libx11-dev
 - libx11-dev
 - libxext-dev
+# xcbgrab 的扩展模块——xcb.pc 随 libx11-dev 到场，这三个 .pc 在独立的
+# -dev 包里，缺了 features 探针全降级 / xcbgrab's extension modules —
+# xcb.pc rides in with libx11-dev, but these three .pc files live in
+# their own -dev packages; without them every feature probe degrades
+- libxcb-shm0-dev
+- libxcb-shape0-dev
+- libxcb-xfixes0-dev
+# 平台采集/硬件栈（运行时本就 dlopen 驱动后端，静态链接意义不大，
+# 走系统 -dev 包拿 .pc+.a）/ platform capture/hw stack — the runtime
+# dlopens driver backends anyway, so the system -dev packages' .pc+.a
+# are the right source
+- libdrm-dev
+- libva-dev
+- libpulse-dev
 # Vulkan：whisper 的 ggml 后端要头+加载库+glslc+SPIRV-Headers cmake
 # 包+glslangValidator / Vulkan: whisper's ggml backend wants
 # headers+loader+glslc+the SPIRV-Headers cmake package+glslangValidator

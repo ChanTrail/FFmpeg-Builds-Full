@@ -4,6 +4,7 @@
 
 pub mod alsa;
 pub mod dc1394;
+pub mod libvpl;
 pub mod lz4;
 pub mod raw1394;
 pub mod vdpau;
@@ -15,6 +16,7 @@ pub fn recipes() -> Vec<Recipe> {
     vec![
         alsa::recipe(),
         dc1394::recipe(),
+        libvpl::recipe(),
         lz4::recipe(),
         raw1394::recipe(),
         vdpau::recipe(),

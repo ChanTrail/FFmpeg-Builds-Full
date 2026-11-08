@@ -32,6 +32,7 @@ pub mod gsm;
 pub mod harfbuzz;
 pub mod ilbc;
 pub mod kvazaar;
+pub mod ladspa;
 pub mod lame;
 pub mod lc3;
 pub mod lcevcdec;
@@ -146,6 +147,7 @@ pub fn recipes() -> Vec<Recipe> {
         harfbuzz::recipe(),
         ilbc::recipe(),
         kvazaar::recipe(),
+        ladspa::recipe(),
         lame::recipe(),
         mpg123::recipe(),
         lc3::recipe(),

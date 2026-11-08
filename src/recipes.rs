@@ -1,6 +1,6 @@
-//! 配方注册表：66 个 extras 表项——每库一个模块，按适用平台分目录
+//! 配方注册表：67 个 extras 表项——每库一个模块，按适用平台分目录
 //! （common/ 共享、linux/ 与 windows/ 平台专属）。
-//! Recipe registry: the 66 extras entries — one module per library, split
+//! Recipe registry: the 67 extras entries — one module per library, split
 //! by applicable platform (common/ shared, linux/ and windows/
 //! platform-only).
 //! 每库文件自带 `recipe()`（或 glib 的 `recipes()`，双表项），并用
@@ -158,6 +158,7 @@ const ORDER: &[(&str, &str)] = &[
     ("kvazaar", ""),
     ("alsa", ""),
     ("vdpau", ""),
+    ("libvpl", ""),
     ("lz4", ""),
     ("raw1394", ""),
     ("dc1394", ""),
@@ -180,6 +181,10 @@ const ORDER: &[(&str, &str)] = &[
     ("vapoursynth", ""),
     ("ffnvcodec", ""),
     ("amf", ""),
+    // 纯头文件安装，位置随意——ladspa 与 ffnvcodec/amf 同类 /
+    // header-only installs can sit anywhere — ladspa is the same
+    // class as ffnvcodec/amf
+    ("ladspa", ""),
 ];
 
 /// 组装全表：顺序即依赖序（敏感：whisper 必须在 vulkan 后、libdvdcss

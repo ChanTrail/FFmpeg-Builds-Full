@@ -70,7 +70,11 @@ frei0r: enable
 libaribcaption: enable
 libaribb24: enable
 libzvbi: enable
-vapoursynth: enable
+# vapoursynth 挪到四个平台文件——mac 的配方有意出局（上游只产 .dylib
+# 进 python site-packages，静态/运行时双无解），放 common 必降级 /
+# vapoursynth moved to the four platform files — the recipe deliberately
+# excludes mac (upstream only yields a .dylib inside python site-packages,
+# a dead end both statically and at runtime); in common it always degrades
 libtesseract: enable
 libqrencode: enable
 libquirc: enable

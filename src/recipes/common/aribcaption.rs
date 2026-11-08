@@ -9,7 +9,7 @@ use crate::recipes::r;
 pub fn recipe() -> Recipe {
     let mut x = r(
         "aribcaption",
-        "mac",
+        "linux,mac",
         "libaribcaption",
         "--enable-libaribcaption",
         body,

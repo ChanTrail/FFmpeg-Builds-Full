@@ -171,7 +171,10 @@ pub const FEATURES: &[Feature] = &[
     f("lv2", "lilv-0"),
     f("alsa", "alsa"),
     f("vdpau", "vdpau"),
-    f("vaapi", "vaapi"),
+    // libva 装的是 libva.pc——世上没有 vaapi.pc，"vaapi" 必降级 /
+    // libva ships libva.pc — no vaapi.pc exists anywhere, so probing
+    // "vaapi" degrades unconditionally
+    f("vaapi", "libva"),
     f("libdc1394", "libdc1394-2"),
     f("libdrm", "libdrm"),
     f("libshaderc", "shaderc"),

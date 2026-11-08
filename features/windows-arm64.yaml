@@ -14,3 +14,4 @@ vulkan: enable          # 前缀 shim（头+dlopen 加载器）/ prefix shim (he
 opencl: enable          # 前缀 ICD shim / prefix ICD shim
 ffnvcodec: enable       # nv-codec-headers 头文件 / nv-codec-headers headers
 libplacebo: enable      # SPIRV-Cross 链全栈 / the whole SPIRV-Cross stack
+vapoursynth: enable     # pacman 提供；mac 出局见 common.yaml 注 / pacman-provided; mac is out, see common.yaml note

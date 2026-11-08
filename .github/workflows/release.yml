@@ -9,7 +9,7 @@
 # dispatch works the same way — and is bound by the same "no release
 # without green CI" rule (it consults the newest completed CI run on
 # the branch).
-name: Release
+name: Release driver
 
 on:
   # 由 ci.yml 尾部的 release job 发 repository_dispatch 调起——它

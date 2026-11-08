@@ -177,7 +177,7 @@ FFmpeg-Builds-Full <build|packages|extras|ffmpeg|package|save-deps|smoke|feature
 
 - **特性开关**（`features/*.yaml`）：FFmpeg configure 旗标的唯一真源。四层合并——`base.yaml`（永远启用）、`common.yaml`（全平台通用）、`misc.yaml`（按平台分节的杂项）、`<os>-<arch>.yaml`（平台特化）；键为特性名，值为 `enable`/`disable`，跨文件重复键直接报错。每个 `enable` 还要过本地探测（pkg-config / 文件存在），探不过自动降级 `disable`。
 - **源码清单**（`sources/*.yaml`）：同构四层合并，值是获取方式——`archive` 固定产物 URL（可带 `sha256` 校验），`git` 仓库地址实时解析：默认分支 HEAD → GitHub/GitLab CI 验证 → 红/无 CI 回退最新版本 tag；`ref:` 可钉分支/tag/commit。下载走 reqwest 异步流式（断点续传+重试退避），构建与预取并发。
-- **库配方**（`src/recipes/`）：66 项配方，每库一个独立 Rust 模块，`common/`、`linux/`、`windows/` 按域分目录；每个 `.ok` 标记存配方源码哈希，内容变了自动重建。
+- **库配方**（`src/recipes/`）：68 项配方，每库一个独立 Rust 模块，`common/`、`linux/`、`windows/` 按域分目录；每个 `.ok` 标记存配方源码哈希，内容变了自动重建。
 - **依赖缓存**：依赖库编好后打成 `deps-<平台>-<哈希>.tar.zst` 存入固定 `deps` Release；之后每次运行还原（约 1–2 分钟）只编 FFmpeg 本体。配方/清单变更 → 新签名 → 自动全量重编；超时自动上传 `partial` 包下次续建。
 - **平台包栈**（`packages/*.txt`）：Windows 为 pacman 包表（UCRT64/CLANGARM64 双 profile），Linux 为 apt 包表（最新 GCC 降序探测 + pyenv 构建工具 + Rust/cargo-c），macOS 为 brew 包表。
 - **确定性 + 严格的 configure**：三平台均 `--disable-autodetect`——只有清单显式点名的库参与构建，runner 镜像碰巧装上的东西不会悄悄混进二进制；点名库探测失败会被逐个剔除重试以枚举全部问题（各自 config.log 存档），但只要存在剔除就**拒绝构建**；必需库（x264、x265、aom、dav1d、vpx、opus、lame、freetype、libass、webp、zlib + 各平台 TLS）缺失立即报错。
