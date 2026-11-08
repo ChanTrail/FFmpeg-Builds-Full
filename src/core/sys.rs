@@ -208,9 +208,9 @@ pub fn child_path(msys2_root: &Path, env_prefix: &str) -> String {
     format!("{};{};{}", prefix_bin.display(), usr_bin.display(), old)
 }
 
-/// POSIX 路径 → Windows 路径（cygpath -w 的等价物，覆盖 MSYS2 挂载与
-/// cygdrive）/ POSIX → Windows path (cygpath -w equivalent for the MSYS2
-/// mounts and cygdrive)
+/// POSIX 路径 → Windows 路径（cygpath -w 的等价物，覆盖 <root> MSYS2 根
+/// 的挂载与 cygdrive）/ POSIX → Windows path (cygpath -w equivalent for
+/// the mounts under the MSYS2 <root> and cygdrive)
 pub fn posix_to_win(p: &str, root: &Path) -> PathBuf {
     let p = p.replace('\\', "/");
     // /cygdrive 与裸 /d/ 两种写法 / both /cygdrive and bare /d/ spellings
@@ -234,8 +234,9 @@ pub fn win_to_mixed(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
-/// Windows 路径 → POSIX 形式（cygpath -u；根内先折成 /x，其余按盘符）
-/// Windows → POSIX (cygpath -u: inside-root collapses to /x, else /drive/x)
+/// Windows 路径 → POSIX 形式（cygpath -u；<root> MSYS2 根内先折成 /x，
+/// 其余按盘符）/ Windows → POSIX (cygpath -u: paths inside the MSYS2
+/// <root> collapse to /x, others map to /drive/x)
 pub fn win_to_posix(p: &Path, root: &Path) -> String {
     let p = win_to_mixed(p);
     let r = win_to_mixed(root);
@@ -441,11 +442,42 @@ pub fn capture_bytes(prog: &str, args: &[&str], dir: &Path) -> Result<Vec<u8>, S
     Ok(out.stdout)
 }
 
+/// CI 下 run_tee 不回显时的进度心跳间隔：每往日志文件写满这么多字节
+/// 打一行 / heartbeat interval while run_tee's CI echo is off: one line
+/// per this many bytes appended to the log file
+const TEE_HEARTBEAT: usize = 256 * 1024;
+
+/// 回显抑制期的进度心跳：报 <tag> 日志文件已收字节数
+/// progress heartbeat while the echo is suppressed: report how many
+/// bytes the <tag> log file has taken
+fn tee_beat(tag: &str, written: usize) {
+    crate::log::log(&format!("… {tag}: {} written", human_size(written as u64)));
+}
+
 /// 运行并把 stdout 同时写入文件（tee 语义；stderr 也并入同一日志——
-/// 诊断完整性优先于两流的严格时序）/ Run with stdout teed to a file
-/// (stderr joins the same log — diagnostic completeness beats strict
-/// interleave order)
+/// 诊断完整性优先于两流的严格时序）。
+/// CI 下完全不回显子进程输出：Actions 的步骤日志走带背压的上传管道，
+/// runner 缓冲攒满（实测单步累计数万行后）写端就被拖住——回显一堵，
+/// 读循环停转、子进程管道写满，构建连锁锁死（"日志不动、构建也不动"）。
+/// 改为只写日志文件并按 TEE_HEARTBEAT 打进度心跳——控制台退化为纯
+/// 进度条；完整输出仍在 <name>.log/日志包，失败明细由 error_tail 兜底。
+/// 非 CI 照常逐字节回显。
+/// Run with stdout teed to a file (stderr joins the same log —
+/// diagnostic completeness beats strict interleave order).
+/// Under CI nothing of the child output is echoed: the Actions step log
+/// rides a backpressured upload channel whose runner buffer fills once
+/// a step accumulates tens of thousands of lines — a stalled echo stops
+/// the read loop, fills the child's pipe, and deadlocks the build with
+/// it ("log frozen, build frozen"). Instead only the log file grows
+/// while TEE_HEARTBEAT progress lines keep the console a pure progress
+/// display; full output still lands in <name>.log / the log bundle and
+/// error_tail prints the failure tail. Outside CI every byte echoes.
 pub fn run_tee(prog: &str, args: &[&str], dir: &Path, logfile: &Path) -> Result<i32, String> {
+    let ci = std::env::var_os("GITHUB_ACTIONS").is_some();
+    let tag = logfile
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "tee.log".to_string());
     let mut c = cmd(prog, args);
     c.current_dir(dir)
         .stdout(Stdio::piped())
@@ -460,32 +492,63 @@ pub fn run_tee(prog: &str, args: &[&str], dir: &Path, logfile: &Path) -> Result<
     // pipe nobody reads deadlocks both streams; it appends to the same
     // log file and echoes to our own stderr
     let mut f_err = f.try_clone().map_err(|e| format!("{logfile:?}: {e}"))?;
+    let tag_err = tag.clone();
     let t = std::thread::spawn(move || {
         let mut buf = [0u8; 65536];
         let mut wr = std::io::stderr();
+        let (mut written, mut hidden) = (0usize, 0usize);
         loop {
             match se.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let _ = f_err.write_all(&buf[..n]);
-                    let _ = wr.write_all(&buf[..n]);
-                    let _ = wr.flush();
+                    written += n;
+                    if !ci {
+                        let _ = wr.write_all(&buf[..n]);
+                        let _ = wr.flush();
+                    } else {
+                        hidden += n;
+                        if hidden >= TEE_HEARTBEAT {
+                            tee_beat(&tag_err, written);
+                            hidden = 0;
+                        }
+                    }
                 }
             }
+        }
+        // 收尾补一行总量：让最后的静默段在日志里也看得出体量
+        // final total on stream end so the last quiet stretch still
+        // shows its volume in the log
+        if hidden > 0 {
+            tee_beat(&tag_err, written);
         }
     });
     let mut buf = [0u8; 65536];
     let mut wr = std::io::stdout();
+    let (mut written, mut hidden) = (0usize, 0usize);
     loop {
         match so.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
                 let _ = f.write_all(&buf[..n]);
-                let _ = wr.write_all(&buf[..n]);
-                let _ = wr.flush();
+                written += n;
+                if !ci {
+                    let _ = wr.write_all(&buf[..n]);
+                    let _ = wr.flush();
+                } else {
+                    hidden += n;
+                    if hidden >= TEE_HEARTBEAT {
+                        tee_beat(&tag, written);
+                        hidden = 0;
+                    }
+                }
             }
             Err(_) => break,
         }
+    }
+    // 同上的收尾总量 / same final-total line as the stderr thread
+    if hidden > 0 {
+        tee_beat(&tag, written);
     }
     let _ = t.join();
     ch.wait()
@@ -636,4 +699,18 @@ pub fn human_size(b: u64) -> String {
         i += 1;
     }
     format!("{v:.1}{}", units[i])
+}
+
+/// 日志文件末尾 <max_lines> 个非空行逐行原样拼出——CI 下 run_tee 不回显
+/// 子进程输出，命令失败时拿它把现场打到控制台（区别于 extras 的
+/// error_tail：那个是 400 字符单行摘要，这个是全量尾部）
+/// last <max_lines> non-empty lines of <logfile>, joined verbatim —
+/// run_tee does not echo child output under CI, so a failed command
+/// prints its scene through this (unlike extras' error_tail, which is
+/// a 400-char one-line digest; this is the verbatim tail)
+pub fn log_tail(logfile: &Path, max_lines: usize) -> String {
+    let text = crate::fsx::read(logfile);
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let start = lines.len().saturating_sub(max_lines);
+    lines[start..].join("\n")
 }

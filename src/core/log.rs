@@ -7,8 +7,8 @@ pub fn log(msg: &str) {
     println!("[build] {msg}");
 }
 
-/// 开始 CI 日志折叠组
-/// Begin a CI log fold group
+/// 开始 CI 日志折叠组 <title>
+/// Begin a CI log fold group titled <title>
 pub fn group_begin(title: &str) {
     println!("::group::{title}");
 }

@@ -49,7 +49,7 @@ fn client() -> &'static reqwest::Client {
     })
 }
 
-// ==================== HTTP ====================
+// ==================== HTTP 传输层 / transport ====================
 
 /// 判断一次失败是否值得重试：传输错误/408/429/5xx 可重试，其余 4xx 终态
 /// Whether a failure is worth retrying: transport errors and 408/429/5xx

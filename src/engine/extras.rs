@@ -410,6 +410,13 @@ pub fn run_all() -> Result<(), String> {
                 }
             };
             println!("{reason}");
+            // CI 下 run_tee 不回显子进程输出——单行摘要之外再把失败配方
+            // 日志的 verbatim 尾部打出来，控制台里看得见现场；全量仍在
+            // <name>.log / run_tee does not echo child output under CI —
+            // beyond the one-line digest print the failed recipe's
+            // verbatim log tail so the console shows the scene; the full
+            // log still lives in <name>.log
+            println!("{}", sys::log_tail(&rlog, 40));
             // 验收失败时 .log 里只有一段干净的构建输出——把失败结论也补进
             // 去，否则日志包看得见成功、看不见为什么算失败 / on an
             // acceptance failure the .log holds only a clean build —
@@ -476,6 +483,8 @@ pub fn run_all() -> Result<(), String> {
             }
         };
         println!("archive post-processing failed: {why}");
+        // 同上的 verbatim 尾部 / same verbatim tail as the recipe path
+        println!("{}", sys::log_tail(&plog, 40));
         fsx::append_line(&status, "postfix failed")?;
         let _ = fsx::append_line(&plog, &format!("postfix-run: {why}"));
         let _ = std::fs::copy(&status, work.join("extras-status.txt"));

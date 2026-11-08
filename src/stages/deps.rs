@@ -295,8 +295,8 @@ pub fn find_asset(platform: &str) -> Result<String, String> {
     Err("no asset".into())
 }
 
-/// deps_fetch：下载最佳产物到 destdir，回显文件名 / download the best
-/// asset into destdir and echo its name
+/// deps_fetch：下载 <platform> 最佳产物到 destdir，回显文件名
+/// download <platform>'s best asset into destdir and echo its name
 pub fn fetch(platform: &str, destdir: &Path) -> Result<String, String> {
     let e = sys::env();
     let name = find_asset(platform)?;

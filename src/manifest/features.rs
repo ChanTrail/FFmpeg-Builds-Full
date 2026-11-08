@@ -275,8 +275,11 @@ fn load_yaml(p: &Path) -> Result<Yaml, String> {
     }
 }
 
-/// 从 {name: enable|disable} 映射里取键值并插入合并表
-/// pull entries out of a {name: enable|disable} map into the merged table
+/// 从 {name: enable|disable} 映射 <doc> 里取键值并经 <insert> 插入合并表
+///（<file> 为错误定位用清单名）
+/// pull entries out of the {name: enable|disable} map <doc> into the
+/// merged table via <insert> (<file> is the manifest name used in error
+/// messages)
 fn absorb_map(
     doc: &Yaml,
     file: &str,

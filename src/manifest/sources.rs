@@ -410,13 +410,14 @@ pub fn prefetch<I: IntoIterator<Item = String>>(names: I) {
     }
 }
 
-/// 只等一个预取任务落地（不复制）。recipe-run 子进程模式下父进程在
+/// 只等 <name> 的预取任务落地（不复制）。recipe-run 子进程模式下父进程在
 /// 派生配方前调用：预取句柄留在父进程，done 标记落盘，子进程的
 /// materialize 走磁盘缓存命中而不是再次解析下载。
-/// Await one prefetch without copying. Under the recipe-run subprocess
-/// model the parent calls this before spawning the recipe: the handle
-/// stays in the parent, the done marker lands on disk, and the child's
-/// materialize hits the on-disk cache instead of resolving again.
+/// Await <name>'s prefetch without copying. Under the recipe-run
+/// subprocess model the parent calls this before spawning the recipe:
+/// the handle stays in the parent, the done marker lands on disk, and
+/// the child's materialize hits the on-disk cache instead of resolving
+/// again.
 pub fn wait_prefetch(name: &str) {
     let handle = tasks().lock().unwrap().remove(name);
     if let Some(h) = handle {
@@ -439,9 +440,9 @@ pub fn wait_prefetch(name: &str) {
     }
 }
 
-/// 等待并取走预取结果到 wd（cache/src → wd/src 整树复制；预取未跑/失败
-/// 则现场解析）/ await a prefetched source and copy it into wd (missing or
-/// failed prefetch falls back to resolving on the spot)
+/// 等待并取走 <name> 的预取结果到 wd（cache/src → wd/src 整树复制；预取
+/// 未跑/失败则现场解析）/ await <name>'s prefetched source and copy it
+/// into wd (missing or failed prefetch falls back to resolving on the spot)
 pub fn materialize(wd: &Path, name: &str) -> Result<PathBuf, String> {
     let handle = tasks().lock().unwrap().remove(name);
     let cd = cache_dir().join(name);

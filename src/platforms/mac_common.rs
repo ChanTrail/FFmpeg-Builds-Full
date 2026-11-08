@@ -47,7 +47,8 @@ fn prefix() -> PathBuf {
 /// install prefix (configure gets no --prefix)
 pub const USRLOCAL: &str = "/usr/local";
 
-/// 探测并安装全局环境 / probe and install the global Env
+/// 探测并安装目标架构 <arch> 的全局环境
+/// probe and install the global Env for the target <arch>
 pub fn init_env(arch: Arch) -> Result<(), String> {
     let bash = PathBuf::from("/bin/bash");
     if !bash.is_file() {

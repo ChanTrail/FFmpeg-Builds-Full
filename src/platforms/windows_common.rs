@@ -73,7 +73,8 @@ fn msys2_root() -> Result<PathBuf, String> {
     Err("MSYS2 root not found (set FFBUILD_MSYS2)".to_string())
 }
 
-/// 探测并安装全局环境 / probe and install the global Env
+/// 探测并安装目标架构 <arch> 的全局环境
+/// probe and install the global Env for the target <arch>
 pub fn init_env(arch: Arch) -> Result<(), String> {
     let pr = profile(arch);
     let root = msys2_root()?;
@@ -681,6 +682,7 @@ pub fn package() -> Result<(), String> {
     log::group_end();
     smoke_rc?;
 
+    // BUILDINFO 收集 + zip 打包 + sha256 校验和
     // BUILDINFO + zip + sha256
     let buildconf = sys::capture(
         &pkg.join("bin/ffmpeg.exe").to_string_lossy(),

@@ -213,11 +213,13 @@ pub fn restore() -> Result<(), String> {
     Ok(())
 }
 
-/// 逐成员提取→nm 判定→objcopy 改名→ar r 原位
-/// 替换→ranlib（CLANGARM64 的整归档 objcopy 静默不干，必须逐成员）
-/// Extract each member -> nm check ->
-/// objcopy rename -> `ar r` in place -> ranlib (whole-archive objcopy is a
-/// silent no-op on CLANGARM64, so member by member it is)
+/// 把 <lib.a> 里的符号 <old> 改名为 <new>：逐成员提取→nm 判定→objcopy
+/// 改名→ar r 原位替换→ranlib（<tools> 为解析好的工具链；CLANGARM64 的
+/// 整归档 objcopy 静默不干，必须逐成员）
+/// Rename symbol <old> to <new> inside <lib.a>: extract each member ->
+/// nm check -> objcopy rename -> `ar r` in place -> ranlib (<tools> is
+/// the resolved toolchain; whole-archive objcopy is a silent no-op on
+/// CLANGARM64, so member by member it is)
 fn redefine_sym(lib: &Path, old: &str, new: &str, tools: &Toolchain) -> bool {
     let e = sys::env();
     let mdir = e.work.join(format!("rsym-{}", std::process::id()));

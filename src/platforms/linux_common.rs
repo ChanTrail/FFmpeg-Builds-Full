@@ -21,7 +21,8 @@ pub const PREFIX: &str = "/opt/ffbuild";
 /// `make install` lands here as root)
 pub const USRLOCAL: &str = "/usr/local";
 
-/// 探测并安装全局环境 / probe and install the global Env
+/// 探测并安装目标架构 <arch> 的全局环境
+/// probe and install the global Env for the target <arch>
 pub fn init_env(arch: Arch) -> Result<(), String> {
     let bash = ["/usr/bin/bash", "/bin/bash"]
         .iter()
@@ -631,6 +632,7 @@ pub fn package() -> Result<(), String> {
     log::group_end();
     smoke_rc?;
 
+    // BUILDINFO 收集 + tar.xz 打包 + sha256 校验和
     // BUILDINFO + tar.xz + sha256
     let buildconf = sys::capture(
         &pkg.join("bin/ffmpeg").to_string_lossy(),

@@ -27,7 +27,8 @@ pub use stages::{deps, ffmpeg, smoke};
 
 use std::process::exit;
 
-/// 打印中英双语用法 / print the bilingual usage text
+/// 打印中英双语用法（<prog> 为 argv[0] 程序名）
+/// print the bilingual usage text (<prog> is the argv[0] program name)
 fn usage(prog: &str) {
     println!(
         "\

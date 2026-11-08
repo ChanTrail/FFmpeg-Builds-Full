@@ -44,8 +44,9 @@ static TABLE: &[Row] = &[Row {
     body: include_str!("../../patches/gmp/0001-configure-c23-long-long-test.patch"),
 }];
 
-/// 校验补丁的钉死版本仍与清单一致 / verify a row's pin still matches the
-/// manifest's declared source identity
+/// 校验补丁行 <row> 的钉死版本仍与 <name> 的清单一致
+/// verify <row>'s pin still matches <name>'s manifest-declared source
+/// identity
 fn check_pin(row: &Row, name: &str) -> Result<(), String> {
     let Some(pin) = row.pin else {
         return Ok(());

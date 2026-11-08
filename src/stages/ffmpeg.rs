@@ -22,10 +22,10 @@ pub struct Info {
     pub src: PathBuf,
 }
 
-/// fetch_ffmpeg：克隆上游 FFmpeg（blobless：完整历史+tag 供
+/// fetch_ffmpeg：克隆上游 FFmpeg 到 <dest>（blobless：完整历史+tag 供
 /// N-<count>-g<hash> 版本串，只取检出 commit 的文件），写 version.sh，
 /// 返回源码身份。FFMPEG_REPO/FFMPEG_REF/FFMPEG_SHA 环境变量可覆盖默认。
-/// Clone upstream FFmpeg (blobless: full history and tags for the
+/// Clone upstream FFmpeg into <dest> (blobless: full history and tags for the
 /// N-<count>-g<hash> version string, files of the checked-out commit
 /// only), write version.sh, return the source identity. FFMPEG_REPO /
 /// FFMPEG_REF / FFMPEG_SHA env vars override the defaults.
@@ -126,11 +126,11 @@ pub fn fetch(dest: &Path) -> Result<Info, String> {
     })
 }
 
-/// ffconfigure 驱动：跑 FFmpeg configure；某个外部库缺失/损坏导致失败时
+/// ffconfigure 驱动：在 <build_dir> 跑 FFmpeg configure；某个外部库缺失/损坏导致失败时
 /// 把 --enable-<name> 记进 dropped-file、丢旗标再试——一次运行枚举出
 /// 所有开不了的库，各带 config.log 存档。configure 最终成功后只要有
 /// 丢包仍返回 Err：被要求开启却悄悄缺库的 ffmpeg 绝不能发布。
-/// Drive FFmpeg configure; when it fails on a missing/broken external
+/// Drive FFmpeg configure in <build_dir>; when it fails on a missing/broken external
 /// library, record --enable-<name> in dropped-file, drop the flag and
 /// retry — one run enumerates EVERY library that cannot be enabled, each
 /// with its config.log. Even when configure finally succeeds, drops make
@@ -384,19 +384,30 @@ pub fn configure(
     }
 }
 
-/// 编译并安装 FFmpeg（tee 到日志文件）/ compile and install FFmpeg
-/// (tee'd to the log file)
+/// 在 <build_dir> 编译并安装 FFmpeg（tee 到 <log_file>）
+/// compile and install FFmpeg in <build_dir> (tee'd to <log_file>)
 pub fn build(build_dir: &Path, log_file: &Path) -> Result<(), String> {
     let e = sys::env();
     let jobs = e.jobs.to_string();
     match sys::run_tee("make", &["-j", &jobs], build_dir, log_file)? {
         0 => {}
-        rc => return Err(format!("make exited {rc}")),
+        rc => {
+            // CI 下 run_tee 不回显子进程输出——失败时把日志尾部全量打到
+            // 控制台，否则只剩干巴巴的 "make exited N" / run_tee does
+            // not echo child output under CI — print the verbatim log
+            // tail on failure, else all we report is "make exited N"
+            println!("{}", sys::log_tail(log_file, 80));
+            return Err(format!("make exited {rc}"));
+        }
     }
     // install-doc 是锦上添花；失败退回纯 install / install-doc is a nice
     // to have; fall back to plain install
-    if sys::run_tee("make", &["install", "install-doc"], build_dir, log_file)? != 0 {
-        sys::run_tee("make", &["install"], build_dir, log_file)?;
+    if sys::run_tee("make", &["install", "install-doc"], build_dir, log_file)? != 0
+        && sys::run_tee("make", &["install"], build_dir, log_file)? != 0
+    {
+        // 同上的失败尾部全量 / same verbatim tail on install failure
+        println!("{}", sys::log_tail(log_file, 80));
+        return Err("make install failed".to_string());
     }
     Ok(())
 }
