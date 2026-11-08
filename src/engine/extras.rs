@@ -143,11 +143,27 @@ pub fn provided(check: &str) -> bool {
     pkgcfg::static_libs_ok(check).is_ok()
 }
 
-/// 配方 .ok 标记的期望哈希：配方分组源码 + 工具链指纹
-/// Expected .ok hash: group source + toolchain fingerprint
+/// 配方 .ok 标记的期望哈希：配方分组源码 + 工具链指纹 + 同名源规格。
+/// 源规格（git ref / archive sha256 / submodules）必须参与：钉版本一变，
+/// 恢复出来的 .ok 就得失效，否则旧版本快照无限续命（实证：fontconfig
+/// 已钉 2.17+，2.16 的 provided 仍放行，pango 卡 >=2.17 全平台挂）。
+/// 同名键缺席按空处理（异名源配方如 ffnvcodec→nv-codec-headers）；
+/// 多源配方只覆盖主源——次要源换版时一般也伴随配方改动。
+/// Expected .ok hash: group source + toolchain fingerprint + same-named
+/// source spec. The spec (git ref / archive sha256 / submodules) must
+/// take part: a bumped version pin has to invalidate a restored .ok, or
+/// the stale snapshot rides forever (empirical: fontconfig stayed
+/// "provided" at 2.16 after the 2.17+ pin and pango's >=2.17 check
+/// failed on every platform). A missing same-named key counts as empty
+/// (renamed-source recipes like ffnvcodec -> nv-codec-headers);
+/// multi-source recipes cover the primary source only — a secondary
+/// source bump normally rides a recipe change anyway.
 pub fn recipe_sum(r: &Recipe) -> Result<String, String> {
     let tc = crate::deps::toolchain();
-    sys::sha256_data(format!("{}{tc}", r.src).as_bytes())
+    let spec = crate::sources::spec(r.name)
+        .map(|s| format!("{s:?}"))
+        .unwrap_or_default();
+    sys::sha256_data(format!("{}{tc}{spec}", r.src).as_bytes())
 }
 
 /// extras_run：主循环 / main loop

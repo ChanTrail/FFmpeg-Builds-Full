@@ -22,10 +22,11 @@ pub fn recipe() -> Recipe {
 fn body(ctx: &Ctx) -> Result<(), String> {
     let src = ctx.src()?;
     // 上游 ≥1.5 已纯 meson（configure.ac 删了）。freetype/fontconfig/
-    // libxml2 是 feature 项显式开；enable_tools/bdjava_jar 是 bool /
+    // libxml2/bdj_jar 是 feature 项（enabled/disabled/auto，不收
+    // true/false）；enable_tools 是 bool /
     // upstream ≥1.5 is meson-only (configure.ac deleted). freetype/
-    // fontconfig/libxml2 are feature options flipped on explicitly;
-    // enable_tools/bdjava_jar are bools
+    // fontconfig/libxml2/bdj_jar are feature options (enabled/disabled/
+    // auto — true/false rejected); enable_tools is a bool
     buildsys::meson_build(
         &src,
         &[
@@ -33,7 +34,7 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             // 选项真名是 bdj_jar——autotools 时代的 --disable-bdjava-jar
             // 不带 a / the option's real name is bdj_jar — unlike the
             // autotools-era --disable-bdjava-jar it drops the "a"
-            "-Dbdj_jar=false",
+            "-Dbdj_jar=disabled",
             "-Dfreetype=enabled",
             "-Dfontconfig=enabled",
             "-Dlibxml2=enabled",

@@ -1184,14 +1184,54 @@ pub fn fixup() -> Result<(), String> {
         }
     } else if sys::which("pkg-config").is_some() {
         log::warn("librsvg-2.0 fails pkg-config --exists:");
-        let out = sys::capture(
-            "pkg-config",
-            &["--exists", "--print-errors", "librsvg-2.0"],
-            &e.work,
-        )
-        .unwrap_or_default();
-        for l in out.lines().take(10) {
-            log::log(&format!("    | {l}"));
+        // pkg-config 的诊断走 stderr 且包缺席即非零退出——sys::capture
+        // 两头都踩（stderr 丢 null、非零直接 Err），明细从来打不出来；
+        // 直接接管双流逐行落日志
+        // pkg-config's diagnostics ride stderr and a missing package
+        // means a non-zero exit — sys::capture loses on both counts
+        // (stderr binned, non-zero -> Err), so the details never print.
+        // Take over both streams and log them verbatim
+        let mut cm = sys::cmd("pkg-config", &["--exists", "--print-errors", "librsvg-2.0"]);
+        cm.current_dir(&e.work)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if let Ok(o) = cm.output() {
+            let out = String::from_utf8_lossy(&o.stdout).replace('\r', "");
+            let err = String::from_utf8_lossy(&o.stderr).replace('\r', "");
+            for l in out.lines().chain(err.lines()).take(15) {
+                log::log(&format!("    | {l}"));
+            }
+        }
+        // 对 Requires 闭包逐成员点名——print-errors 含糊时这行直接给出
+        // 哪个包缺席（私有成员用 --static 档探测）/ name each missing
+        // member of the Requires closure outright — the answer survives a
+        // vague --print-errors (private members probed at --static level)
+        for (m, statik) in [
+            ("glib-2.0", false),
+            ("gio-2.0", false),
+            ("gobject-2.0", false),
+            ("gdk-pixbuf-2.0", false),
+            ("cairo", false),
+            ("gmodule-no-export-2.0", true),
+            ("cairo-gobject", true),
+            ("cairo-png", true),
+            ("freetype2", true),
+            ("harfbuzz", true),
+            ("libxml-2.0", true),
+            ("pangocairo", true),
+            ("pangoft2", true),
+        ] {
+            let args: &[&str] = if statik {
+                &["--exists", "--static", m]
+            } else {
+                &["--exists", m]
+            };
+            if sys::capture("pkg-config", args, &e.work).is_err() {
+                log::log(&format!(
+                    "    | missing Requires{} member: {m}",
+                    if statik { ".private" } else { "" }
+                ));
+            }
         }
     }
 

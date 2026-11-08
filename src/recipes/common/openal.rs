@@ -23,10 +23,14 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-DALSOFT_TESTS=OFF",
             "-DALSOFT_INSTALL=ON",
             "-DLIBTYPE=STATIC",
-            // GCC 的 -fmodules-ts 在 alconfig.cpp 上 ICE（GIMPLE
-            // nonnull_arg_p）——关掉 C++20 模块扫描 /
-            // GCC's -fmodules-ts ICEs on alconfig.cpp (GIMPLE
-            // nonnull_arg_p) — disable C++20 module scanning
+            // C++20 模块整条关掉：GCC 16 + Ninja 自动启用（编译
+            // gsl.cppm 等 .cppm），曾 ICE 也曾在 master 迁移期踩到
+            // gsl 导出缺口；头文件路径才是久经考验的路 /
+            // disable C++20 modules wholesale: GCC 16 + Ninja
+            // auto-enables them (building gsl.cppm et al.), which has
+            // both ICE'd before and tripped on a transient gsl export
+            // gap on master; the header path is the proven one
+            "-DALSOFT_ENABLE_MODULES=OFF",
             "-DCMAKE_CXX_SCAN_FOR_MODULES=OFF",
         ],
     )

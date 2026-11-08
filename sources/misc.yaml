@@ -7,8 +7,6 @@
 windows-x86_64:
   openssl:
     git: https://github.com/openssl/openssl.git
-  mbedtls:
-    git: https://github.com/Mbed-TLS/mbedtls.git
   fdk-aac:
     git: https://github.com/mstorsjo/fdk-aac.git
   libshaderc:
@@ -40,8 +38,6 @@ windows-x86_64:
 windows-arm64:
   openssl:
     git: https://github.com/openssl/openssl.git
-  mbedtls:
-    git: https://github.com/Mbed-TLS/mbedtls.git
   fdk-aac:
     git: https://github.com/mstorsjo/fdk-aac.git
   libshaderc:
@@ -73,8 +69,6 @@ windows-arm64:
 linux-x86_64:
   openssl:
     git: https://github.com/openssl/openssl.git
-  mbedtls:
-    git: https://github.com/Mbed-TLS/mbedtls.git
   fdk-aac:
     git: https://github.com/mstorsjo/fdk-aac.git
   pulseaudio:
@@ -112,8 +106,6 @@ linux-x86_64:
 linux-arm64:
   openssl:
     git: https://github.com/openssl/openssl.git
-  mbedtls:
-    git: https://github.com/Mbed-TLS/mbedtls.git
   fdk-aac:
     git: https://github.com/mstorsjo/fdk-aac.git
   pulseaudio:
@@ -152,8 +144,6 @@ linux-arm64:
 macos-arm64:
   openssl:
     git: https://github.com/openssl/openssl.git
-  mbedtls:
-    git: https://github.com/Mbed-TLS/mbedtls.git
   fdk-aac:
     git: https://github.com/mstorsjo/fdk-aac.git
   pulseaudio:

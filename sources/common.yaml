@@ -86,7 +86,11 @@ vorbis:
 opus:
   git: https://gitlab.xiph.org/xiph/opus.git
   ref: v1.6.1   # get-version.py 靠 git describe 取版本——浅克隆必须落在 tag 上 / get-version.py derives the version from git describe — the shallow clone must land on a tag
-  submodules: true   # dnn/fargan 模型数据是 submodule——meson 点名要 dnn/fargan_data.h / the dnn/fargan model data is a submodule — meson demands dnn/fargan_data.h
+  # dnn/*_data.{c,h} 不是 submodule——模型权重在 media.xiph.org 的
+  # opus_data-<sha>.tar.gz，配方里跑 download_model.sh 落地 /
+  # the dnn/*_data.{c,h} files aren't a submodule — model weights ship
+  # as opus_data-<sha>.tar.gz on media.xiph.org; the recipe runs
+  # download_model.sh to land them
 speex:
   git: https://gitlab.xiph.org/xiph/speex.git         # downloads.xiph.org 不可达，走仓库
 shine:
@@ -138,7 +142,7 @@ chromaprint:
   submodules: true   # kissfft 以 submodule 随仓携带 / kissfft rides as a submodule
 openal:
   git: https://github.com/kcat/openal-soft.git
-  submodules: true   # gsl/fmt 以 submodule 随仓携带——gsl 缺席 gsl::narrow_cast 编译挂 / gsl+fmt ride as submodules — without gsl, gsl::narrow_cast fails to compile
+  ref: 1.25.2   # master 上 gsl 转 vendored 的迁移期曾短暂缺窄化头（上游已修）——钉稳定 tag / master briefly shipped an incomplete vendored gsl mid-migration (fixed upstream since) — pin the stable tag
 gme:
   git: https://github.com/libgme/game-music-emu.git
 openmpt:
