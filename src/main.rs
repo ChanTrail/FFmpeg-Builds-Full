@@ -142,6 +142,22 @@ fn main() {
     if let Err(e) = (p.init_env)() {
         log::die(&e);
     }
+    // 输出闸门状态显形：Linux 驱动经 sudo env 白名单透传环境变量，
+    // GITHUB_ACTIONS 漏名单时这里就是 off——一眼分清"闸门没生效"与
+    // "闸门没工作" / surface the output gate's state: the Linux driver
+    // runs through sudo env whitelists, and a missing GITHUB_ACTIONS
+    // shows up here as off — "gate disengaged" vs "gate broken" is then
+    // obvious at a glance
+    log::log(&format!(
+        "CI output gate: {}",
+        if std::env::var_os("FFBUILD_CHILD").is_some() {
+            "off (child: parent run_tee gates)"
+        } else if std::env::var_os("GITHUB_ACTIONS").is_some() {
+            "on"
+        } else {
+            "off"
+        }
+    ));
     let rc = match cmd {
         "build" => (p.build)(),
         "packages" => (p.packages)(),

@@ -326,7 +326,13 @@ pub fn cmd(prog: &str, args: &[&str]) -> Command {
         .env("MSYSTEM", &e.msystem)
         .env("MSYSTEM_PREFIX", &e.env_prefix)
         .env("MSYS2_ROOT", win_to_mixed(&e.msys2_root))
-        .env("ENV_PREFIX", &e.env_prefix);
+        .env("ENV_PREFIX", &e.env_prefix)
+        // git>=2.31 的全局 advice 开关：detached HEAD 说教、
+        // init.defaultBranch 提示等 hint: 块在所有子孙进程一次掐掉
+        // git>=2.31's global advice switch: the detached-HEAD lecture,
+        // init.defaultBranch notices and every other hint: block are
+        // silenced for all descendants in one shot
+        .env("GIT_ADVICE", "0");
     if !e.msystem.is_empty() {
         c.env("CHERE_INVOKING", "1");
     }

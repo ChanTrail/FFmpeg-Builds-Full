@@ -43,6 +43,7 @@ pub fn fetch(dest: &Path) -> Result<Info, String> {
     crate::net::git_run(
         &[
             "clone",
+            "-q",
             "--filter=blob:none",
             "--branch",
             &refname,

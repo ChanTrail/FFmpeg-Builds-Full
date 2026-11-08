@@ -387,17 +387,21 @@ jobs:
           # 不认 -E（直接忽略），改用 `sudo env` 显式透传——FFBUILD_DIST
           # 丢了产物会写进编译期烤进二进制的幽灵路径；GH_TOKEN 丢了
           # deps 恢复/上传全体静默跳过；GITHUB_STEP_SUMMARY 丢了
-          # 失败明细进不了 run 页。
+          # 失败明细进不了 run 页；GITHUB_ACTIONS 丢了驱动的 CI 输出
+          # 闸门判不出来，日志回全量模式。
           # apt, /opt and the /usr/local install all want root. sudo-rs on
           # newer runners silently ignores -E, so pass env through
           # `sudo env` explicitly — a lost FFBUILD_DIST sends artifacts to
           # the compile-time-baked phantom path, a lost GH_TOKEN silently
           # disables deps restore/upload, a lost GITHUB_STEP_SUMMARY
-          # silently drops the failure details from the run page.
+          # silently drops the failure details from the run page, a lost
+          # GITHUB_ACTIONS leaves the driver's CI output gate disengaged
+          # and the log back at full volume.
           sudo env FFBUILD_WORK="$FFBUILD_WORK" FFBUILD_DIST="$FFBUILD_DIST" \
             GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
             GITHUB_SHA="$GITHUB_SHA" \
             GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
+            GITHUB_ACTIONS="$GITHUB_ACTIONS" \
             ./driver/FFmpeg-Builds-Full build
 
       - name: Publish deps (Linux)
@@ -410,6 +414,7 @@ jobs:
         run: |
           sudo env FFBUILD_WORK="$FFBUILD_WORK" GH_TOKEN="$GH_TOKEN" \
             GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_ACTIONS="$GITHUB_ACTIONS" \
             ./driver/FFmpeg-Builds-Full save-deps
 
       # ------------------------------------------------------------------ macOS

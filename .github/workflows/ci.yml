@@ -363,7 +363,7 @@ jobs:
         run: |
           sudo env FFBUILD_WORK="$FFBUILD_WORK" FFBUILD_DIST="$FFBUILD_DIST" \
             GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
-            GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_SHA="$GITHUB_SHA" GITHUB_ACTIONS="$GITHUB_ACTIONS" \
             ./driver/FFmpeg-Builds-Full packages
 
       - name: Build deps [extras] (Linux)
@@ -378,6 +378,7 @@ jobs:
             GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
             GITHUB_SHA="$GITHUB_SHA" \
             GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
+            GITHUB_ACTIONS="$GITHUB_ACTIONS" \
             ./driver/FFmpeg-Builds-Full extras
 
       - name: Publish deps (Linux)
@@ -390,6 +391,7 @@ jobs:
         run: |
           sudo env FFBUILD_WORK="$FFBUILD_WORK" GH_TOKEN="$GH_TOKEN" \
             GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_ACTIONS="$GITHUB_ACTIONS" \
             ./driver/FFmpeg-Builds-Full save-deps
 
       # ------------------------------------------------------------------ macOS

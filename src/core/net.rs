@@ -681,6 +681,7 @@ pub fn fetch_git(
     git_run(
         &[
             "clone",
+            "-q",
             "--depth",
             "1",
             "--branch",
@@ -713,18 +714,24 @@ pub fn fetch_git(
 /// fetch_git_commit <url> <sha>: shallow checkout of one exact commit
 pub fn fetch_git_commit(wd: &Path, url: &str, sha: &str) -> Result<PathBuf, String> {
     fsx::rm_rf(&wd.join("src"));
-    sys::run_ok("git", &["init", "src"], wd)?;
+    sys::run_ok("git", &["init", "-q", "src"], wd)?;
     let src = wd.join("src");
     sys::run_ok("git", &["remote", "add", "origin", url], &src)?;
     // 瞬时拉取失败重试 3 次（git.ffmpeg.org 周期性 502）——git_run
     // 内置重试；fetch 增量续传无需清理 / transient fetch failures
     // retry 3x inside git_run (git.ffmpeg.org 502s periodically);
     // fetch resumes incrementally, nothing to clean
-    git_run(&["fetch", "--depth", "1", "origin", sha], &src, None)
+    git_run(&["fetch", "-q", "--depth", "1", "origin", sha], &src, None)
         .map_err(|e| format!("git fetch {url} {sha} {e}"))?;
     sys::run_ok(
         "git",
-        &["-c", "advice.detachedHead=false", "checkout", "FETCH_HEAD"],
+        &[
+            "-c",
+            "advice.detachedHead=false",
+            "checkout",
+            "-q",
+            "FETCH_HEAD",
+        ],
         &src,
     )?;
     Ok(src)
