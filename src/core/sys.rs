@@ -376,11 +376,113 @@ pub fn cmd(prog: &str, args: &[&str]) -> Command {
     c
 }
 
-/// 直接派生程序并等待完成；输出直通本进程 stdio
-/// Spawn a program and wait; output passes through to our stdio
+/// CI 输出闸门的小体量阈值：捕获输出小于它仍原样放出（版本/提示行不
+/// 丢），超出的成功即吞、失败回放尾部 / CI output-gate size threshold:
+/// captured output below it still passes verbatim (version/hint lines
+/// are kept); larger output is dropped on success and tail-replayed on
+/// failure
+const CI_GATE_SMALL: usize = 4 * 1024;
+
+/// 闸内命令失败时回放给控制台的输出行数 / how many tail lines a gated
+/// command's failure replays to the console
+const CI_GATE_TAIL: usize = 40;
+
+/// 本进程是否该闸住子进程输出：CI 下 runner 日志管道的背压在单步数万
+/// 行后堵死写端（见 run_tee 注释）。FFBUILD_CHILD 标记的
+/// recipe-run/postfix-run 子进程（run_tee spawn 时注入）不闸——其输出
+/// 经管道喂给父进程的 <name>.log，抑制由父进程那一头做
+/// whether this process should gate child output: under CI the runner's
+/// log channel backpressures once a step accumulates tens of thousands
+/// of lines (see run_tee). recipe-run/postfix-run children marked with
+/// FFBUILD_CHILD (injected by run_tee at spawn) are never gated — their
+/// output rides the pipe into the parent's <name>.log and suppression
+/// happens on the parent's side
+fn ci_gate() -> bool {
+    std::env::var_os("GITHUB_ACTIONS").is_some() && std::env::var_os("FFBUILD_CHILD").is_none()
+}
+
+/// 文本末尾 n 个非空行 / the last n non-empty lines of a text
+fn tail_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..].join("\n")
+}
+
+/// 闸制模式跑完并按体量处置捕获输出：小体量原样放出；大体量成功只留
+/// 一行体量摘要，失败回放尾部 CI_GATE_TAIL 行现场。等待期间每 30s
+/// 打一次报活，长命令（apt-get/pacman/brew）不至于看起来像冻住
+/// run to completion in gated mode and dispose of the captured output
+/// by size: small payloads pass verbatim; large ones leave a one-line
+/// size digest on success and replay a CI_GATE_TAIL-line tail on
+/// failure. A 30-second liveness line keeps long commands
+/// (apt-get/pacman/brew) from looking frozen
+fn run_gated(c: &mut Command, desc: &str) -> Result<i32, String> {
+    // 报活线程：等待期间每 30s 一行 / liveness thread: one line every
+    // 30 s while the command runs
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let label = desc.to_string();
+    let watcher = std::thread::spawn(move || {
+        let mut secs = 0u32;
+        while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+            rx.recv_timeout(std::time::Duration::from_secs(30))
+        {
+            secs += 30;
+            crate::log::log(&format!("… {label}: still running ({secs}s)"));
+        }
+    });
+    let out = c.output().map_err(|e| format!("spawn {desc}: {e}"))?;
+    let _ = tx.send(());
+    let _ = watcher.join();
+    let code = out.status.code().unwrap_or(-1);
+    let total = out.stdout.len() + out.stderr.len();
+    if code == 0 && total < CI_GATE_SMALL {
+        // 小体量：原样放出（stdout 在前、stderr 在后）/ small payload:
+        // verbatim (stdout first, stderr second)
+        let _ = std::io::stdout().write_all(&out.stdout);
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().write_all(&out.stderr);
+        let _ = std::io::stderr().flush();
+    } else if code != 0 {
+        // 失败：回放合并输出的尾部现场 / failure: replay the tail of the
+        // merged streams
+        let mut merged = String::from_utf8_lossy(&out.stdout).into_owned();
+        merged.push_str(&String::from_utf8_lossy(&out.stderr));
+        println!("{}", tail_lines(&merged, CI_GATE_TAIL));
+    } else {
+        crate::log::log(&format!(
+            "… {desc}: {} output suppressed",
+            human_size(total as u64)
+        ));
+    }
+    Ok(code)
+}
+
+/// 直接派生程序并等待完成；输出直通本进程 stdio。CI 下（且非
+/// FFBUILD_CHILD 子进程）改为捕获闸门：小体量放出、大体量吞掉只留
+/// 摘要+报活、失败回放尾部——见 ci_gate/run_gated
+/// Spawn a program and wait; output passes through to our stdio. Under
+/// CI (and not inside an FFBUILD_CHILD subprocess) it goes through the
+/// capture gate instead: small payloads pass, large ones are swallowed
+/// to a digest plus liveness lines, failures replay the tail — see
+/// ci_gate/run_gated
 pub fn run(prog: &str, args: &[&str], dir: &Path) -> Result<i32, String> {
     let mut c = cmd(prog, args);
     c.current_dir(dir);
+    if ci_gate() {
+        // 心跳标签：bash -c 取脚本首部（基名全是 bash 没信息量），其余
+        // 取程序基名 / heartbeat label: the script head for bash -c (the
+        // basename is always bash and says nothing), the program
+        // basename otherwise
+        let desc = if args.first() == Some(&"-c") && args.len() >= 2 {
+            format!("bash {}", args[1].chars().take(40).collect::<String>())
+        } else {
+            Path::new(prog)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| prog.to_string())
+        };
+        return run_gated(&mut c, &desc);
+    }
     c.status()
         .map(|s| s.code().unwrap_or(-1))
         .map_err(|e| format!("spawn {prog}: {e}"))
@@ -481,7 +583,13 @@ pub fn run_tee(prog: &str, args: &[&str], dir: &Path, logfile: &Path) -> Result<
     let mut c = cmd(prog, args);
     c.current_dir(dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // FFBUILD_CHILD 标记子进程身份：其内部 sys::run 必须保持继承
+        // stdio，输出经本管道喂回给本函数写日志；闸门只在父进程生效
+        // mark the child context: its inner sys::run must keep
+        // inheriting stdio so output rides this pipe back for the log
+        // file; the CI gate applies to the parent side only
+        .env("FFBUILD_CHILD", "1");
     let mut ch = c.spawn().map_err(|e| format!("spawn {prog}: {e}"))?;
     let mut so = ch.stdout.take().unwrap();
     let mut se = ch.stderr.take().unwrap();
@@ -709,8 +817,5 @@ pub fn human_size(b: u64) -> String {
 /// prints its scene through this (unlike extras' error_tail, which is
 /// a 400-char one-line digest; this is the verbatim tail)
 pub fn log_tail(logfile: &Path, max_lines: usize) -> String {
-    let text = crate::fsx::read(logfile);
-    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-    let start = lines.len().saturating_sub(max_lines);
-    lines[start..].join("\n")
+    tail_lines(&crate::fsx::read(logfile), max_lines)
 }
