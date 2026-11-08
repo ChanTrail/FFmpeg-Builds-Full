@@ -27,5 +27,16 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-DWITH_ZLIB=ON",
             "-DWITH_MBEDTLS=ON",
         ],
-    )
+    )?;
+    // 上游 libssh.pc 不带 crypto 后端归档——pki_mbedcrypto/libmbedcrypto
+    // 的 mbedtls_* 引用静态链下游拿不到（mac 上 FFmpeg configure
+    // check_func_headers 链测全灭）。手补三段归档；mbedcrypto 的
+    // -lpthread 尾巴由 mbedtls 配方自己喂过 / upstream libssh.pc
+    // carries no crypto-backend archives — the mbedtls_* references in
+    // pki_mbedcrypto/libmbedcrypto never reach static consumers (they
+    // kill FFmpeg's check_func_headers link test on mac). Add the three
+    // archives by hand; mbedcrypto's -lpthread tail is already fed by
+    // the mbedtls recipe
+    crate::pkgcfg::libs_private("libssh", &["-lmbedtls", "-lmbedx509", "-lmbedcrypto"]);
+    Ok(())
 }

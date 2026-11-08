@@ -55,6 +55,14 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-DBUILD_LIBCURL_DOCS=OFF",
             "-DBUILD_MISC_DOCS=OFF",
             "-DENABLE_CURL_MANUAL=OFF",
+            // libidn2 默认开着会去摸系统/brew 装的副本：检出后 idn2_*
+            // 引用烙进 libcurl.a，而 -lidn2 进不了我们的手写 .pc——静态
+            // 链必炸；FFmpeg 的 URL 用不到 IDNA / USE_LIBIDN2 defaults
+            // ON and sniffs out a system/brew copy: detected builds bake
+            // idn2_* references into libcurl.a while -lidn2 can't reach
+            // our hand-written .pc — static links die. FFmpeg's URLs
+            // don't need IDNA
+            "-DUSE_LIBIDN2=OFF",
         ],
     )?;
     // curl 的 cmake 不产 libcurl.pc（mac 实锤不装）——pkg-config 探针
@@ -62,11 +70,22 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     // curl's cmake emits no libcurl.pc (verified on mac) — the
     // pkg-config probe relies on this hand-written one; the gnutls/
     // zlib tail forwards via Requires.private
+    //
+    // macOS 代理探测（macos.c → SCDynamicStoreCopyProxies）无条件编译，
+    // 链时必须 -framework SystemConfiguration；linux 无此框架 / macOS
+    // proxy detection (macos.c -> SCDynamicStoreCopyProxies) compiles
+    // unconditionally and needs -framework SystemConfiguration at link
+    // time; linux has no such framework
+    let libs_private = if e.os == crate::sys::Os::Mac {
+        "-lpthread -framework SystemConfiguration"
+    } else {
+        "-lpthread"
+    };
     crate::fsx::write(
         &e.prefix_win.join("lib/pkgconfig/libcurl.pc"),
         &format!(
-            "prefix={}\nlibdir=${{prefix}}/lib\nincludedir=${{prefix}}/include\n\nName: libcurl\nDescription: multiprotocol file transfer library\nVersion: 8.23.0\nRequires.private: gnutls zlib\nLibs: -L${{libdir}} -lcurl\nLibs.private: -lpthread\nCflags: -I${{includedir}}\n",
-            e.prefix
+            "prefix={}\nlibdir=${{prefix}}/lib\nincludedir=${{prefix}}/include\n\nName: libcurl\nDescription: multiprotocol file transfer library\nVersion: 8.23.0\nRequires.private: gnutls zlib\nLibs: -L${{libdir}} -lcurl\nLibs.private: {}\nCflags: -I${{includedir}}\n",
+            e.prefix, libs_private
         ),
     )
 }

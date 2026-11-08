@@ -828,11 +828,21 @@ fn postfix() -> Result<(), String> {
         libs_private_tr(pc, &[&e.cxxrt]);
     }
     libs_private_tr("twolame", &["-lm"]);
-    // soxr WITH_OPENMP 拖入 GOMP_* ——仅 GCC 运行时（windows/clangarm64/
-    // macOS 跳过）/ soxr drags GOMP_* when built WITH_OPENMP — GCC runtimes
-    // only (skipped on windows/clangarm64/macOS)
+    // soxr WITH_OPENMP 拖入 omp_* 尾巴：linux 与 windows 都要补——pacman
+    // 的 ucrt64 libsoxr 同样开了 OpenMP（实证：x86_64 上 omp_* 未解析被
+    // 丢弃）。GCC 配 -lgomp、clangarm64 的 LLVM 配 -lomp；deps_fixup 的
+    // OpenMP 探测在本函数尾部才跑，这里按编译器直接选。macOS 的 soxr
+    // 配方自己关了 OpenMP，跳过 / soxr's WITH_OPENMP drags omp_* tails:
+    // both linux and windows need the tail — pacman's ucrt64 libsoxr is
+    // built WITH_OPENMP too (empirical: omp_* unresolved on x86_64). GCC
+    // pairs with -lgomp, clangarm64's LLVM with -lomp; deps_fixup's
+    // OpenMP probe only runs at the tail of this function so pick by
+    // compiler here. macOS's own soxr recipe disables OpenMP — skip
     if e.os == sys::Os::Linux {
         libs_private_tr("soxr", &["-lgomp", "-lm"]);
+    } else if e.os == sys::Os::Windows {
+        let omp = if e.cc == "gcc" { "-lgomp" } else { "-lomp" };
+        libs_private_tr("soxr", &[omp, "-lm"]);
     }
 
     // GnuTLS 的 ARM AES 汇编与 OpenSSL aesv8-armx 同源——导出 aes_v8_* 名

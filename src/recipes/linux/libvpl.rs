@@ -33,11 +33,25 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     buildsys::cmake_build(
         &src,
         &[
-            // 例子源码别装进前缀（BUILD_SHARED_LIBS=OFF 由 cmake_build
-            // 统一注入，BUILD_TESTS 上游默认即 OFF）/ keep example
-            // sources out of the prefix (BUILD_SHARED_LIBS=OFF comes from
-            // cmake_build; upstream already defaults BUILD_TESTS off)
+            // 源码落在哪个 tag 不固定（git 浮动源 + CI/tag 回退），
+            // 新老两套变量名一起给，未识别的 -D 只是告警：
+            // which tag the git-floating source lands on varies (CI/tag
+            // fallback), so pass both generations of variable names —
+            // unrecognized -D options only warn:
+            // v2023.x 时代 BUILD_TOOLS=ON 会编 tools/legacy 旧示例代码，
+            // 撞新 GCC（sample_vpp_frc_adv.cpp 缺 <cstdint>）——必须关；
+            // 新 master 已无该变量 / the v2023.x-era BUILD_TOOLS=ON builds
+            // tools/legacy sample code that breaks on new GCC
+            // (sample_vpp_frc_adv.cpp missing <cstdint>) — must be off;
+            // newer master no longer has the variable
+            "-DBUILD_TOOLS=OFF",
+            "-DBUILD_EXAMPLES=OFF",
+            // 例子源码也别装进前缀：INSTALL_EXAMPLES 是新名，
+            // INSTALL_EXAMPLE_CODE 是 v2023.x 旧名 / keep example sources
+            // out of the prefix: INSTALL_EXAMPLES is the new name,
+            // INSTALL_EXAMPLE_CODE the v2023.x one
             "-DINSTALL_EXAMPLES=OFF",
+            "-DINSTALL_EXAMPLE_CODE=OFF",
         ],
     )
 }

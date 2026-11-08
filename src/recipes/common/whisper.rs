@@ -27,6 +27,16 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         "-DWHISPER_USE_SYSTEM_GGML=OFF".into(),
         "-DGGML_CCACHE=OFF".into(),
         "-DGGML_OPENMP=OFF".into(),
+        // BLAS/Accelerate 关掉：开了会多产 libggml-blas.a 并在
+        // libggml-cpu.a 烙进 vDSP_*（Accelerate.framework）引用，而
+        // .pc 里既没 -lggml-blas 也没 -framework Accelerate——FFmpeg
+        // 链测全灭；FFmpeg 用不到 BLAS 后端 / keep BLAS/Accelerate
+        // off: enabling them produces libggml-blas.a and bakes vDSP_*
+        // (Accelerate.framework) references into libggml-cpu.a, while
+        // the .pc has neither -lggml-blas nor -framework Accelerate —
+        // FFmpeg's link test dies. FFmpeg needs no BLAS backend
+        "-DGGML_BLAS=OFF".into(),
+        "-DGGML_ACCELERATE=OFF".into(),
     ];
     // GPU 后端按平台选：linux/windows 走 Vulkan（驱动 DLL/.so 只在请求
     // 设备时才加载）；macOS 没有干净的前缀 Vulkan 路——走 Metal，着色
