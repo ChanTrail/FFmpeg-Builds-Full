@@ -28,6 +28,17 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         &[
             "-DHTTP_ONLY=ON",
             "-DBUILD_CURL_EXE=OFF",
+            // picky 探针在 GCC16 上采到 -Wleading-whitespace/-Wtrailing-
+            // whitespace——gnutls 头（几千行 openpgp.h 等）每行一报，
+            // 每个 TU 喷几万条警告把 extras 的 325min 超时活生生拖死。
+            // 整组 picky 关掉：产物不依赖警告集 / the picky probe picks
+            // up -Wleading-whitespace/-Wtrailing-whitespace on GCC16 —
+            // gnutls headers (thousands of lines like openpgp.h) warn on
+            // nearly every line, tens of thousands of warnings per TU,
+            // and the spam drags the build past extras' 325min timeout.
+            // The whole picky set goes off: the artifact doesn't depend
+            // on the warning flags
+            "-DPICKY_COMPILER=OFF",
             "-DCURL_USE_GNUTLS=ON",
             "-DCURL_USE_LIBPSL=OFF",
             "-DCURL_USE_LIBSSH2=OFF",

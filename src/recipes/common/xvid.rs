@@ -19,9 +19,32 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     // 压回 gnu17 / its old `typedef ... bool` collides with the C23
     // keyword — GCC16 defaults to -std=gnu23, clamp it back to gnu17
     let _g = crate::sys::EnvGuard::append(&[("CFLAGS", "-std=gnu17")]);
+    // 快照会恢复上次半成品 install 留下的 libxvidcore.so*——xvid 的
+    // install 规则 `ln -s` 不带 -f，撞旧文件直接 Error 1。构建前清
+    // 一遍；装完再清一遍（静态前缀本来就不该带 .so）/ snapshots can
+    // restore libxvidcore.so* leftovers from a previous half-install —
+    // xvid's install rule runs `ln -s` without -f and dies on them.
+    // Clean once before building and again after install (a static
+    // prefix should not carry .so files anyway)
+    for p in crate::fsx::walk(&e.prefix_win.join("lib")) {
+        if p.file_name()
+            .map(|n| n.to_string_lossy().starts_with("libxvidcore.so"))
+            .unwrap_or(false)
+        {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
     // autotools 工程嵌在 build/generic——不是仓库根 /
     // the autotools project is nested under build/generic, not the root
     buildsys::autotools_build(&ctx.src()?.join("build/generic"), &[])?;
+    for p in crate::fsx::walk(&e.prefix_win.join("lib")) {
+        if p.file_name()
+            .map(|n| n.to_string_lossy().starts_with("libxvidcore.so"))
+            .unwrap_or(false)
+        {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
     // 上游不随包发 xvidcore.pc——pkg-config 探针全靠手写的这个 /
     // upstream ships no xvidcore.pc — the pkg-config probe relies on
     // this hand-written one

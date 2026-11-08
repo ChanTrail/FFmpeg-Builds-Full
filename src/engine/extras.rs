@@ -111,10 +111,10 @@ pub fn applies(targets: &str) -> bool {
     })
 }
 
-/// extras_provided：平台自带栈已把库装进前缀（pc 模块必须来自前缀内，
-/// 静态归档门槛也要过）/ the platform's own stack already installed the
-/// library into the prefix (pc modules must come from inside the prefix and
-/// the static-archive gate must pass)
+/// extras_provided：平台自带栈已把库装进前缀（pc 模块必须来自平台栈
+/// 自己的前缀、静态归档门槛也要过）/ the platform's own stack already
+/// installed the library (pc modules must come from the platform stack's
+/// own prefix and the static-archive gate must pass)
 pub fn provided(check: &str) -> bool {
     let e = sys::env();
     for c in check.split(',') {
@@ -129,14 +129,28 @@ pub fn provided(check: &str) -> bool {
         if !pkgcfg::exists(c) {
             return false;
         }
-        // .pc 文件必须位于 $PREFIX 或 $MSYSTEM_PREFIX 内部——系统 -dev 包
-        // 不算"已提供" / the .pc file must live inside $PREFIX or
-        // $MSYSTEM_PREFIX — a system -dev package is not "provided"
+        // .pc 必须来自 $MSYSTEM_PREFIX（pacman 这类平台栈自己的树）且
+        // 不属于 deps 前缀——系统 -dev 包不算"已提供"；deps 前缀里无
+        // .ok 的 .pc 更不算：那是快照残留（配方建过或该建的），骑平台
+        // 捷径会永久跳过重建。实证：fontconfig 配方上线时快照已带
+        // 2.16 文件且无 .ok，provided 永远放行 → pango 卡 >=2.17。
+        // linux/mac 上 env_prefix==prefix，此条件恒假——跳过权全部
+        // 归还给 .ok 哈希校验 / the .pc must come from $MSYSTEM_PREFIX
+        // (the platform stack's own tree, e.g. pacman) yet NOT the deps
+        // prefix — a system -dev package is not "provided", and neither
+        // is an .ok-less .pc inside the deps prefix: that is snapshot
+        // residue from a recipe that built or should build it, and
+        // riding the platform shortcut skips the rebuild forever.
+        // Empirical: the fontconfig recipe went live while snapshots
+        // already carried 2.16 files and no .ok — provided let it
+        // through permanently and pango's >=2.17 check failed.
+        // On linux/mac env_prefix==prefix so this is always false —
+        // skip authority returns to the .ok hash check entirely
         let pcd = pkgcfg::variable(c, "pcfiledir");
-        let inside = [&e.prefix, &e.env_prefix]
-            .iter()
-            .any(|p| !p.is_empty() && pcd.starts_with(p.as_str()));
-        if !inside {
+        let from_platform = !e.env_prefix.is_empty()
+            && pcd.starts_with(e.env_prefix.as_str())
+            && (e.prefix.is_empty() || !pcd.starts_with(e.prefix.as_str()));
+        if !from_platform {
             return false;
         }
     }

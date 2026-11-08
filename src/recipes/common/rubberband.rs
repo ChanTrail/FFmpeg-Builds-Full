@@ -31,5 +31,21 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     // pin only the two combo options — everything else stays default
     // (the extra cmdline/plugin binaries land in the prefix harmlessly
     // and pull no external deps)
-    buildsys::meson_build(&src, &["-Dfft=builtin", "-Dresampler=builtin"])
+    // prefer_static=true：rubberband 的 dependency('sndfile') 默认非
+    // static 探——只拿 Libs 公共行，而 libsndfile.a 的 mpeg 代码要
+    // -lmp3lame/-lmpg123（都在 Libs.private/Requires.private 里）。
+    // 不开它链接就缺 id3tag_*/lame_* 符号 / prefer_static=true:
+    // rubberband's dependency('sndfile') probes non-static by default —
+    // it only reads the public Libs line while libsndfile.a's mpeg
+    // code needs -lmp3lame/-lmpg123 (both live in
+    // Libs.private/Requires.private). Without it the link misses
+    // id3tag_*/lame_* symbols
+    buildsys::meson_build(
+        &src,
+        &[
+            "-Dfft=builtin",
+            "-Dresampler=builtin",
+            "-Dprefer_static=true",
+        ],
+    )
 }

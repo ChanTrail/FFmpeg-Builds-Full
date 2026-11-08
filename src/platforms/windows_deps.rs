@@ -645,8 +645,20 @@ pub fn fixup() -> Result<(), String> {
     //    static sibling when it exists
     //  * -lgcc_s tokens -> dead weight under -static (they resolve to the
     //    libgcc_s.dll.a import lib)
+    // deps 前缀 + env 前缀两棵 pkgconfig 树都扫：pacman 装的 .pc
+    // 住在 env 前缀——旧补丁时代剥运算符的坏文件正是在那里随
+    // env 缓存续命（gdk-pixbuf-2.0/cairo 的 Requires 裸版本对
+    // 就是这么来的）/ scan BOTH pkgconfig trees — the deps prefix
+    // AND the env prefix: pacman-installed .pc files live in the
+    // env prefix, which is exactly where the sed-era operator
+    // stripping damage hides and rides the env cache
+    // (gdk-pixbuf-2.0/cairo bare `mod ver` Requires pairs)
+    let envpc = [
+        PathBuf::from(&e.env_prefix).join("lib/pkgconfig"),
+        PathBuf::from(&e.env_prefix).join("share/pkgconfig"),
+    ];
     let mut pcfiles: Vec<PathBuf> = Vec::new();
-    for d in [&pcdir, &sharepc] {
+    for d in [&pcdir, &sharepc, &envpc[0], &envpc[1]] {
         for p in fsx::walk(d) {
             if p.extension().map(|x| x == "pc").unwrap_or(false) {
                 pcfiles.push(p);
@@ -656,6 +668,20 @@ pub fn fixup() -> Result<(), String> {
     for pcf in &pcfiles {
         let c = fsx::read(pcf);
         let mut out = c.clone();
+        // 先愈合 Requires 行被旧补丁剥掉的 >= 运算符——坏文件随
+        // deps 快照/env 缓存每轮原样恢复，不每趟修就一直坏 /
+        // heal the >= operators the older patcher stripped out of
+        // Requires lines first — the damaged files are restored
+        // verbatim from the deps snapshot/env cache every run, so
+        // they stay broken unless re-healed every pass
+        let healed = pkgcfg::heal_req_ops(&out);
+        if healed != c {
+            log::log(&format!(
+                "patched {}: restored stripped Requires operators",
+                pcf.file_name().unwrap().to_string_lossy()
+            ));
+            out = healed;
+        }
         // 收集形如 lib*.dll.a 的 basename（任意路径前缀）/ collect
         // lib*.dll.a basenames under any prefix spelling
         let mut bases: Vec<String> = Vec::new();
@@ -667,9 +693,27 @@ pub fn fixup() -> Result<(), String> {
         }
         bases.sort();
         bases.dedup();
+        // 静态兄弟要到该 .pc 所属前缀的 lib 里找：<P>/lib|share/
+        // pkgconfig/x.pc → <P>/lib（env 前缀的 pacman .pc 查 deps
+        // libdir 既会漏判也会误判）/ resolve the static sibling in
+        // the lib dir of THIS .pc's own prefix:
+        // <P>/lib|share/pkgconfig/x.pc -> <P>/lib (looking up an
+        // env-prefix pacman .pc in the deps libdir would both miss
+        // and misfire)
+        let own_lib = pcf.parent().and_then(|d| d.parent()).map(|d| {
+            if d.ends_with("share") {
+                d.parent().unwrap().join("lib")
+            } else {
+                d.to_path_buf()
+            }
+        });
         for b in bases {
             let sta = format!("{}.a", b.trim_end_matches(".dll.a"));
-            if libdir.join(&sta).is_file() {
+            if own_lib
+                .as_ref()
+                .map(|l| l.join(&sta).is_file())
+                .unwrap_or(false)
+            {
                 out = out.replace(&b, &sta);
                 log::log(&format!(
                     "patched {}: {b} -> {sta}",
