@@ -52,16 +52,31 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     sys::run_ok("make", &["-j", &jobs], &b)?;
     sys::run_ok("make", &["install"], &b)?;
     // 无 tag 检出时 version.sh 输出 "1.6."——非法 pkg-config 版本号，让
-    // FFmpeg 的 "davs2 >= 1.6.0" 失败；行尾容忍空白（windows 检出可能
-    // 带 CRLF）/ their version.sh emits "1.6." tagless — not a valid
-    // pkg-config version and fails FFmpeg's check; the line tail tolerates
-    // whitespace (a windows checkout may carry CRLF endings)
+    // FFmpeg 的 "davs2 >= 1.6.0" 失败。直接在 Rust 里改：实证 runner 上
+    // 外部 sed 静默不匹配（方言/PATH 解析不再排查），读写均可见且行尾
+    // 原样保留 / their version.sh emits "1.6." tagless — not a valid
+    // pkg-config version and fails FFmpeg's check. Edit in Rust directly:
+    // the external sed silently mismatched on the runner (dialect/PATH
+    // resolution no longer worth diagnosing); the rewrite is fully
+    // visible here and line endings are preserved verbatim
     let pc = e.prefix_win.join("lib/pkgconfig/davs2.pc");
-    fsx::sed_i(
-        "s/^\\(Version:[[:space:]]*[0-9.]\\+\\)\\.[[:space:]]*$/\\1.0/",
-        &pc,
-        &e.work,
-    )?;
+    let text = fsx::read(&pc);
+    let mut out = String::with_capacity(text.len() + 4);
+    for l in text.split_inclusive('\n') {
+        let t = l.trim_end();
+        if t.starts_with("Version") && t.ends_with('.') {
+            // 截到去掉行尾的行本体，补 "0" 后还原原行尾 / take the line
+            // body without its ending, append "0", then restore the
+            // original ending
+            let eol = &l[t.len()..];
+            out.push_str(t);
+            out.push('0');
+            out.push_str(eol);
+        } else {
+            out.push_str(l);
+        }
+    }
+    fsx::write(&pc, &out)?;
     // 修后自检：版本行若仍以裸点结尾就当场炸掉——比带病 .ok 无限续命强，
     // 失败信息里还能留下真实的 .pc 内容供排查 / post-fix assertion: if
     // the version line still ends in a bare dot, fail right here — beats

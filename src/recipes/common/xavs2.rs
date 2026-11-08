@@ -55,19 +55,30 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     let jobs = e.jobs.to_string();
     sys::run_ok("make", &["-j", &jobs], &b)?;
     sys::run_ok("make", &["install"], &b)?;
-    // 与 davs2 同款 version.sh 怪癖：无 tag 检出产生 "1.7."；is_file 守卫
-    // 与 let _ 吞错已在实证中让坏 .pc 带病缓存，拆掉——缺文件或修补失败
-    // 都要当场炸；行尾容忍空白 / same version.sh quirk as davs2: a
-    // tagless checkout yields "1.7."; the is_file guard and `let _ =`
-    // error swallow demonstrably let a sick .pc get cached — removed:
-    // a missing file or a failed patch must blow up right here; the line
-    // tail tolerates whitespace
+    // 与 davs2 同款 version.sh 怪癖：无 tag 检出产生 "1.3."。直接在
+    // Rust 里改：实证 runner 上外部 sed 静默不匹配，读写均可见且行尾
+    // 原样保留 / same version.sh quirk as davs2: a tagless checkout
+    // yields "1.3.". Edit in Rust directly: the external sed silently
+    // mismatched on the runner; the rewrite is fully visible here and
+    // line endings are preserved verbatim
     let pc = e.prefix_win.join("lib/pkgconfig/xavs2.pc");
-    fsx::sed_i(
-        "s/^\\(Version:[[:space:]]*[0-9.]\\+\\)\\.[[:space:]]*$/\\1.0/",
-        &pc,
-        &e.work,
-    )?;
+    let text = fsx::read(&pc);
+    let mut out = String::with_capacity(text.len() + 4);
+    for l in text.split_inclusive('\n') {
+        let t = l.trim_end();
+        if t.starts_with("Version") && t.ends_with('.') {
+            // 截到去掉行尾的行本体，补 "0" 后还原原行尾 / take the line
+            // body without its ending, append "0", then restore the
+            // original ending
+            let eol = &l[t.len()..];
+            out.push_str(t);
+            out.push('0');
+            out.push_str(eol);
+        } else {
+            out.push_str(l);
+        }
+    }
+    fsx::write(&pc, &out)?;
     // 修后自检：与 davs2 同理，版本行仍以裸点结尾就当场炸 / post-fix
     // assertion, same as davs2: a version line still ending in a bare dot
     // fails right here
