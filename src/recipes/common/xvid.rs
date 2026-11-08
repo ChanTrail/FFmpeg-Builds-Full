@@ -34,9 +34,15 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             let _ = std::fs::remove_file(&p);
         }
     }
-    // autotools 工程嵌在 build/generic——不是仓库根 /
-    // the autotools project is nested under build/generic, not the root
-    buildsys::autotools_build(&ctx.src()?.join("build/generic"), &[])?;
+    // autotools 工程嵌在 build/generic——不是仓库根。install 规则的
+    // $(LN_S) 探测成不带 -f 的 `ln -s`，撞已存在的 .so.4 必炸——
+    // 命令行变量 LN_S="ln -sf" 覆写掉（预清理是兜底，这里才是治本）/
+    // the autotools project is nested under build/generic, not the
+    // root. Its install rule's $(LN_S) probes to a flag-less `ln -s`
+    // that dies on an existing .so.4 — override it with the
+    // command-line var LN_S="ln -sf" (the pre-clean is belt; this is
+    // the suspenders)
+    buildsys::autotools_build_vars(&ctx.src()?.join("build/generic"), &[], &["LN_S=ln -sf"])?;
     for p in crate::fsx::walk(&e.prefix_win.join("lib")) {
         if p.file_name()
             .map(|n| n.to_string_lossy().starts_with("libxvidcore.so"))

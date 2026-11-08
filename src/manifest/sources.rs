@@ -513,14 +513,32 @@ fn panic_msg(p: &Box<dyn std::any::Any + Send>) -> String {
 /// dead repo (is_git_directory requires refs/), with recipe re-init as
 /// mere remediation
 fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
+    // .git 子树允许条目蒸发：git 自己的 midx/bitmap 后台维护会留下
+    // bitmap-ref-tips_* 之类临时文件，readdir/walk 快照到落地之间
+    // 已被改名——跳过它（真死库反正由 materialize 的探活剥离）。
+    // .git 之外保持硬炸：源文件凭空消失意味着 src-cache 正被并发
+    // 改写，放过去只会得到一棵静默残缺的树 / tolerate evanescent
+    // entries under .git: git's own background midx/bitmap maintenance
+    // leaves temp files (bitmap-ref-tips_*) that get renamed between
+    // the readdir/walk snapshot and landing — skip them (a dead repo
+    // gets stripped by materialize's liveness probe anyway). Outside
+    // .git keep hard-failing: a source file vanishing mid-copy means
+    // the src-cache is being rewritten concurrently; passing that
+    // yields a silently incomplete tree
+    let git_skip = src.join(".git");
     let mut dirs = vec![src.to_path_buf()];
     while let Some(d) = dirs.pop() {
+        if !d.exists() && d.starts_with(&git_skip) {
+            continue;
+        }
         for e in fs::read_dir(&d).map_err(|e| format!("read_dir {}: {e}", d.display()))? {
             let e = e.map_err(|e| format!("read_dir {}: {e}", d.display()))?;
             let p = e.path();
-            let ft = e
-                .file_type()
-                .map_err(|e| format!("file_type {}: {e}", p.display()))?;
+            let ft = match e.file_type() {
+                Ok(ft) => ft,
+                Err(_) if p.starts_with(&git_skip) => continue,
+                Err(e) => return Err(format!("file_type {}: {e}", p.display())),
+            };
             if ft.is_dir() {
                 let rel = p.strip_prefix(src).map_err(|e| e.to_string())?;
                 fsx::install_d(&dst.join(rel))?;
@@ -529,6 +547,9 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
         }
     }
     for f in fsx::walk(src) {
+        if !f.exists() && f.starts_with(&git_skip) {
+            continue;
+        }
         let rel = f.strip_prefix(src).map_err(|e| e.to_string())?;
         let to = dst.join(rel);
         if f.is_dir() {

@@ -39,6 +39,12 @@ pub fn fetch(dest: &Path) -> Result<Info, String> {
     sys::run_ok(
         "git",
         &[
+            // 一次性检出禁维护任务（见 core/net.rs 同款注释）
+            // maintenance off for throwaway checkouts (see core/net.rs)
+            "-c",
+            "maintenance.auto=false",
+            "-c",
+            "gc.auto=0",
             "clone",
             "--filter=blob:none",
             "--branch",

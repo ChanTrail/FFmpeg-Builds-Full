@@ -639,8 +639,17 @@ pub fn static_libs_ok(check: &str) -> Result<(), String> {
                 }
             }
             if !found {
-                // 工具链搜索路径兜底 / compiler search path fallback
-                let d = sys::capture(&e.cc, &["-print-file-name", &ar_name], &e.work)
+                // 工具链搜索路径兜底——-print-file-name 是 joined 选项：
+                // 拆成两参数传给 gcc/clang，驱动会把库名当成链接输入而
+                // 非探测目标，必返空。windows_deps 的 libatomic 探测用的
+                // 正是 joined 形式 / compiler search path fallback —
+                // -print-file-name is a joined option: split into two
+                // argv entries and the driver treats the name as a link
+                // input rather than a probe target, always yielding
+                // nothing; the libatomic probe in windows_deps uses the
+                // joined form for exactly this reason
+                let arg = format!("-print-file-name={ar_name}");
+                let d = sys::capture(&e.cc, &[arg.as_str()], &e.work)
                     .unwrap_or_default()
                     .trim()
                     .to_string();

@@ -593,9 +593,24 @@ pub fn fetch_git(
     refname: &str,
     sha: Option<&str>,
 ) -> Result<PathBuf, String> {
+    // 关掉仓库维护任务：一次性检出永远不需要 commit-graph/midx/增量
+    // repack——gc.auto/maintenance.auto 在每次 fetch/clone 尾部自动跑，
+    // 几十个并发预取线程每仓库+子模块各烧一轮磁盘 I/O，整机全被拖慢。
+    // -c 经 GIT_CONFIG_PARAMETERS 传到子 git 进程，clone 递归拉起的
+    // 子模块 fetch 同样生效 / kill repo maintenance: throwaway
+    // checkouts never need commit-graph/midx/incremental-repack —
+    // gc.auto/maintenance.auto fire at the tail of every fetch/clone,
+    // and dozens of concurrent prefetch threads burn a disk-I/O round
+    // per repo and submodule, dragging the whole host. -c propagates
+    // to child git processes via GIT_CONFIG_PARAMETERS, so the
+    // submodule fetches spawned by clone are covered too
     sys::run_ok(
         "git",
         &[
+            "-c",
+            "maintenance.auto=false",
+            "-c",
+            "gc.auto=0",
             "clone",
             "--depth",
             "1",
@@ -635,7 +650,23 @@ pub fn fetch_git_commit(wd: &Path, url: &str, sha: &str) -> Result<PathBuf, Stri
     // transient fetch failures retry 3x (git.ffmpeg.org 502s periodically)
     let mut ok = false;
     for i in 1..=3 {
-        if sys::run("git", &["fetch", "--depth", "1", "origin", sha], &src)? == 0 {
+        if sys::run(
+            "git",
+            &[
+                // 同上：禁维护任务 / same as above: maintenance off
+                "-c",
+                "maintenance.auto=false",
+                "-c",
+                "gc.auto=0",
+                "fetch",
+                "--depth",
+                "1",
+                "origin",
+                sha,
+            ],
+            &src,
+        )? == 0
+        {
             ok = true;
             break;
         }
