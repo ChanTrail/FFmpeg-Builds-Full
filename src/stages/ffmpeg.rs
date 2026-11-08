@@ -36,15 +36,12 @@ pub fn fetch(dest: &Path) -> Result<Info, String> {
         .unwrap_or_else(|_| "https://github.com/FFmpeg/FFmpeg.git".into());
     let refname = std::env::var("FFMPEG_REF").unwrap_or_else(|_| "master".into());
     fsx::rm_rf(dest);
-    sys::run_ok(
-        "git",
+    // git_run：GIT_NET 传输停滞超时 + 维护任务关闭 + 重试（半成品
+    // dest 重试前清掉）/ git_run carries GIT_NET's stall timeouts and
+    // maintenance off plus retries — the partial dest is wiped between
+    // attempts
+    crate::net::git_run(
         &[
-            // 一次性检出禁维护任务（见 core/net.rs 同款注释）
-            // maintenance off for throwaway checkouts (see core/net.rs)
-            "-c",
-            "maintenance.auto=false",
-            "-c",
-            "gc.auto=0",
             "clone",
             "--filter=blob:none",
             "--branch",
@@ -53,6 +50,7 @@ pub fn fetch(dest: &Path) -> Result<Info, String> {
             &dest.to_string_lossy(),
         ],
         &sys::env().work,
+        Some(dest),
     )?;
     // FFMPEG_SHA 钉住精确 commit：一轮的五个平台即使上游在跑期间前进
     // 也构建同一份源码 / pin the exact commit so all five platforms of a
@@ -60,11 +58,16 @@ pub fn fetch(dest: &Path) -> Result<Info, String> {
     if let Ok(sha) = std::env::var("FFMPEG_SHA")
         && !sha.is_empty()
     {
-        sys::run_ok(
-            "git",
+        // blobless 检出的 checkout 会惰性拉取缺失 blob——同样是网络
+        // 操作，吃 GIT_NET 超时；checkout 幂等可重试无需清理 /
+        // checkout on a blobless clone lazily fetches missing blobs —
+        // a network op too, so it rides GIT_NET's timeouts; checkout is
+        // idempotent, no cleanup between retries
+        let dest_s = dest.to_string_lossy().to_string();
+        crate::net::git_run(
             &[
                 "-C",
-                &dest.to_string_lossy(),
+                &dest_s,
                 "-c",
                 "advice.detachedHead=false",
                 "checkout",
@@ -72,6 +75,7 @@ pub fn fetch(dest: &Path) -> Result<Info, String> {
                 &sha,
             ],
             &sys::env().work,
+            None,
         )?;
     }
     let commit = sys::capture(

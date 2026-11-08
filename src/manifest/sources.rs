@@ -420,6 +420,12 @@ pub fn prefetch<I: IntoIterator<Item = String>>(names: I) {
 pub fn wait_prefetch(name: &str) {
     let handle = tasks().lock().unwrap().remove(name);
     if let Some(h) = handle {
+        // 等待落一行日志——预取线程卡在 stalled 网络时这里是唯一的
+        // 无声阻塞点，不留字句就是"日志莫名停住"的现场 / log the
+        // wait — a prefetch thread jammed on a stalled transfer makes
+        // this the one silent blocking point; without a line the log
+        // just stops with no clue why
+        log::log(&format!("[sources] awaiting prefetch {name}"));
         match h.join() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => log::warn(&format!(
@@ -440,6 +446,9 @@ pub fn materialize(wd: &Path, name: &str) -> Result<PathBuf, String> {
     let handle = tasks().lock().unwrap().remove(name);
     let cd = cache_dir().join(name);
     if let Some(h) = handle {
+        // 同 wait_prefetch：join 前留字句防无声卡顿 / same as
+        // wait_prefetch: leave a trace before the join
+        log::log(&format!("[sources] materialize {name}: awaiting prefetch"));
         match h.join() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => log::warn(&format!(
