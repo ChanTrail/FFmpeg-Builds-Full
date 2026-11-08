@@ -523,6 +523,15 @@ pub fn ffmpeg() -> Result<(), String> {
     // ($GOMP, empty on CLANGARM64) and flite's cst_socket.o on __imp_accept
     // (-lws2_32); twolame's header needs its static define in every
     // compile.
+    // e.gomp 是进程内 RwLock：本阶段是独立进程，fixup 里探到的运行时
+    // 带不过进程边界——自己再探一次，否则 {gomp} 恒空、libsoxr 的裸
+    // -lsoxr 链测死在 omp_*（实证：ucrt64 extra-libs 该位是双空格）
+    // / e.gomp is an in-process RwLock: this stage is a separate
+    // process and the runtime probed inside fixup cannot cross the
+    // process boundary — probe again here, else {gomp} stays empty and
+    // libsoxr's bare -lsoxr link test dies on omp_* (empirical: the
+    // ucrt64 extra-libs slot showed a double space)
+    crate::platforms::windows_deps::ensure_gomp_probe();
     let gomp = e.gomp.read().unwrap().clone();
     args.extend([
         "--extra-cflags=-DLIBTWOLAME_STATIC".into(),

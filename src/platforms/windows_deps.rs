@@ -473,44 +473,13 @@ pub fn fixup() -> Result<(), String> {
         &["-ldwrite", "-ld2d1", "-lwindowscodecs", "-luuid", "-lole32"],
     );
 
-    // OpenMP 运行时探测：真链接试 -lgomp 后 -lomp（CLANGARM64 上 pacman
-    // 依赖把 libomp.a 放进前缀）/ OpenMP runtime probe: a real link tries
-    // -lgomp then -lomp (on CLANGARM64 a pacman dep lands libomp.a)
-    {
-        let mut gomp = e.gomp.write().unwrap();
-        if gomp.is_empty() {
-            let tmp = e.work.join("omp-probe.c");
-            let out = e.work.join("omp-probe.exe");
-            let _ = fsx::write(&tmp, "int main(void){return 0;}\n");
-            for cand in ["-lgomp", "-lomp"] {
-                // capture 吃掉 lld "unable to find library" 噪音——探测
-                // 失败本来就是预期分支，不该像真错误一样进日志
-                // / capture swallows lld's "unable to find library"
-                // noise — a probe miss is an expected branch and should
-                // not land in the log looking like a real error
-                if sys::capture(
-                    &e.cc,
-                    &[&tmp.to_string_lossy(), "-o", &out.to_string_lossy(), cand],
-                    &e.work,
-                )
-                .is_ok()
-                {
-                    *gomp = cand.to_string();
-                    break;
-                }
-            }
-            let _ = std::fs::remove_file(&tmp);
-            let _ = std::fs::remove_file(&out);
-            log::log(&format!(
-                "OpenMP runtime probe: {}",
-                if gomp.is_empty() {
-                    "none"
-                } else {
-                    gomp.as_str()
-                }
-            ));
-        }
-    }
+    // OpenMP 运行时探测（提取成 ensure_gomp_probe：ffmpeg 配置阶段是
+    // 独立进程，e.gomp 在 fixup 里的结果带不过进程边界，那边要自己
+    // 再探一次）/ OpenMP runtime probe (extracted into
+    // ensure_gomp_probe: the ffmpeg configure stage is a separate
+    // process — the result probed here cannot cross the process
+    // boundary and that side must probe for itself)
+    ensure_gomp_probe();
     let gomp = e.gomp.read().unwrap().clone();
     // pacman .pc 里字面 -lgomp 在 clangarm64 上无物可满足——改写成探测
     // 到的运行时 / literal -lgomp in pacman .pc files is unsatisfiable on
@@ -1414,4 +1383,51 @@ pub fn save() -> Result<(), String> {
     deps::publish(&platform, &restored, &tarball, complete, dirty)?;
     fsx::rm_rf(&tarball);
     Ok(())
+}
+
+/// OpenMP 运行时探测：真链接依次试 -lgomp、-lomp，结果落 e.gomp。
+/// e.gomp 是进程内 RwLock——ffmpeg 配置阶段是独立进程，fixup 里探到
+/// 的结果带不过进程边界，windows_common::ffmpeg 因此也调本函数。
+/// CLANGARM64 上 pacman 依赖把 libomp.a 放进前缀，-lomp 兜底。
+/// OpenMP runtime probe: a real link tries -lgomp then -lomp, result
+/// lands in e.gomp. e.gomp is an in-process RwLock — the ffmpeg
+/// configure stage is a separate process, the result probed inside
+/// fixup cannot cross the process boundary, and
+/// windows_common::ffmpeg therefore calls this too. On CLANGARM64 a
+/// pacman dep lands libomp.a, hence the -lomp fallback.
+pub fn ensure_gomp_probe() {
+    let e = sys::env();
+    let mut gomp = e.gomp.write().unwrap();
+    if !gomp.is_empty() {
+        return;
+    }
+    let tmp = e.work.join("omp-probe.c");
+    let out = e.work.join("omp-probe.exe");
+    let _ = fsx::write(&tmp, "int main(void){return 0;}\n");
+    for cand in ["-lgomp", "-lomp"] {
+        // capture 吃掉 lld "unable to find library" 噪音——探测失败本来
+        // 就是预期分支，不该像真错误一样进日志 / capture swallows lld's
+        // "unable to find library" noise — a probe miss is an expected
+        // branch and should not land in the log looking like a real error
+        if sys::capture(
+            &e.cc,
+            &[&tmp.to_string_lossy(), "-o", &out.to_string_lossy(), cand],
+            &e.work,
+        )
+        .is_ok()
+        {
+            *gomp = cand.to_string();
+            break;
+        }
+    }
+    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(&out);
+    log::log(&format!(
+        "OpenMP runtime probe: {}",
+        if gomp.is_empty() {
+            "none"
+        } else {
+            gomp.as_str()
+        }
+    ));
 }

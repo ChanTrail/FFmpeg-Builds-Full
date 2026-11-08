@@ -3,6 +3,7 @@
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};
+use crate::fsx;
 use crate::recipes::r;
 use crate::sys;
 
@@ -17,51 +18,50 @@ pub fn recipe() -> Recipe {
 fn body(ctx: &Ctx) -> Result<(), String> {
     let e = sys::env();
     let src = ctx.src()?;
-    // 上游 configure 对 libusb-1.0 只会"找到就开"，没有 --disable-usb：
-    // 检出后把 dc1394/usb 一层编进 .a 烙上 libusb_* 引用，而上
-    // libdc1394-2.pc 的 Libs.private 又不带 -lusb-1.0——FFmpeg 静态链
-    // 必炸（lt6-control.o/lt5-capture.o undefined reference）。把
-    // pkg-config 搜索域临时掐到前缀内：系统侧的 libusb-1.0.pc 从此找
-    // 不到 → USB 层整个不编（FFmpeg 只要火线栈）；raw1394.pc 在前缀
-    // 照常解析。
+    // 上游 configure 对 libusb-1.0 只会"找到就开"，没有 --without-usb：
+    // 检出后 control.c/capture.c 的 #ifdef HAVE_LIBUSB 块烙上 libusb_*
+    // 引用，而 libdc1394-2.pc 的 Libs.private 又不带 -lusb-1.0——FFmpeg
+    // 静态链必炸（undefined reference）。环境变量路径走不通：sys::cmd
+    // 对每个子进程强灌 PKG_CONFIG_LIBDIR（linux 版刻意并入系统 .pc 目
+    // 录保 x11/glib 可见），配方侧 set_var 会被整体覆盖。
+    // 换成 PKG_CONFIG 包装器精确否决：configure 接受 VAR=value 命令行
+    // 参数，PKG_CHECK_MODULES 又以 $PKG_CONFIG 为名调用——凡参数提及
+    // libusb-1.0 一律报失败，其余查询原样透传（raw1394 等不受影响），
+    // USB 层从此不编。
     // Upstream configure only auto-detects libusb-1.0 (there is no
-    // --disable-usb): once found, dc1394/usb gets compiled into the .a
-    // with libusb_* references, while libdc1394-2.pc's Libs.private
-    // carries no -lusb-1.0 — FFmpeg's static link then dies
-    // (lt6-control.o/lt5-capture.o undefined references). Temporarily
-    // narrow the pkg-config search domain to the prefix: the system's
-    // libusb-1.0.pc becomes invisible, so the USB layer is never built
-    // (FFmpeg only needs the FireWire stack); raw1394.pc still resolves
-    // from the prefix.
-    let pc_dir = e.prefix_win.join("lib/pkgconfig");
-    let saved_path = std::env::var("PKG_CONFIG_PATH").ok();
-    let saved_libdir = std::env::var("PKG_CONFIG_LIBDIR").ok();
-    // SAFETY：配方体在引擎单线程循环内执行 / SAFETY: recipe bodies run
-    // inside the engine's single-threaded loop
-    unsafe {
-        std::env::set_var("PKG_CONFIG_PATH", &pc_dir);
-        std::env::set_var("PKG_CONFIG_LIBDIR", &pc_dir);
-    }
-    let ret = buildsys::autotools_build(
+    // --without-usb): once found, the #ifdef HAVE_LIBUSB blocks in
+    // control.c/capture.c bake libusb_* references in, while
+    // libdc1394-2.pc's Libs.private carries no -lusb-1.0 — FFmpeg's
+    // static link then dies (undefined references). The env-var path is
+    // a dead end: sys::cmd force-feeds PKG_CONFIG_LIBDIR into every
+    // child (on linux it deliberately folds in the system .pc dir to
+    // keep x11/glib visible), which overrides anything a recipe sets.
+    // Use a PKG_CONFIG wrapper for a targeted denial instead: configure
+    // accepts VAR=value command-line arguments, and PKG_CHECK_MODULES
+    // invokes whatever $PKG_CONFIG names — any call mentioning
+    // libusb-1.0 fails while every other query passes through verbatim
+    // (raw1394 & co. unaffected), so the USB layer is never compiled.
+    let wrap = e.work.join("pc-deny-libusb.sh");
+    fsx::write(
+        &wrap,
+        "#!/bin/sh\n\
+         # libusb-1.0 查询一律失败，其余透传 / fail libusb-1.0 queries,\n\
+         # pass everything else through verbatim\n\
+         for a in \"$@\"; do\n\
+         \tcase \"$a\" in *libusb-1.0*) exit 1;; esac\n\
+         done\n\
+         exec pkg-config \"$@\"\n",
+    )?;
+    sys::run_ok("chmod", &["+x", &wrap.to_string_lossy()], &e.work)?;
+    let w = wrap.to_string_lossy().to_string();
+    buildsys::autotools_build(
         &src,
         &[
             "--disable-examples",
             "--disable-doxygen-doc",
             "--disable-doxygen-html",
             "--disable-doxygen-dot",
+            &format!("PKG_CONFIG={w}"),
         ],
-    );
-    // 还原搜索域，别给后续配方留暗雷 / restore the search domain — no
-    // landmines for later recipes
-    unsafe {
-        match saved_path {
-            Some(v) => std::env::set_var("PKG_CONFIG_PATH", v),
-            None => std::env::remove_var("PKG_CONFIG_PATH"),
-        }
-        match saved_libdir {
-            Some(v) => std::env::set_var("PKG_CONFIG_LIBDIR", v),
-            None => std::env::remove_var("PKG_CONFIG_LIBDIR"),
-        }
-    }
-    ret
+    )
 }
