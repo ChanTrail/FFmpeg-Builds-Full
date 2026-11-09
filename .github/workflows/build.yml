@@ -268,6 +268,21 @@ jobs:
         run: chmod +x driver/FFmpeg-Builds-Full
 
       # ---------------------------------------------------------------- Windows
+      # Defender 实时扫描对 MSYS2 的文件风暴（pacman 装包、缓存解压、
+      # fork+编译）是实打实的损耗——必须排在本段所有重 I/O 步之前；
+      # arm64 腿的 clangarm64 工具链文件数是 mingw64 的近两倍，差距
+      # 尤其明显。runner 是管理员，失败也无害 / Defender's real-time
+      # scan is a measurable tax on MSYS2's file storms (pacman
+      # installs, cache extraction, fork+compiles) — it must run before
+      # every heavy-I/O step in this section; the arm64 leg's
+      # clangarm64 toolchain holds nearly twice mingw64's file count,
+      # which is where the gap bites hardest. The runner is admin;
+      # failure is harmless
+      - name: Exclude build dirs from Defender (Windows)
+        if: matrix.kind == 'windows'
+        run: |
+          try { Add-MpPreference -ExclusionPath "$env:RUNNER_TEMP\msys64","$env:RUNNER_TEMP\ffmpeg-ccache","$env:GITHUB_WORKSPACE" } catch { }
+
       - name: Set up MSYS2 (${{ matrix.msystem || 'none' }})
         if: matrix.kind == 'windows'
         uses: msys2/setup-msys2@v2
@@ -315,17 +330,6 @@ jobs:
           key: env-${{ matrix.platform }}-${{ github.run_id }}
           restore-keys: |
             env-${{ matrix.platform }}-
-
-      # Defender 实时扫描对 MSYS2 的 fork+编译风暴是实打实的损耗——
-      # 把工作目录、msys2 树与 ccache 目录加进排除表（runner 是管理
-      # 员，失败也无害）/ Defender's real-time scan is a measurable tax
-      # on MSYS2's fork+compile storms — exclude the work dir, the msys2
-      # tree and the ccache dir (the runner is admin; failure is
-      # harmless)
-      - name: Exclude build dirs from Defender (Windows)
-        if: matrix.kind == 'windows'
-        run: |
-          try { Add-MpPreference -ExclusionPath "$env:RUNNER_TEMP\msys64","$env:RUNNER_TEMP\ffmpeg-ccache","$env:GITHUB_WORKSPACE" } catch { }
 
       # ccache 滚动缓存——显式调用模式（驱动按 FFBUILD_CCACHE 给 --cc
       # 加前缀，不走 symlink masquerade）；arm64 腿不设开关（WoA 仿真的

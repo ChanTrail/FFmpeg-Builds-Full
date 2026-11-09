@@ -175,7 +175,27 @@ fn pacman_install(e: &Env, over: &[&str], pkgs: &[&str], tries: u32) -> Result<(
     let mut args: Vec<&str> = vec!["-S", "--needed", "--noconfirm", "--noprogressbar"];
     args.extend_from_slice(over);
     args.extend_from_slice(pkgs);
-    sys::retry(tries, || sys::run_ok("pacman", &args, &e.work))
+    sys::retry(tries, || sys::run_ok("pacman", &args, &e.work))?;
+    // 文件在位验证：pacman local DB 随 env cache 恢复，/usr 树却由
+    // setup-msys2 每轮重建——DB 声称已装但文件缺失的包会被 --needed
+    // 放鸽子（"up to date -- skipping"，然后 configure 报 command
+    // not found）。-Qkq 只列问题项，不干净就去掉 --needed 整批强
+    // 重装 / file-presence verification: the pacman local DB rides
+    // the env cache while the /usr tree is rebuilt by setup-msys2
+    // every run — a package whose files are missing still reads
+    // "installed" to --needed ("up to date -- skipping", then
+    // configure reports command not found). -Qkq lists only problem
+    // entries; anything short of clean force-reinstalls the batch
+    // without --needed
+    let mut qk: Vec<&str> = vec!["-Qkq"];
+    qk.extend_from_slice(pkgs);
+    if sys::run("pacman", &qk, &e.work)? != 0 {
+        let mut force: Vec<&str> = vec!["-S", "--noconfirm", "--noprogressbar"];
+        force.extend_from_slice(over);
+        force.extend_from_slice(pkgs);
+        sys::retry(tries, || sys::run_ok("pacman", &force, &e.work))?;
+    }
+    Ok(())
 }
 
 /// 换 pacman 源：重写 mirrorlist.* 里每个 URL 的 scheme://host 段，

@@ -124,6 +124,24 @@ pub fn packages() -> Result<(), String> {
     fsx::install_d(&e.work)?;
     fsx::install_d(&prefix())?;
     fsx::install_d(&e.dist)?;
+    // ffmpeg 装默认前缀 /usr/local——它在 runner 上是碎片权限：
+    // bin/share 可写但 lib 连创建都不行、man 子树 root 拥有。缺
+    // 的 install 目标子树用 sudo 预建并还给 runner 属主；install
+    // -d 对已存在目录幂等。不用 --prefix/--mandir 系重定向——保持
+    // 与 linux/windows 一致的默认安装布局 / ffmpeg installs to the
+    // default /usr/local prefix — a patchwork of permissions on the
+    // runner: bin/share are writable but lib cannot even be created
+    // and the man subtree is root-owned. The missing install-target
+    // subtrees are pre-created with sudo and handed to the runner
+    // owner; install -d is a no-op on existing dirs. No
+    // --prefix/--mandir-style redirection — the default layout stays
+    // consistent with linux/windows
+    sys::bash_ok(
+        "sudo -n install -d -o \"$(id -un)\" \
+           /usr/local/lib /usr/local/include /usr/local/lib/pkgconfig \
+           /usr/local/share/man/man1 /usr/local/share/man/man3",
+        &e.work,
+    )?;
     if sys::which("brew").is_none() {
         log::warn("brew not found; assuming the runner image already provides the toolchain");
         return Ok(());
@@ -368,14 +386,6 @@ pub fn ffmpeg() -> Result<(), String> {
         // unwinding: no functional loss and the binary even saves
         // one unwind table
         "--extra-ldflags=-Wl,-no_compact_unwind".into(),
-        // runner 上 /usr/local/share/man/man1 是 root 拥有不可写
-        // （bin/share 可写但 man1 子树不是）——把 man 页改装进 work
-        // 目录，package 阶段从那里收，不碰系统目录权限 / the runner's
-        // /usr/local/share/man/man1 is root-owned and unwritable
-        // (bin/share are writable but the man1 subtree is not) —
-        // install man pages under work/ instead and let the package
-        // stage harvest them there, avoiding system-dir permissions
-        format!("--mandir={}", e.work.join("man").display()),
         format!("--extra-libs={} -lm -liconv -lz", e.cxxrt),
         "--disable-stripping".into(),
     ]);
@@ -440,11 +450,7 @@ pub fn package() -> Result<(), String> {
             }
         }
     }
-    // man 页被 configure 的 --mandir 重定向到 work/man（runner 的
-    // /usr/local/share/man/man1 不可写）/ man pages were redirected
-    // to work/man by configure's --mandir (the runner's
-    // /usr/local/share/man/man1 is unwritable)
-    let man1 = e.work.join("man/man1");
+    let man1 = usrlocal.join("share/man/man1");
     if man1.is_dir()
         && let Ok(rd) = std::fs::read_dir(&man1)
     {
