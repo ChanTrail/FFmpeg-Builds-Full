@@ -350,6 +350,20 @@ pub fn ffmpeg() -> Result<(), String> {
         // postfix's nmedit dedup on macOS — ld64 declared
         // -multiply_defined obsolete and ignores it, so no ld switch
         // exists
+        // compact unwind 只编得进 3 个 personality routine；ObjC
+        // (___objc_personality_v0) + C++ (___gxx_personality_v0) +
+        // rsvg 的 rust_eh_personality + dedup 改名出的
+        // zrust_eh_personality（rav1e 侧）= 4 个——ld64 直接拒链。
+        // 关掉 compact unwind 回退 __eh_frame（DWARF）展开：功能
+        // 无损、二进制还省一份 unwind 表 / compact unwind encodes
+        // at most 3 personality routines; ObjC
+        // (___objc_personality_v0) + C++ (___gxx_personality_v0) +
+        // rsvg's rust_eh_personality + the dedup-renamed
+        // zrust_eh_personality (rav1e side) = 4 — ld64 refuses to
+        // link. -no_compact_unwind falls back to __eh_frame (DWARF)
+        // unwinding: no functional loss and the binary even saves
+        // one unwind table
+        "--extra-ldflags=-Wl,-no_compact_unwind".into(),
         format!("--extra-libs={} -lm -liconv -lz", e.cxxrt),
         "--disable-stripping".into(),
     ]);

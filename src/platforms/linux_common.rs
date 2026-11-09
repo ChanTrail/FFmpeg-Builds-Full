@@ -109,6 +109,13 @@ pub fn packages() -> Result<(), String> {
     let _guard = sys::EnvGuard::set(&[("DEBIAN_FRONTEND", "noninteractive".to_string())]);
     sys::run_ok("apt-get", &["update"], &e.work)?;
 
+    // 摘掉 man-db 的 auto-update 印记：它的 postinst 触发器在大批量安装
+    // 时会全量重建 mandb，runner 上白烧 30-60s——构建容器不看 man 页
+    // drop man-db's auto-update stamp: its postinst trigger rebuilds all of
+    // mandb during bulk installs, burning 30-60s on runners — build
+    // containers never read man pages
+    let _ = std::fs::remove_file("/var/lib/man-db/auto-update");
+
     // 降序探测最新 GCC 主版本——runner 镜像还没跟上时留活路
     // probe the newest GCC major descending — leaves room on runners whose
     // image has not caught up yet

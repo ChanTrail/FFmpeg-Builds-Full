@@ -1428,6 +1428,59 @@ pub fn fixup() -> Result<(), String> {
         }
     }
 
+    // pacman 的 librsvg-2.a 是 rust staticlib——把构建时链接的 C 原生
+    // 库整包内嵌，含一份未打补丁的 glib ~2.90：其中
+    // gwin32appinfo.c.obj 携带 win32 appinfo 注册表扫描线程
+    // （runner 上 SHLoadIndirectString 的 MRT 栈跳堆地址，回溯坐实
+    // grab_registry_string；自家 stub 过的 libgio-2.0.a 根本轮不
+    // 上——内嵌副本抢先满足全部 gio 符号）。把这个成员（5 份重复，
+    // ar d 每趟只删首个同名）从归档里删净：appinfo 相关引用全部回
+    // 落到 stub 版 libgio-2.0.a——watcher 线程照起但
+    // update_registry_data 空转、GAppInfo API 返回空表（ffmpeg 本
+    // 就不用它）/ pacman's librsvg-2.a is a rust staticlib — it
+    // embeds every native C library it linked, including an
+    // unpatched glib ~2.90: gwin32appinfo.c.obj carries the win32
+    // appinfo registry-scan thread (its SHLoadIndirectString MRT
+    // path jumps into a heap address on runners — the grab_registry_
+    // string frames confirmed it; our stubbed libgio-2.0.a never
+    // even gets pulled because the embedded copy satisfies all gio
+    // symbols first). Delete that member from the archive (5
+    // duplicate copies — each `ar d` pass removes only the first
+    // same-named member): appinfo references fall back to the
+    // stubbed libgio-2.0.a — the watcher still spawns but
+    // update_registry_data is a no-op and the GAppInfo APIs return
+    // empty (ffmpeg never uses them anyway)
+    let rsvg = libdir.join("librsvg-2.a");
+    if rsvg.is_file() {
+        let mut n = 0u32;
+        for _ in 0..8 {
+            if !crate::ar::members(&rsvg, &e.work)
+                .iter()
+                .any(|m| m.as_str() == "gwin32appinfo.c.obj")
+            {
+                break;
+            }
+            if sys::run(
+                &t.ar,
+                &["d", &rsvg.to_string_lossy(), "gwin32appinfo.c.obj"],
+                &e.work,
+            )
+            .unwrap_or(1)
+                != 0
+            {
+                break;
+            }
+            n += 1;
+        }
+        if n > 0 {
+            let _ = sys::run(&t.ranlib, &[&rsvg.to_string_lossy()], &e.work);
+            log::log(&format!(
+                "dropped {n} embedded gwin32appinfo.c.obj member(s) from librsvg-2.a \
+                 (appinfo references now resolve to the stubbed libgio-2.0.a)"
+            ));
+        }
+    }
+
     // kvazaar.pc 缺上游配方自己加的静态链接位 / kvazaar.pc lacks the
     // static-linkage bits its own upstream recipe adds
     let kvz = pcdir.join("kvazaar.pc");
