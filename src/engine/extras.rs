@@ -886,43 +886,69 @@ fn postfix() -> Result<(), String> {
         for (a, b) in [("libxevd.a", "libxeve.a"), ("librsvg-2.a", "librav1e.a")] {
             let (pa, pb) = (libdir.join(a), libdir.join(b));
             if !(pa.is_file() && pb.is_file()) {
+                log::log(&format!(
+                    "[extras] nmedit pair {a}∩{b}: an archive is absent; skipped"
+                ));
                 continue;
             }
-            // nm 列全部符号：归档成员行 "…(m.o):" 仅一字段被过滤；
-            // 取 "地址 类型字母 名" 三段式、类型字母大写 = 全局定义。
-            // 未定义行 "U _malloc" 只有两段——len>=3 才安全（U 恰好也是
-            // 大写，两段式下会混进定义集，nmedit 随即报 "symbols not
-            // defined"）(Mach-O 名带 _ 前缀，nmedit 照单全收) / nm lists
-            // all symbols: archive member headers "...(m.o):" carry a
-            // single field and drop out; take the "addr TYPE name"
-            // triples whose type letter is uppercase = global definition.
-            // Undefined lines "U _malloc" have only two fields — len>=3
-            // is required (U is uppercase too, so a two-field line leaks
-            // into the defined set and nmedit errors "symbols not
-            // defined") (Mach-O names keep their _ prefix, nmedit takes
-            // them verbatim)
-            let defined = |p: &PathBuf| -> HashSet<String> {
-                sys::capture("nm", &[&p.to_string_lossy()], &e.work)
-                    .unwrap_or_default()
-                    .lines()
-                    .filter_map(|l| {
-                        let f: Vec<&str> = l.split_whitespace().collect();
-                        if f.len() >= 3
-                            && f[f.len() - 2].len() == 1
-                            && f[f.len() - 2]
-                                .chars()
-                                .next()
-                                .is_some_and(|c| c.is_ascii_uppercase())
-                        {
-                            Some(f[f.len() - 1].to_string())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
+            // `nm -gP`：只列全局符号、POSIX 定式 "名 类型 值"——字段序跨
+            // nm 实现（GNU/ llvm-nm）不变。类型字母大写即全局定义；
+            // 未定义行只有 "名 U" 两段天然出局（上一版按位置猜三段式，
+            // 静默空集后整个 dedup 哑掉——跳过分支这次全部落日志）/
+            // `nm -gP`: globals only, POSIX form "name TYPE value" whose
+            // field order is stable across nm implementations (GNU /
+            // llvm-nm). An uppercase type letter marks a global
+            // definition; undefined lines come out as "name U" pairs and
+            // drop out on their own (the previous version guessed the
+            // addr/TYPE/name triple positionally, went silent on an
+            // empty set, and muted the whole dedup — every skip branch
+            // logs this time)
+            let defined = |p: &PathBuf| -> (HashSet<String>, usize) {
+                match sys::capture("nm", &["-gP", &p.to_string_lossy()], &e.work) {
+                    Err(why) => {
+                        log::warn(&format!("[extras] nm -gP on {} failed: {why}", p.display()));
+                        (HashSet::new(), 0)
+                    }
+                    Ok(out) => {
+                        let lines = out.lines().count();
+                        let set: HashSet<String> = out
+                            .lines()
+                            .filter_map(|l| {
+                                let f: Vec<&str> = l.split_whitespace().collect();
+                                if f.len() >= 2
+                                    && f[1].len() == 1
+                                    && f[1]
+                                        .chars()
+                                        .next()
+                                        .is_some_and(|c| c.is_ascii_uppercase() && c != 'U')
+                                {
+                                    Some(f[0].to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        (set, lines)
+                    }
+                }
             };
-            let shared: Vec<String> = defined(&pa).intersection(&defined(&pb)).cloned().collect();
+            let (sa, na) = defined(&pa);
+            let (sb, nb) = defined(&pb);
+            if sa.is_empty() || sb.is_empty() {
+                log::log(&format!(
+                    "[extras] nmedit pair {a}∩{b}: defined sets {} vs {} ({} vs {} nm lines); skipped",
+                    sa.len(),
+                    sb.len(),
+                    na,
+                    nb
+                ));
+                continue;
+            }
+            let shared: Vec<String> = sa.intersection(&sb).cloned().collect();
             if shared.is_empty() {
+                log::log(&format!(
+                    "[extras] nmedit pair {a}∩{b}: no shared symbols; skipped"
+                ));
                 continue;
             }
             let list = e.work.join(format!("{b}.nmedit-list"));

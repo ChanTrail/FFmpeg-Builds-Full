@@ -297,6 +297,79 @@ fn redefine_sym(lib: &Path, old: &str, new: &str, tools: &Toolchain) -> bool {
     }
 }
 
+/// 批量版 redefine_sym：一趟扫过全成员——每成员一次 nm 收集本成员
+/// 命中了 pairs 里哪些符号（nm 行尾字段即符号名；定义 TtWwDdBbRr 或
+/// 引用 U 都算命中），命中成员单次 objcopy 携带全部
+/// --redefine-sym，改完 ar r 原位替换。对比逐符号版：rav1e∩rsvg 的
+/// ~300 共享符号 × ~4000 成员会变成百万级子进程（实证：postfix 冻结
+/// 数小时）；单趟版 ≈ 成员数 × 2-3 个子进程 / batch variant of
+/// redefine_sym: a single pass over all members — one nm per member
+/// collects which of `pairs` it hits (the nm line's last field is the
+/// symbol name; a defined TtWwDdBbRr or a U reference both count), one
+/// objcopy carrying every --redefine-sym per hit member, then `ar r`
+/// back in place. The per-symbol version costs ~300 shared syms ×
+/// ~4000 members ≈ millions of subprocesses for the rav1e∩rsvg pair
+/// (empirical: postfix froze for hours); this is ~members × 2-3
+fn redefine_syms(lib: &Path, pairs: &[(String, String)], tools: &Toolchain) -> u32 {
+    let e = sys::env();
+    let mdir = e.work.join(format!("rsym-{}", std::process::id()));
+    fsx::rm_rf(&mdir);
+    if fsx::install_d(&mdir).is_err() {
+        return 0;
+    }
+    // canonicalize 禁令同 redefine_sym / same canonicalize ban as
+    // redefine_sym
+    let lib_s = lib.to_string_lossy().to_string();
+    let members = sys::capture(&tools.ar, &["t", &lib_s], &e.work).unwrap_or_default();
+    let mut hit = 0u32;
+    for m in members.lines() {
+        let m = m.trim();
+        if m.is_empty() {
+            continue;
+        }
+        // ar x 解成员（ar p 的文本模式 \n→\r\n 毁对象——同 redefine_sym
+        // 注释）/ ar x extracts the member (ar p's text mode wrecks
+        // objects with \r\n — same note as redefine_sym)
+        if sys::run(&tools.ar, &["x", &lib_s, m], &mdir).unwrap_or(1) != 0 {
+            continue;
+        }
+        let mp = mdir.join(m);
+        if !mp.is_file() {
+            continue;
+        }
+        let nms = sys::capture(&tools.nm, &[&mp.to_string_lossy()], &mdir).unwrap_or_default();
+        let have: HashSet<&str> = nms
+            .lines()
+            .filter_map(|l| l.split_whitespace().last())
+            .collect();
+        let mut args: Vec<String> = Vec::new();
+        for (o, n) in pairs {
+            if have.contains(o.as_str()) {
+                args.push("--redefine-sym".to_string());
+                args.push(format!("{o}={n}"));
+            }
+        }
+        if !args.is_empty()
+            && sys::run(
+                &tools.objcopy,
+                &args.iter().map(String::as_str).collect::<Vec<_>>(),
+                &mdir,
+            )
+            .unwrap_or(1)
+                == 0
+            && sys::run(&tools.ar, &["r", &lib_s, &mp.to_string_lossy()], &mdir).unwrap_or(1) == 0
+        {
+            hit += args.len() as u32 / 2;
+        }
+        let _ = std::fs::remove_file(&mp);
+    }
+    fsx::rm_rf(&mdir);
+    if hit > 0 {
+        let _ = sys::run(&tools.ranlib, &[&lib_s], &e.work);
+    }
+    hit
+}
+
 /// 工具链名集合（nm/ar/ranlib/objcopy 经 PATH 解析）/ the resolved
 /// toolchain names used by the archive surgeries
 struct Toolchain {
@@ -1180,8 +1253,8 @@ pub fn fixup() -> Result<(), String> {
         };
         let (da, db) = (defined(&pa), defined(&pb));
         let shared: Vec<String> = da.intersection(&db).cloned().collect();
-        let mut rc = 0u32;
-        for s in shared {
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for s in &shared {
             let tgt = format!("{s}{suffix}");
             // 哨兵：目标名在任何一册已定义就跳过——改名撞名是上次事故的
             // 直接死因 / sentinel: skip when the target name is already
@@ -1193,13 +1266,18 @@ pub fn fixup() -> Result<(), String> {
                 ));
                 continue;
             }
-            if redefine_sym(&pb, &s, &tgt, &t) {
-                rc += 1;
-            } else {
-                log::warn(&format!(
-                    "could not rename '{s}' in {b} — final link may collide"
-                ));
-            }
+            pairs.push((s.clone(), tgt));
+        }
+        // 逐符号版在 ~300 符号 × ~4000 成员上 = 百万级子进程（实证
+        // postfix 冻结）——批处理单趟扫过 / the per-symbol version
+        // costs ~300 syms × ~4000 members ≈ millions of subprocesses
+        // (empirical postfix freeze) — one batched pass instead
+        let rc = redefine_syms(&pb, &pairs, &t);
+        if rc < pairs.len() as u32 {
+            log::warn(&format!(
+                "dedup: only {rc}/{} shared symbols renamed in {b} — final link may collide",
+                pairs.len()
+            ));
         }
         if rc > 0 {
             log::log(&format!(

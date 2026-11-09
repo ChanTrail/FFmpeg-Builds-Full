@@ -83,10 +83,6 @@ fribidi: {flags: --enable-libfribidi}
 fontconfig: {flags: --enable-fontconfig}
 libunibreak:
 lcms2: {flags: --enable-lcms2}
-# librsvg 曾是 UCRT64-only（MSYS2 没有 clang-aarch64 构建），但
-# mingw-w64-clang-aarch64-librsvg 现在有了——两架构都启用。
-# librsvg used to be UCRT64-only (MSYS2 had no clang-aarch64 build), but
-# mingw-w64-clang-aarch64-librsvg exists now — enabled on both arches.
 librsvg: {flags: --enable-librsvg}
 SDL2: {flags: --enable-sdl2}
 zimg: {flags: --enable-libzimg}

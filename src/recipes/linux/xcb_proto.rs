@@ -8,7 +8,10 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("xcb-proto", "linux", "xcb-proto", "-", body);
+    // 协议 xml/生成器包：xcb-proto.pc 无 Libs——用文件验收 /
+    // protocol-xml/generator package: xcb-proto.pc carries no Libs —
+    // file acceptance instead
+    let mut x = r("xcb-proto", "linux", "file:share/xcb/xcb.xsd", "-", body);
     x.src = include_str!("xcb_proto.rs");
     x
 }

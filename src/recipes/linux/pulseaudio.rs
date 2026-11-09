@@ -32,9 +32,14 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         &[
             "-Dauto_features=disabled",
             "-Ddaemon=false",
-            "-Ddoxygen=false",
+            // doxygen/tests 是 feature 型选项（值域 enabled/disabled/
+            // auto）——传 =false 直接判型不符出局；man/daemon 才是布尔 /
+            // doxygen and tests are feature-type options (enabled/
+            // disabled/auto) — '=false' is a type error; only 'man' and
+            // 'daemon' are booleans
+            "-Ddoxygen=disabled",
             "-Dman=false",
-            "-Dtests=false",
+            "-Dtests=disabled",
         ],
     )
 }

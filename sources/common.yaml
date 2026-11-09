@@ -356,6 +356,12 @@ alsa:
   sha256: f740db7f488255944ffd4428416ee3390a96742856916433df468c281436480e
 libva:
   git: https://github.com/intel/libva.git
+  # 钉版本：仓库混着 48 个 ww53.4-video 式内部周构建 tag——latest_tag
+  # 的 vkey 排序被它们碾压性压过 2.x（实证回退检出抓到 0.31.1）/
+  # pinned: the repo mixes in 48 internal weekly-build tags like
+  # ww53.4-video whose vkey ordering crushes real 2.x tags (the
+  # fallback checkout empirically fetched 0.31.1)
+  ref: "2.24.1"
 vdpau:
   git: https://gitlab.freedesktop.org/vdpau/libvdpau.git
 libdrm:

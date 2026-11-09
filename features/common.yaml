@@ -188,6 +188,9 @@ vaapi:
 vdpau:
   linux-x86_64: enable
   linux-arm64: enable
+v4l2m2m:                    # V4L2 M2M 状态式编解码（ARM SBC 硬解主力；FFmpeg 自查 videodev2.h）/ V4L2 stateful M2M codecs (the ARM SBC hwaccel; FFmpeg probes videodev2.h itself)
+  linux-x86_64: enable
+  linux-arm64: enable
 libdrm:
   linux-x86_64: enable
   linux-arm64: enable

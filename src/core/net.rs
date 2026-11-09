@@ -424,8 +424,24 @@ pub fn latest_tag(url: &str) -> Result<Option<String>, String> {
     tags.dedup();
     let mut ver: Vec<&String> = tags.iter().filter(|t| is_version_tag(t)).collect();
     ver.sort_by_key(|t| vkey(t));
-    if let Some(t) = ver.last() {
-        return Ok(Some((*t).clone()));
+    // 版本号开头的 tag（v1.2.3/1.2.3）优先——"ww53.4-video" 式把版本段
+    // 藏进名字中间的内部构建标签，vkey 首元素碾压一切真版本，只能做
+    // 兜底（实证：intel/libva 回退抓到了 ww* 系的 0.31.1 化石）/
+    // version-leading tags (v1.2.3 / 1.2.3) take precedence — internal
+    // build labels burying the version mid-name (ww53.4-video) outrank
+    // every real release on the first vkey element, so they may serve
+    // only as a fallback (empirical: intel/libva's fallback fetched a
+    // ww*-era 0.31.1 fossil)
+    if let Some(t) = ver
+        .iter()
+        .copied()
+        .rfind(|t| {
+            let s = t.strip_prefix('v').unwrap_or(t);
+            s.chars().next().is_some_and(|c| c.is_ascii_digit())
+        })
+        .or_else(|| ver.last().copied())
+    {
+        return Ok(Some(t.clone()));
     }
     Ok(tags.last().cloned())
 }

@@ -33,7 +33,9 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-Dvc4=disabled",
             "-Domap=disabled",
             "-Dexynos=disabled",
-            "-Dfreedreno=disabled",
+            // freedreno 不存在于 HEAD 的 meson_options（实证 Unknown
+            // option）/ no 'freedreno' option exists in HEAD's
+            // meson_options.txt (empirical: Unknown option error)
             "-Dtegra=disabled",
             "-Detnaviv=disabled",
             "-Dman-pages=disabled",

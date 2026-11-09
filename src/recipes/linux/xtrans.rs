@@ -8,7 +8,15 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("xtrans", "linux", "xtrans", "-", body);
+    // 纯头文件包：xtrans.pc 无 Libs——用文件验收 / header-only package:
+    // xtrans.pc carries no Libs — file acceptance instead
+    let mut x = r(
+        "xtrans",
+        "linux",
+        "file:include/X11/Xtrans/Xtrans.h",
+        "-",
+        body,
+    );
     x.src = include_str!("xtrans.rs");
     x
 }

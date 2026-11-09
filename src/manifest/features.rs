@@ -68,10 +68,17 @@ pub const FEATURES: &[Feature] = &[
     f("libvpx", "vpx"),
     f("libsvtav1", "SvtAv1Enc"),
     f("librav1e", "rav1e"),
-    f("libjxl", "libjxl"),
+    // FFmpeg 的 libjxl 链测同时要求 libjxl_threads——单查 libjxl 会让
+    // 探针放行、configure 半途中止（实证过的丢包方式）/ FFmpeg's libjxl
+    // link check also requires libjxl_threads — probing libjxl alone
+    // passes the gate then dies mid-configure (the empirical drop mode)
+    f("libjxl", "libjxl,libjxl_threads"),
     f("libwebp", "libwebp"),
     f("libopenjpeg", "libopenjp2"),
-    f("libtheora", "theoraenc"),
+    // FFmpeg 的 require 是 -ltheoraenc -ltheoradec 两件套——探针同查防
+    // 放行后掉 / FFmpeg's require links both -ltheoraenc and -ltheoradec
+    // — probe both so the gate can't pass then drop
+    f("libtheora", "theoraenc,theoradec"),
     f("libxvid", "xvidcore"),
     f("libkvazaar", "kvazaar"),
     f("libopenh264", "openh264"),
@@ -174,7 +181,10 @@ pub const FEATURES: &[Feature] = &[
     // libva 装的是 libva.pc——世上没有 vaapi.pc，"vaapi" 必降级 /
     // libva ships libva.pc — no vaapi.pc exists anywhere, so probing
     // "vaapi" degrades unconditionally
-    f("vaapi", "libva"),
+    // vaapi hwaccel 实际要 libva+libva-drm 这一对——同配方同产，探针
+    // 照实要求 / the vaapi hwaccel really wants the libva+libva-drm pair
+    // — same recipe produces both, the probe asks for what FFmpeg needs
+    f("vaapi", "libva,libva-drm"),
     f("libdc1394", "libdc1394-2"),
     f("libdrm", "libdrm"),
     f("libshaderc", "shaderc"),
@@ -189,7 +199,11 @@ pub const FEATURES: &[Feature] = &[
     f("dxva2", "always"),
     f("mediafoundation", "always"),
     f("v4l2m2m", "always"),
-    f("xlib", "x11"),
+    // FFmpeg 的 xlib 检查是 x11+xext+xv 三件套（Xvlib.h 那次实证）——
+    // 三件同查，缺一不如直接降级 / FFmpeg's xlib check is the
+    // x11+xext+xv trio (empirical: the Xvlib.h failure) — probe all
+    // three; missing any one, degrading beats a mid-configure drop
+    f("xlib", "x11,xext,xv"),
     f("libxcb", "xcb"),
     f("libxcb-shm", "xcb-shm"),
     f("libxcb-shape", "xcb-shape"),
