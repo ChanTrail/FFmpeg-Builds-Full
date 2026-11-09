@@ -699,7 +699,7 @@ pub fn vendored_manifest(rel: &str, stamp: SystemTime) -> Result<(), String> {
 /// 等长记号在归档成员里做字节级改名
 /// Equal-length byte rename inside every archive member that carries the
 /// token
-fn byte_rename(lib: &Path, pairs: &[(&str, &str)], dir: &Path) -> Result<usize, String> {
+pub(crate) fn byte_rename(lib: &Path, pairs: &[(&str, &str)], dir: &Path) -> Result<usize, String> {
     let tmp = dir.join(format!("bytern{}", std::process::id()));
     fsx::install_d(&tmp)?;
     let mut renamed = 0;
@@ -960,61 +960,58 @@ fn postfix() -> Result<(), String> {
                 ));
                 continue;
             }
-            let list = e.work.join(format!("{b}.nmedit-list"));
-            // nmedit -R 对"列表里任一名字未定义"直接整体报错——而 nm 的
-            // 符号表视图会把索引伪成员/弱符号鬼影也算成 defined（实证：
-            // compiler_builtins 单态化鬼名）。自纠循环：跑出 stderr，
-            // 剥掉被点名的行再重试，最多 5 轮 / nmedit -R aborts the
-            // whole run when any listed name is not defined — while nm's
-            // view of the archive counts index pseudo-member / weak
-            // ghosts as defined (empirical: compiler_builtins
-            // monomorph ghosts). Self-correcting loop: capture stderr,
-            // strip the named offenders, retry — 5 rounds max
-            let mut names = shared.clone();
-            for _ in 0..5 {
-                fsx::write(&list, &names.join("\n"))?;
-                let (out, code) = sys::capture_lax(
-                    "bash",
-                    &[
-                        "-c",
-                        &format!("nmedit -R '{}' '{}' 2>&1", list.display(), pb.display()),
-                    ],
-                    &e.work,
-                )
-                .unwrap_or_else(|why| (format!("spawn: {why}"), 127));
-                if code == 0 {
-                    break;
+            // 等长字节改名而非 nmedit -R：-R 是把定义从符号表整个删掉
+            // ——rav1e 单测 -lrav1e 里本册引用当场 undefined（实证：
+            // __rustc 单态化全灭）。byte_rename 把每个共享名在 b 册
+            // 改成等长新名（首字符 _ -> z，strtab 偏移原样），引用与
+            // 定义同步迁移，b 册自洽且与 a 册零碰撞；nm 误报的幽灵名
+            // 在字节层找不到就天然跳过，不需要重试循环 /
+            // equal-length byte rename instead of nmedit -R: -R
+            // deletes definitions from the symbol table outright —
+            // rav1e's own references went undefined in the standalone
+            // -lrav1e test (empirical: __rustc monomorphs massacred).
+            // byte_rename swaps every shared name inside b for a
+            // same-length new one (leading _ -> z so strtab offsets
+            // stay valid); references and definitions migrate together
+            // leaving b self-consistent and collision-free vs a.
+            // nm's ghost reports simply never appear at byte level —
+            // no retry loop needed
+            let mut pairs: Vec<(String, String)> = Vec::new();
+            for s in &shared {
+                if !s.starts_with('_') {
+                    log::warn(&format!(
+                        "[extras] {a}∩{b}: shared name '{s}' lacks '_' prefix; skipped"
+                    ));
+                    continue;
                 }
-                // 点名行是 "not defined in:" 之后的裸符号名 / offender
-                // lines are bare symbol names after "not defined in:"
-                let mut bad = false;
-                let offenders: HashSet<String> = out
-                    .lines()
-                    .filter_map(|l| {
-                        let l = l.trim();
-                        if l.contains("not defined in:") {
-                            bad = true;
-                            return None;
-                        }
-                        if bad && !l.is_empty() && !l.contains(':') {
-                            Some(l.to_string())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                if offenders.is_empty() {
-                    return Err(format!("nmedit -R on {} failed: {out}", pb.display()));
+                let tgt = format!("z{}", &s[1..]);
+                // 哨兵：目标名在任何一册已定义就跳过（同 windows 版）
+                // sentinel: skip when the target name is already
+                // defined in either archive (same rule as the windows
+                // variant)
+                if sa.contains(&tgt) || sb.contains(&tgt) {
+                    log::warn(&format!(
+                        "[extras] {a}∩{b}: skip '{s}' — target '{tgt}' already defined"
+                    ));
+                    continue;
                 }
-                names.retain(|n| !offenders.contains(n));
-                if names.is_empty() {
-                    break;
-                }
+                pairs.push((s.clone(), tgt));
             }
-            let _ = sys::run(&e.ranlib, &[&pb.to_string_lossy()], &e.work);
+            if pairs.is_empty() {
+                continue;
+            }
+            let refs: Vec<(&str, &str)> = pairs
+                .iter()
+                .map(|(o, n)| (o.as_str(), n.as_str()))
+                .collect();
+            let n = byte_rename(&pb, &refs, &e.work)?;
+            if n > 0 {
+                let _ = sys::run(&e.ranlib, &[&pb.to_string_lossy()], &e.work);
+            }
             log::log(&format!(
-                "[extras] localized {} {a}-shared symbol(s) in {b} (nmedit -R)",
-                names.len()
+                "[extras] renamed {} {a}-shared symbol(s) in {b} across {n} member(s) \
+                 (_… -> z…)",
+                pairs.len()
             ));
         }
     }

@@ -1275,16 +1275,15 @@ pub fn fixup() -> Result<(), String> {
             continue;
         }
         let defined = |p: &Path| -> HashSet<String> {
-            // 类型白名单：只收真·全局定义 {T,D,B,R,C,S,W,V}。I=导入描述
-            // 符、A=absolute、N=debug 都要排除——实证：PE 下 WaitOnAddress
-            // 这类 I 型导入桩被 nm 计为 defined，改名把引用扭向新名而
-            // 定义仍在别册，链测当场 undefined / type whitelist: only
-            // true global definitions {T,D,B,R,C,S,W,V}. I=import
-            // descriptor, A=absolute and N=debug must stay out —
-            // empirical: PE import stubs like WaitOnAddress report 'I'
-            // yet count as defined; renaming bent references onto the
-            // new name while the definition stayed in the sibling
-            // archive — instant undefined at the link test
+            // 类型白名单：{T,D,B,R,C,S,W,V,I}。A=absolute、N=debug 排除。
+            // I=导入描述符也在内——实证：`__imp_WakeByAddress*` 这类
+            // I 型导入桩在 rsvg/rav1e 各一份（api-ms-win-core-*.dlls*.o
+            // 成员），滤掉 I 它们就永远撞在 final link / type
+            // whitelist {T,D,B,R,C,S,W,V,I}: A=absolute and N=debug
+            // stay out. I=import descriptor IS included — empirical:
+            // `__imp_WakeByAddress*` stubs (api-ms-win-core-*.dlls*.o
+            // members) live in both librsvg-2 and librav1e; filtering
+            // 'I' left them colliding at the final link
             sys::capture(
                 &t.nm,
                 &["--defined-only", "-g", &p.to_string_lossy()],
@@ -1299,7 +1298,7 @@ pub fn fixup() -> Result<(), String> {
                     && f[f.len() - 2]
                         .chars()
                         .next()
-                        .is_some_and(|c| "TDBRCSWV".contains(c))
+                        .is_some_and(|c| "TDBRCSWVI".contains(c))
                 {
                     Some(f[f.len() - 1].to_string())
                 } else {
@@ -1311,7 +1310,36 @@ pub fn fixup() -> Result<(), String> {
         let (da, db) = (defined(&pa), defined(&pb));
         let shared: Vec<String> = da.intersection(&db).cloned().collect();
         let mut pairs: Vec<(String, String)> = Vec::new();
+        let mut imp_pairs: Vec<(String, String)> = Vec::new();
         for s in &shared {
+            // `__imp_*` 分轨：api-ms-win-*.dlls*.o 导入桩成员 objcopy
+            // 可能够不着，但 `__imp_` 前缀从不出现在 .idata 名串（那里
+            // 只有裸 API 名和 DLL 名）——字节级等长改名对它们安全且
+            // 能到任何成员。裸 `X`（thunk）若 byte-rename 会撞 .idata
+            // 函数名串，必须走 symtab 级 objcopy
+            // / `__imp_*` gets its own lane: objcopy may not reach into
+            // api-ms-win-*.dlls*.o import-stub members, but the `__imp_`
+            // prefix never appears in .idata name strings (which hold
+            // bare API names and DLL names) — a byte-level equal-length
+            // rename is safe for them and reaches every member type. A
+            // bare `X` thunk CANNOT be byte-renamed (it would hit the
+            // .idata function-name string) so it goes through symtab
+            // level objcopy
+            if s.starts_with("__imp_") {
+                // 等长目标：末字符置换（哨兵防撞）/ equal-length
+                // target: last char swapped (sentinel guards)
+                let mut t2 = s.clone();
+                let c = if t2.ends_with('z') { 'y' } else { 'z' };
+                t2.replace_range(s.len() - 1.., &c.to_string());
+                if da.contains(&t2) || db.contains(&t2) {
+                    log::warn(&format!(
+                        "dedup: skip '{s}' in {b} — target '{t2}' already defined"
+                    ));
+                    continue;
+                }
+                imp_pairs.push((s.clone(), t2));
+                continue;
+            }
             let tgt = format!("{s}{suffix}");
             // 哨兵：目标名在任何一册已定义就跳过——改名撞名是上次事故的
             // 直接死因 / sentinel: skip when the target name is already
@@ -1330,15 +1358,63 @@ pub fn fixup() -> Result<(), String> {
         // costs ~300 syms × ~4000 members ≈ millions of subprocesses
         // (empirical postfix freeze) — one batched pass instead
         let rc = redefine_syms(&pb, &pairs, &t);
+        // `__imp_*` 轨道走字节级等长改名（到 dlls*.o 成员内部）/
+        // the `__imp_*` lane goes through byte-level equal-length
+        // rename (reaches inside dlls*.o members)
+        let irc = if imp_pairs.is_empty() {
+            0
+        } else {
+            let pr: Vec<(&str, &str)> = imp_pairs
+                .iter()
+                .map(|(a2, b2)| (a2.as_str(), b2.as_str()))
+                .collect();
+            match crate::engine::extras::byte_rename(&pb, &pr, &e.work) {
+                Ok(n) => {
+                    let _ = sys::run(&t.ranlib, &[&pb.to_string_lossy()], &e.work);
+                    n as u32
+                }
+                Err(msg) => {
+                    log::warn(&format!("dedup: __imp_* byte rename on {b} failed: {msg}"));
+                    0
+                }
+            }
+        };
+        // 事后校验：改名产物必须真在 b 册里有定义——objcopy 够不着某
+        // 成员时引用扭向新名而定义滞留旧名，静默产生 undefined。逐名
+        // 核一遍定义集，丢定义的点名告警 / post-verify: every renamed
+        // name must still be defined inside b — when objcopy can't
+        // reach a member the references bend onto the new name while
+        // the definition stays behind, silently producing undefined.
+        // Re-scan the defined set and name any that lost their home
+        let after = defined(&pb);
+        let lost: Vec<&String> = pairs
+            .iter()
+            .map(|(_, n)| n)
+            .chain(imp_pairs.iter().map(|(_, n)| n))
+            .filter(|n| !after.contains(n.as_str()))
+            .collect();
+        if !lost.is_empty() {
+            log::warn(&format!(
+                "dedup: {} renamed symbol(s) lost their definition in {b} (unprocessable member? index staleness?): {}",
+                lost.len(),
+                lost.iter()
+                    .take(8)
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         if rc < pairs.len() as u32 {
             log::warn(&format!(
                 "dedup: only {rc}/{} shared symbols renamed in {b} — final link may collide",
                 pairs.len()
             ));
         }
-        if rc > 0 {
+        if rc > 0 || irc > 0 {
             log::log(&format!(
-                "renamed {rc} {a}-shared symbol(s) in {b} (*{suffix})"
+                "renamed {} {a}-shared symbol(s) in {b} (*{suffix}, {} __imp_* byte-renamed)",
+                rc + irc,
+                irc
             ));
         }
     }

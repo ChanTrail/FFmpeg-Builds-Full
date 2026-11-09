@@ -201,7 +201,10 @@ pub const FEATURES: &[Feature] = &[
     f("d3d12va", "always"),
     f("dxva2", "always"),
     f("mediafoundation", "always"),
-    f("v4l2m2m", "always"),
+    // FFmpeg 内部名带下划线——--enable-v4l2m2m 会被 unknown-option
+    // 丢弃（实证）/ FFmpeg's internal name carries the underscore —
+    // --enable-v4l2m2m gets dropped as an unknown option (empirical)
+    f("v4l2_m2m", "always"),
     // FFmpeg 的 xlib 检查是 x11+xext+xv 三件套（Xvlib.h 那次实证）——
     // 三件同查，缺一不如直接降级 / FFmpeg's xlib check is the
     // x11+xext+xv trio (empirical: the Xvlib.h failure) — probe all
