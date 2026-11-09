@@ -1127,7 +1127,9 @@ fn postfix() -> Result<(), String> {
     // surgery — ld64 long ago declared -multiply_defined obsolete and
     // ignores it (empirical: 297 duplicate symbols at the ffmpeg_g /
     // ffplay_g links). Two pairs: librav1e ∩ librsvg-2 embed one rustc's
-    // std/alloc monomorphs; libxevd ∩ libxeve share mc/recon sources.
+    // std/alloc monomorphs; libxevd ∩ libxeve share mc/recon sources;
+    // libzmq ∩ libssh collide on _sha1_init (zmq's bundled sha1.c vs
+    // libssh's md_mbedcrypto adapter).
     // `nmedit -R` localizes the intersecting symbols in the second
     // archive — a local symbol escapes cross-archive resolution,
     // intra-archive references keep their own copy, and external
@@ -1158,7 +1160,18 @@ fn postfix() -> Result<(), String> {
                 Err(why) => log::warn(&format!("[extras] shim promote on {l}: {why}")),
             }
         }
-        for (a, b) in [("libxevd.a", "libxeve.a"), ("librsvg-2.a", "librav1e.a")] {
+        // (a, b)：a 册保留原名，b 册等长改名——libzmq∩libssh 撞
+        // _sha1_init（zmq 自带 sha1.c vs libssh 的 md_mbedcrypto
+        // 适配器），b 册选 libssh：其 sha1_init 只是内部胶水，zmq
+        // 保留规范名 / (a, b): a keeps its names, b gets renamed —
+        // libzmq∩libssh collide on _sha1_init (zmq's bundled sha1.c vs
+        // libssh's md_mbedcrypto adapter); b is libssh whose sha1_init
+        // is only internal glue while zmq keeps the canonical name
+        for (a, b) in [
+            ("libxevd.a", "libxeve.a"),
+            ("librsvg-2.a", "librav1e.a"),
+            ("libzmq.a", "libssh.a"),
+        ] {
             let (pa, pb) = (libdir.join(a), libdir.join(b));
             if !(pa.is_file() && pb.is_file()) {
                 log::log(&format!(

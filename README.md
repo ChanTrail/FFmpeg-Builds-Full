@@ -21,8 +21,7 @@ https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-
 
 **带日期的 Release**：标签 `YYYYMMDD`（同日多次构建附加 `-HHMM`），保留最近 30 个（约 3 个月）。每个压缩包附带：
 
-- `<压缩包>.sha256`：`sha256sum -c` 校验（macOS：`shasum -a 256 -c`）
-- `<压缩包>.buildinfo.txt`：构建报告——全部 configure 选项、启用/放弃的库（压缩包内另有 `BUILDINFO.txt`）
+- `<压缩包>.sha256`：`sha256sum -c` 校验（macOS：`shasum -a 256 -c`）；构建报告在包内 `BUILDINFO.txt`——全部 configure 选项、启用/放弃的库
 
 **预发布构建**：非 master 分支的驱动 CI 通过后自动触发 FFmpeg 构建，以 `<分支>-YYYYMMDD-HHMM` 标签发 pre-release，不影响 `latest`。
 

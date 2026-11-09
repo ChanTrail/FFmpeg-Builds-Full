@@ -21,8 +21,7 @@ https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-
 
 **Dated releases**: tagged `YYYYMMDD` (a same-day rebuild appends `-HHMM`), the newest 30 are kept (about 3 months). Every archive ships:
 
-- `<archive>.sha256` — verify with `sha256sum -c` (macOS: `shasum -a 256 -c`)
-- `<archive>.buildinfo.txt` — the build report: every configure option plus the enabled/dropped libraries (a `BUILDINFO.txt` copy also lives inside the archive)
+- `<archive>.sha256` — verify with `sha256sum -c` (macOS: `shasum -a 256 -c`); the build report lives inside the archive as `BUILDINFO.txt` (every configure option plus the enabled/dropped libraries)
 
 **Pre-release builds**: once a non-master branch's driver CI finishes successfully, an FFmpeg build of that branch starts automatically and ships as a pre-release tagged `<branch>-YYYYMMDD-HHMM` — `latest` is never touched.
 

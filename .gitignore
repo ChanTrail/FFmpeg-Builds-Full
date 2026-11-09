@@ -2,7 +2,7 @@
 .cifacts/
 .devin/
 target/
-errorlog/
+test/
 # 本地跑驱动时落在仓内的默认工作根 / default in-repo work roots from
 # local driver runs
 /ffmpeg-*-*/
