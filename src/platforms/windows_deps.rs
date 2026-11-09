@@ -349,6 +349,12 @@ fn redefine_syms(lib: &Path, pairs: &[(String, String)], tools: &Toolchain) -> u
                 args.push(format!("{o}={n}"));
             }
         }
+        // objcopy 语法要求 in-file 操作数（单文件即原地改）——漏传只会让
+        // objcopy 打印 usage / objcopy syntax demands an in-file operand
+        // (single file = in-place); omitting it makes objcopy dump usage
+        if !args.is_empty() {
+            args.push(mp.to_string_lossy().to_string());
+        }
         if !args.is_empty()
             && sys::run(
                 &tools.objcopy,

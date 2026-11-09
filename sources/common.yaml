@@ -54,6 +54,7 @@ xevd:
   git: https://github.com/mpeg5/xevd.git
 xeve:
   git: https://github.com/mpeg5/xeve.git
+  ref: v0.7.1   # 与配方 version.txt 同钉；spec 参与 .ok 哈希——顺带失效携带上古 xeve_ 改名毒的 overlay 归档 / pinned in step with the recipe's version.txt; the spec feeds the .ok hash — this also retires the overlay archive carrying the legacy xeve_ rename poison
 vvenc:
   git: https://github.com/fraunhoferhhi/vvenc.git
 theora:
@@ -378,6 +379,7 @@ lz4:
   git: https://github.com/lz4/lz4.git
 pulseaudio:                # libpulse 特性对应 / matches the libpulse feature
   git: https://gitlab.freedesktop.org/pulseaudio/pulseaudio.git
+  ref: v17.0   # git-version-gen 靠 git describe 取版本——浅克隆必须落在 tag 上，否则 meson.build 的 version.split()[1] 越界 / git-version-gen derives the version from git describe — the shallow clone must land on a tag or meson.build's version.split()[1] goes out of bounds
 
 # ---- X11 / xcb 栈 / the X11/xcb stack ----
 xcb-proto:

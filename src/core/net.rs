@@ -275,20 +275,31 @@ pub(crate) const GIT_NET: &[&str] = &[
     "gc.auto=0",
 ];
 
-/// git 网络读操作统一入口：GIT_NET 传输超时 + 3 次重试（ls-remote /
-/// 轻量探测用）/ shared entry for network git reads: GIT_NET transport
-/// timeouts + 3 attempts (ls-remote / light probes)
+/// git 传输重试的退避序列：网关 504/拥塞在 ~10s 尺度上很少自愈，
+/// 15/30/60/90s 递增才躲得过高峰（实证：freedesktop 三连炸全死在
+/// 固定 10s 窗口里）/ backoff ladder for git transport retries:
+/// gateway 504s / congestion rarely heal on a ~10s scale — the
+/// 15/30/60/90s ramp dodges the busy window (empirical: three flat-10s
+/// attempts all died inside one freedesktop burst)
+fn git_retry_delay(attempt: u32) -> Duration {
+    Duration::from_secs([15, 30, 60, 90][(attempt as usize).min(3)])
+}
+
+/// git 网络读操作统一入口：GIT_NET 传输超时 + 5 次递增退避重试
+/// （ls-remote / 轻量探测用）/ shared entry for network git reads:
+/// GIT_NET transport timeouts + 5 attempts on a rising backoff
+/// (ls-remote / light probes)
 fn git_capture(args: &[&str]) -> Result<String, String> {
     let mut a: Vec<&str> = GIT_NET.to_vec();
     a.extend_from_slice(args);
     let mut last = String::new();
-    for i in 1..=3 {
+    for i in 1..=5 {
         match sys::capture("git", &a, &sys::env().work) {
             Ok(o) => return Ok(o),
             Err(e) => {
                 last = e;
-                if i < 3 {
-                    std::thread::sleep(Duration::from_secs(10));
+                if i < 5 {
+                    std::thread::sleep(git_retry_delay(i));
                 }
             }
         }
@@ -309,17 +320,20 @@ pub(crate) fn git_run(
     let mut a: Vec<&str> = GIT_NET.to_vec();
     a.extend_from_slice(args);
     let mut last = String::new();
-    for i in 1..=3 {
+    // 同 git_capture 的 5 次递增退避——clone/fetch 撞 504 是同一类
+    // 瞬时网关拥塞 / same rising 5-attempt backoff as git_capture —
+    // clone/fetch hitting 504 is the same transient gateway congestion
+    for i in 1..=5 {
         match sys::run("git", &a, wd) {
             Ok(0) => return Ok(()),
             Ok(c) => last = format!("exited {c}"),
             Err(e) => last = e,
         }
-        if i < 3 {
+        if i < 5 {
             if let Some(p) = clean_between {
                 fsx::rm_rf(p);
             }
-            std::thread::sleep(Duration::from_secs(10));
+            std::thread::sleep(git_retry_delay(i));
         }
     }
     Err(format!(

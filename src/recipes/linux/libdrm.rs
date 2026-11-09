@@ -42,7 +42,10 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-Dtests=false",
             "-Dvalgrind=disabled",
             "-Dinstall-test-programs=false",
-            "-Dudev=disabled",
+            // udev 是布尔型选项（=disabled 是 feature 型的写法）/
+            // udev is a boolean option (=disabled belongs to feature
+            // options)
+            "-Dudev=false",
         ],
     )
 }

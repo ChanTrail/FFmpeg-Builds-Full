@@ -891,22 +891,21 @@ fn postfix() -> Result<(), String> {
                 ));
                 continue;
             }
-            // `nm -gP`：只列全局符号、POSIX 定式 "名 类型 值"——字段序跨
-            // nm 实现（GNU/ llvm-nm）不变。类型字母大写即全局定义；
-            // 未定义行只有 "名 U" 两段天然出局（上一版按位置猜三段式，
-            // 静默空集后整个 dedup 哑掉——跳过分支这次全部落日志）/
-            // `nm -gP`: globals only, POSIX form "name TYPE value" whose
-            // field order is stable across nm implementations (GNU /
-            // llvm-nm). An uppercase type letter marks a global
-            // definition; undefined lines come out as "name U" pairs and
-            // drop out on their own (the previous version guessed the
-            // addr/TYPE/name triple positionally, went silent on an
-            // empty set, and muted the whole dedup — every skip branch
-            // logs this time)
+            // `nm -g`：只列全局符号。BSD nm（macOS）不认 -P，GNU 与 BSD
+            // 的默认输出同为 "addr 类型 名" 三段式、未定义 "U 名" 两段式，
+            // 故解析按段数判别：≥3 段取末段为名、倒数第二段单字母大写即
+            // 全局定义（U 除外），成员头行 "x.o:" 单字段天然出局 /
+            // `nm -g`: globals only. BSD nm (macOS) rejects -P; GNU and
+            // BSD default output alike is "addr TYPE name" triples for
+            // defined and "U name" pairs for undefined, so parse by field
+            // count: ≥3 fields → last is the name, second-to-last a
+            // single uppercase letter marks a global definition (except
+            // U); member header "x.o:" lines are single-field and drop
+            // out on their own
             let defined = |p: &PathBuf| -> (HashSet<String>, usize) {
-                match sys::capture("nm", &["-gP", &p.to_string_lossy()], &e.work) {
+                match sys::capture("nm", &["-g", &p.to_string_lossy()], &e.work) {
                     Err(why) => {
-                        log::warn(&format!("[extras] nm -gP on {} failed: {why}", p.display()));
+                        log::warn(&format!("[extras] nm -g on {} failed: {why}", p.display()));
                         (HashSet::new(), 0)
                     }
                     Ok(out) => {
@@ -915,14 +914,14 @@ fn postfix() -> Result<(), String> {
                             .lines()
                             .filter_map(|l| {
                                 let f: Vec<&str> = l.split_whitespace().collect();
-                                if f.len() >= 2
-                                    && f[1].len() == 1
-                                    && f[1]
+                                if f.len() >= 3
+                                    && f[f.len() - 2].len() == 1
+                                    && f[f.len() - 2]
                                         .chars()
                                         .next()
                                         .is_some_and(|c| c.is_ascii_uppercase() && c != 'U')
                                 {
-                                    Some(f[0].to_string())
+                                    Some(f[f.len() - 1].to_string())
                                 } else {
                                     None
                                 }
