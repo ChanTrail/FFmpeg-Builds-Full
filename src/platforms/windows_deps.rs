@@ -1275,15 +1275,16 @@ pub fn fixup() -> Result<(), String> {
             continue;
         }
         let defined = |p: &Path| -> HashSet<String> {
-            // 类型白名单：{T,D,B,R,C,S,W,V,I}。A=absolute、N=debug 排除。
-            // I=导入描述符也在内——实证：`__imp_WakeByAddress*` 这类
-            // I 型导入桩在 rsvg/rav1e 各一份（api-ms-win-core-*.dlls*.o
-            // 成员），滤掉 I 它们就永远撞在 final link / type
-            // whitelist {T,D,B,R,C,S,W,V,I}: A=absolute and N=debug
-            // stay out. I=import descriptor IS included — empirical:
-            // `__imp_WakeByAddress*` stubs (api-ms-win-core-*.dlls*.o
-            // members) live in both librsvg-2 and librav1e; filtering
-            // 'I' left them colliding at the final link
+            // 类型白名单：{T,D,B,R,C,S,W,V}。A=absolute、N=debug、
+            // I=导入描述符排除——I 型（__imp_*）是链接器合成名、定义
+            // 在 import-object 成员里，改名必然只动引用侧（实证）；其
+            // 撞名由上面的逐字节成员删重相位收 / type whitelist
+            // {T,D,B,R,C,S,W,V}: A=absolute, N=debug and I=import
+            // descriptor stay out — I-typed __imp_* are linker-
+            // synthesized names defined inside import-object members,
+            // so a rename can only ever bend the reference side
+            // (empirical); their collisions are collected by the
+            // byte-identical member-dedup phase above
             sys::capture(
                 &t.nm,
                 &["--defined-only", "-g", &p.to_string_lossy()],
@@ -1298,7 +1299,7 @@ pub fn fixup() -> Result<(), String> {
                     && f[f.len() - 2]
                         .chars()
                         .next()
-                        .is_some_and(|c| "TDBRCSWVI".contains(c))
+                        .is_some_and(|c| "TDBRCSWV".contains(c))
                 {
                     Some(f[f.len() - 1].to_string())
                 } else {
@@ -1308,36 +1309,68 @@ pub fn fixup() -> Result<(), String> {
             .collect()
         };
         let (da, db) = (defined(&pa), defined(&pb));
-        let shared: Vec<String> = da.intersection(&db).cloned().collect();
-        let mut pairs: Vec<(String, String)> = Vec::new();
-        let mut imp_pairs: Vec<(String, String)> = Vec::new();
-        for s in &shared {
-            // `__imp_*` 分轨：api-ms-win-*.dlls*.o 导入桩成员 objcopy
-            // 可能够不着，但 `__imp_` 前缀从不出现在 .idata 名串（那里
-            // 只有裸 API 名和 DLL 名）——字节级等长改名对它们安全且
-            // 能到任何成员。裸 `X`（thunk）若 byte-rename 会撞 .idata
-            // 函数名串，必须走 symtab 级 objcopy
-            // / `__imp_*` gets its own lane: objcopy may not reach into
-            // api-ms-win-*.dlls*.o import-stub members, but the `__imp_`
-            // prefix never appears in .idata name strings (which hold
-            // bare API names and DLL names) — a byte-level equal-length
-            // rename is safe for them and reaches every member type. A
-            // bare `X` thunk CANNOT be byte-renamed (it would hit the
-            // .idata function-name string) so it goes through symtab
-            // level objcopy
-            if s.starts_with("__imp_") {
-                // 等长目标：末字符置换（哨兵防撞）/ equal-length
-                // target: last char swapped (sentinel guards)
-                let mut t2 = s.clone();
-                let c = if t2.ends_with('z') { 'y' } else { 'z' };
-                t2.replace_range(s.len() - 1.., &c.to_string());
-                if da.contains(&t2) || db.contains(&t2) {
-                    log::warn(&format!(
-                        "dedup: skip '{s}' in {b} — target '{t2}' already defined"
-                    ));
+        // 第一相位：删掉 b 册里与 a 册逐字节相同的同名成员。rustc 归档
+        // 都 vendor 同一套 dlltool 导入桩（api-ms-win-*.dlls*.o）——
+        // `__imp_X` 是链接器合成名、不进字节表（byte rename 无处下
+        // 手），import-object 成员 objcopy 也够不着；桩在两册逐字节
+        // 相同，删 b 留 a，b 的引用经 a 的同名桩/系统 import lib 正常
+        // 解析（实证：x86_64 三组 __imp_ 多重定义、两腿 rav1e 因
+        // WaitOnAddress_rsvgshr 丢定义被 configure 判掉）/ phase one:
+        // delete b members byte-identical to same-named a members.
+        // Rust archives all vendor identical dlltool import stubs
+        // (api-ms-win-*.dlls*.o) — `__imp_X` is a linker-synthesized
+        // name absent from the byte table (nothing for a byte rename
+        // to grab) and objcopy cannot reach import-object members; the
+        // stubs are byte-identical across archives, so deleting b's
+        // copies lets its references resolve through a's same-named
+        // stub or the system import lib (empirical: three __imp_
+        // duplicate groups on x86_64, and both legs dropped rav1e
+        // when WaitOnAddress_rsvgshr lost its definition)
+        {
+            let ma: HashSet<String> = crate::ar::members(&pa, &e.work).into_iter().collect();
+            let mut dropped = 0u32;
+            for m in crate::ar::members(&pb, &e.work) {
+                if !ma.contains(&m) {
                     continue;
                 }
-                imp_pairs.push((s.clone(), t2));
+                if let (Ok(ba), Ok(bb)) = (
+                    crate::ar::member_data(&pa, &m, &e.work),
+                    crate::ar::member_data(&pb, &m, &e.work),
+                ) && ba == bb
+                    && sys::run(&t.ar, &["d", &pb.to_string_lossy(), &m], &e.work).is_ok()
+                {
+                    dropped += 1;
+                }
+            }
+            if dropped > 0 {
+                let _ = sys::run(&t.ranlib, &[&pb.to_string_lossy()], &e.work);
+                log::log(&format!(
+                    "dedup: dropped {dropped} byte-identical member(s) from {b}"
+                ));
+            }
+        }
+        // `__imp_<s>` 伴随集：凡有 __imp_ 伴生的裸名 s，其定义多半在
+        // import-object 成员里（thunk/描述符）——objcopy 改不动它，
+        // 改名只会让引用扭向新名而定义滞留（实证 WaitOnAddress
+        // _rsvgshr 丢定义）。整名跳过 / companion set of `__imp_<s>`:
+        // a bare name with an __imp_ companion usually has its
+        // definition inside an import-object member (thunk/descriptor)
+        // — objcopy can't edit it, so renaming bends references onto
+        // the new name while the definition stays behind (empirical:
+        // WaitOnAddress_rsvgshr lost its home). Skip the name entirely
+        let imps = |p: &Path| -> HashSet<String> {
+            sys::capture(&t.nm, &["-g", &p.to_string_lossy()], &e.work)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| l.split_whitespace().last())
+                .filter_map(|n| n.strip_prefix("__imp_").map(str::to_string))
+                .collect()
+        };
+        let (ia, ib) = (imps(&pa), imps(&pb));
+        let shared: Vec<String> = da.intersection(&db).cloned().collect();
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for s in &shared {
+            if ia.contains(s.as_str()) || ib.contains(s.as_str()) {
                 continue;
             }
             let tgt = format!("{s}{suffix}");
@@ -1358,27 +1391,6 @@ pub fn fixup() -> Result<(), String> {
         // costs ~300 syms × ~4000 members ≈ millions of subprocesses
         // (empirical postfix freeze) — one batched pass instead
         let rc = redefine_syms(&pb, &pairs, &t);
-        // `__imp_*` 轨道走字节级等长改名（到 dlls*.o 成员内部）/
-        // the `__imp_*` lane goes through byte-level equal-length
-        // rename (reaches inside dlls*.o members)
-        let irc = if imp_pairs.is_empty() {
-            0
-        } else {
-            let pr: Vec<(&str, &str)> = imp_pairs
-                .iter()
-                .map(|(a2, b2)| (a2.as_str(), b2.as_str()))
-                .collect();
-            match crate::engine::extras::byte_rename(&pb, &pr, &e.work) {
-                Ok(n) => {
-                    let _ = sys::run(&t.ranlib, &[&pb.to_string_lossy()], &e.work);
-                    n as u32
-                }
-                Err(msg) => {
-                    log::warn(&format!("dedup: __imp_* byte rename on {b} failed: {msg}"));
-                    0
-                }
-            }
-        };
         // 事后校验：改名产物必须真在 b 册里有定义——objcopy 够不着某
         // 成员时引用扭向新名而定义滞留旧名，静默产生 undefined。逐名
         // 核一遍定义集，丢定义的点名告警 / post-verify: every renamed
@@ -1390,7 +1402,6 @@ pub fn fixup() -> Result<(), String> {
         let lost: Vec<&String> = pairs
             .iter()
             .map(|(_, n)| n)
-            .chain(imp_pairs.iter().map(|(_, n)| n))
             .filter(|n| !after.contains(n.as_str()))
             .collect();
         if !lost.is_empty() {
@@ -1410,11 +1421,9 @@ pub fn fixup() -> Result<(), String> {
                 pairs.len()
             ));
         }
-        if rc > 0 || irc > 0 {
+        if rc > 0 {
             log::log(&format!(
-                "renamed {} {a}-shared symbol(s) in {b} (*{suffix}, {} __imp_* byte-renamed)",
-                rc + irc,
-                irc
+                "renamed {rc} {a}-shared symbol(s) in {b} (*{suffix})"
             ));
         }
     }

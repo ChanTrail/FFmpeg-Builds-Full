@@ -16,7 +16,7 @@ use crate::fsx;
 use crate::log;
 use crate::pkgcfg;
 use crate::sys;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -699,60 +699,116 @@ pub fn vendored_manifest(rel: &str, stamp: SystemTime) -> Result<(), String> {
 /// 等长记号在归档成员里做字节级改名
 /// Equal-length byte rename inside every archive member that carries the
 /// token
-pub(crate) fn byte_rename(lib: &Path, pairs: &[(&str, &str)], dir: &Path) -> Result<usize, String> {
-    let tmp = dir.join(format!("bytern{}", std::process::id()));
-    fsx::install_d(&tmp)?;
-    let mut renamed = 0;
-    for m in crate::ar::members(lib, dir) {
-        if m == "/" || m == "//" || m == "__.SYMDEF" {
-            continue;
+///
+/// 实现：自解析归档头按偏移逐成员定位、原地改写。CLI `ar` 只能按名
+/// 寻址——rust 归档里 `.rcgu.o` 重名成员成堆，`ar p` 永远只拿第一
+/// 份，其余重名成员的引用留在旧名（实证：librav1e 改名后
+/// `__RNv…___rust_alloc` undefined——定义所在成员被改、重名成员的
+/// 引用没动）/ implementation: parse the archive header ourselves and
+/// patch members in place by offset. The `ar` CLI addresses members by
+/// name only — rust archives pile up duplicate `.rcgu.o` names where
+/// `ar p` always yields the first copy, leaving the other same-named
+/// members' references on the old name (empirical: after the librav1e
+/// rename `__RNv…___rust_alloc` went undefined — the defining member
+/// was renamed while duplicate-named members' references were not)
+pub(crate) fn byte_rename(
+    lib: &Path,
+    pairs: &[(&str, &str)],
+    _dir: &Path,
+) -> Result<usize, String> {
+    let map: HashMap<&[u8], &[u8]> = pairs
+        .iter()
+        .map(|(f, t)| (f.as_bytes(), t.as_bytes()))
+        .collect();
+    let mut buf = std::fs::read(lib).map_err(|e| format!("read {lib:?}: {e}"))?;
+    if buf.len() < 8 || &buf[..8] != b"!<arch>\n" {
+        return Err(format!("{lib:?}: not a standard ar archive"));
+    }
+    // NUL 分词：符号名在 strtab 里以 \x00 分隔——切成 token 流逐词查表
+    // 单趟 O(n)，且精确命中边界不会误伤子串；顺带自动跳过 `//` 长名表
+    // (\n 分隔无 \x00 token) 与成员头(≤16B 名段装不下 mangled 名)
+    // / NUL-tokenize: symbol names are \x00-delimited inside string
+    // tables — split into tokens and map each in one O(n) pass with
+    // exact-boundary hits that cannot bruise substrings; automatically
+    // skips the `//` long-name table (\n-delimited, no \x00 tokens) and
+    // member headers (the ≤16B name field can't hold mangled names)
+    fn patch_tokens(data: &mut [u8], map: &HashMap<&[u8], &[u8]>) -> bool {
+        let mut hit = false;
+        let mut i = 0;
+        while i < data.len() {
+            if data[i] == 0 {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < data.len() && data[i] != 0 {
+                i += 1;
+            }
+            if let Some(&t) = map.get(&data[start..i]) {
+                data[start..i].copy_from_slice(t);
+                hit = true;
+            }
         }
-        // ar p 直接把成员字节倒出来——不经文件系统抽提，怪成员名也安全
-        // `ar p` dumps the member bytes straight out — no filesystem
-        // extraction, so exotic member names are safe
-        let Ok(mut data) = crate::ar::member_data(lib, &m, dir) else {
-            continue;
+        hit
+    }
+    // 成员头数字段是右对齐空格填充的 ASCII 十进制 /
+    // header numeric fields are space-padded ASCII decimals
+    fn ascii_dec(b: &[u8]) -> usize {
+        b.iter()
+            .filter(|c| c.is_ascii_digit())
+            .fold(0usize, |a, c| a * 10 + (c - b'0') as usize)
+    }
+    let mut renamed = 0usize;
+    let mut pos = 8usize;
+    while pos + 60 <= buf.len() {
+        let hdr = &buf[pos..pos + 60];
+        if &hdr[58..60] != b"`\n" {
+            break;
+        }
+        let size = ascii_dec(&hdr[48..58]);
+        let raw = &hdr[0..16];
+        let mut dstart = pos + 60;
+        // BSD `#1/N`：成员名前 N 字节内联在数据区开头 /
+        // BSD `#1/N`: the member's first N bytes inline the name
+        let inline = raw.strip_prefix(b"#1/").map(ascii_dec).unwrap_or(0);
+        let name: &[u8] = if inline > 0 {
+            buf.get(dstart..dstart + inline).unwrap_or(b"")
+        } else {
+            raw
         };
-        let hit = pairs
-            .iter()
-            .any(|(f, _)| data.windows(f.len()).any(|w| w == f.as_bytes()));
-        if !hit {
-            continue;
+        // 索引/长名表成员跳过：GNU `/`、`//`、`/SYM64/`，BSD `__.SYMDEF*`
+        // （含 #1/N 内联与直填两种名式）。`/NNN` 扩展名引用是普通成
+        // 员，照常补丁 / skip index & long-name members: GNU `/`, `//`,
+        // `/SYM64/`, BSD `__.SYMDEF*` (both #1/N-inline and direct-field
+        // name forms). A `/NNN` extended-name reference is a normal
+        // member — patch its data as usual
+        let special = {
+            let nz = name.iter().position(|c| *c == 0).unwrap_or(name.len());
+            let mut end = nz;
+            while end > 0 && name[end - 1] == b' ' {
+                end -= 1;
+            }
+            let t = &name[..end];
+            t == b"/"
+                || t == b"//"
+                || t == b"/SYM64/"
+                || t == b"/SYM64"
+                || t.starts_with(b"__.SYMDEF")
+        };
+        if inline > 0 {
+            dstart += inline;
         }
-        for (from, to) in pairs {
-            debug_assert_eq!(from.len(), to.len(), "byte-rename must be equal-length");
-            data = replace_bytes(&data, from.as_bytes(), to.as_bytes());
-        }
-        let obj = tmp.join(crate::ar::member_file(&m));
-        std::fs::write(&obj, &data).map_err(|e| format!("write {obj:?}: {e}"))?;
-        let fname = crate::ar::member_file(&m);
-        // 成员名被消毒/截断时 ar r 不会替换原名——先删后加，杜绝同符号
-        // 双份成员 / when the sanitized name differs from the original,
-        // `ar r` won't replace it — delete first so no duplicate-symbol
-        // member survives
-        let _ = sys::run("ar", &["d", &lib.to_string_lossy(), &m], dir);
-        if sys::run("ar", &["r", &lib.to_string_lossy(), &fname], &tmp).unwrap_or(1) == 0 {
+        let dlen = size.saturating_sub(inline);
+        if !special
+            && dstart + dlen <= buf.len()
+            && patch_tokens(&mut buf[dstart..dstart + dlen], &map)
+        {
             renamed += 1;
         }
+        pos += 60 + size + (size & 1);
     }
-    fsx::rm_rf(&tmp);
+    std::fs::write(lib, &buf).map_err(|e| format!("write {lib:?}: {e}"))?;
     Ok(renamed)
-}
-
-/// 字节序列全量替换（等长）/ replace all occurrences of a byte sequence
-/// (equal length)
-fn replace_bytes(data: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
-    let mut out = data.to_vec();
-    let mut i = 0;
-    while i + from.len() <= out.len() {
-        if &out[i..i + from.len()] == from {
-            out[i..i + from.len()].copy_from_slice(to);
-            i += from.len();
-        } else {
-            i += 1;
-        }
-    }
-    out
 }
 
 /// nm 里是否有匹配模式行的符号（[TtWw]/_? 前缀）/ whether nm output has a
