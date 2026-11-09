@@ -32,14 +32,19 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         &[
             "-Dauto_features=disabled",
             "-Ddaemon=false",
-            // doxygen/tests 是 feature 型选项（值域 enabled/disabled/
-            // auto）——传 =false 直接判型不符出局；man/daemon 才是布尔 /
-            // doxygen and tests are feature-type options (enabled/
-            // disabled/auto) — '=false' is a type error; only 'man' and
-            // 'daemon' are booleans
-            "-Ddoxygen=disabled",
+            // v17.0 的选项型谱：doxygen/tests/man/daemon 全是布尔
+            // （=disabled 是 feature 型的写法，传它判型不符出局——HEAD
+            // 恰好相反，钉 tag 前被 HEAD 的选项表骗过一轮）；alsa/dbus/
+            // x11/glib 等 feature 型已被 auto_features=disabled 罩住 /
+            // v17.0's option-type map: doxygen/tests/man/daemon are all
+            // booleans (=disabled is the feature-type spelling and fails
+            // the type check — HEAD is the exact opposite; the HEAD
+            // option table fooled one round before the tag pin); feature
+            // options like alsa/dbus/x11/glib are already blanketed by
+            // auto_features=disabled
+            "-Ddoxygen=false",
             "-Dman=false",
-            "-Dtests=disabled",
+            "-Dtests=false",
         ],
     )
 }

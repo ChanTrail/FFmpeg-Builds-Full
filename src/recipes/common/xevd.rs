@@ -73,7 +73,9 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     // ${libdir} — -lxevd resolves to nothing
     let sub = e.prefix_win.join("lib/xevd/libxevd.a");
     let flat = e.prefix_win.join("lib/libxevd.a");
-    if sub.is_file() && !flat.is_file() {
+    // 同 xeve：必须覆盖 overlay 恢复出来的旧归档 / same as xeve:
+    // must overwrite an overlay-restored archive
+    if sub.is_file() {
         std::fs::copy(&sub, &flat).map_err(|x| format!("copy xevd.a: {x}"))?;
     }
     Ok(())

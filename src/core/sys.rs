@@ -530,6 +530,25 @@ pub fn capture(prog: &str, args: &[&str], dir: &Path) -> Result<String, String> 
     Ok(String::from_utf8_lossy(&out.stdout).replace('\r', ""))
 }
 
+/// 宽松捕获：非零退出也拿回已产出的 stdout——mac nm 撞到不可解析成员
+/// 会 exit 1 但 stdout 照常吐符号表，整批丢掉正好哑掉 dedup（实证）。仅
+/// spawn 失败才 Err；调用方按空输出自行判死 / lax capture: a non-zero
+/// exit still hands back whatever stdout was produced — mac nm exits 1
+/// on an unparseable member yet keeps printing the symbol table, and
+/// discarding it wholesale is exactly what muted the dedup (empirical).
+/// Only a spawn failure errors; callers judge death by empty output
+pub fn capture_lax(prog: &str, args: &[&str], dir: &Path) -> Result<(String, i32), String> {
+    let mut c = cmd(prog, args);
+    c.current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let out = c.output().map_err(|e| format!("spawn {prog}: {e}"))?;
+    Ok((
+        String::from_utf8_lossy(&out.stdout).replace('\r', ""),
+        out.status.code().unwrap_or(-1),
+    ))
+}
+
 /// 捕获 bash 输出 / Capture bash output
 pub fn capture_bash(script: &str, dir: &Path) -> Result<String, String> {
     let e = env();

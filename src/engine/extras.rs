@@ -903,12 +903,22 @@ fn postfix() -> Result<(), String> {
             // U); member header "x.o:" lines are single-field and drop
             // out on their own
             let defined = |p: &PathBuf| -> (HashSet<String>, usize) {
-                match sys::capture("nm", &["-g", &p.to_string_lossy()], &e.work) {
+                // capture_lax：mac nm 对部分成员 exit 1 但 stdout 仍有效
+                // ——非零码只在零输出时才算死 / capture_lax: mac nm exits
+                // 1 on some members while stdout stays valid — a non-zero
+                // code only counts as dead when output is empty
+                match sys::capture_lax("nm", &["-g", &p.to_string_lossy()], &e.work) {
                     Err(why) => {
                         log::warn(&format!("[extras] nm -g on {} failed: {why}", p.display()));
                         (HashSet::new(), 0)
                     }
-                    Ok(out) => {
+                    Ok((out, code)) => {
+                        if code != 0 && out.is_empty() {
+                            log::warn(&format!(
+                                "[extras] nm -g on {} exited {code} with no output",
+                                p.display()
+                            ));
+                        }
                         let lines = out.lines().count();
                         let set: HashSet<String> = out
                             .lines()

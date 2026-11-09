@@ -83,7 +83,12 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     fsx::rm_glob(&e.prefix_win.join("bin"), "libxeve*.dll*");
     let sub = e.prefix_win.join("lib/xeve/libxeve.a");
     let flat = e.prefix_win.join("lib/libxeve.a");
-    if sub.is_file() && !flat.is_file() {
+    // 必须覆盖：flat 位可能躺着 overlay 恢复出来的旧归档（实证：
+    // !flat 守卫曾让上古改名毒在新鲜构建旁骑了整轮）/ must
+    // overwrite: the flat slot can hold an overlay-restored archive
+    // (empirical: a !flat guard once let legacy rename poison ride a
+    // whole pass next to the fresh build)
+    if sub.is_file() {
         std::fs::copy(&sub, &flat).map_err(|x| format!("copy xeve.a: {x}"))?;
     }
     Ok(())

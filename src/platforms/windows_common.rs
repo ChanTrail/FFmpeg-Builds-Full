@@ -505,6 +505,16 @@ pub fn ffmpeg() -> Result<(), String> {
     if sys::which("llvm-windres").is_some() {
         args.push("--windres=llvm-windres".into());
     }
+    // ARM64 runner 的 bash 本身是 x64 仿真——uname/MACHTYPE 报
+    // x86_64，configure 不点 --arch 就会默认 x86_64 并因缺 nasm
+    // 直接 die（实证）/ the ARM64 runner's bash is itself emulated
+    // x64 — uname/MACHTYPE report x86_64, so without --arch
+    // configure defaults to x86_64 and dies on missing nasm
+    // (empirical)
+    if e.arch == sys::Arch::Arm64 {
+        args.push("--arch=aarch64".into());
+        args.push("--target-os=mingw32".into());
+    }
     // -lhwy 放在链接最尾巴：libjxl_cms.a 引用 __imp_hwy_*，链接器只有
     // 见到真归档才自动导入；放最后也顺带修任何 pc 顺序问题。
     // -lhwy at the very tail of the link: libjxl_cms.a references
