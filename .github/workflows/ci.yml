@@ -110,7 +110,7 @@ jobs:
   # never compile the driver themselves. --locked pins Cargo.lock so the
   # binary is bit-faithful to the checked-in manifests.
   driver:
-    name: Build driver (${{ matrix.platform }})
+    name: Build Driver (${{ matrix.platform }})
     needs: test
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -143,13 +143,13 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Build driver (release)
+      - name: Build Driver (release)
         run: cargo build --release --locked
 
-      - name: Upload driver
+      - name: Upload Driver
         uses: actions/upload-artifact@v7
         with:
-          name: driver-${{ matrix.platform }}
+          name: Driver-${{ matrix.platform }}
           path: target/release/${{ matrix.exe }}
           if-no-files-found: error
           retention-days: 1
@@ -247,13 +247,13 @@ jobs:
       # 驱动吃本趟 driver job 的 artifact——CI 测的就是这版代码，不是
       # 已发布 release / the driver is this run's own artifact — CI
       # exercises the current code, not a published release
-      - name: Download driver
+      - name: Download Driver
         uses: actions/download-artifact@v8
         with:
-          name: driver-${{ matrix.platform }}
+          name: Driver-${{ matrix.platform }}
           path: driver
 
-      - name: Make driver executable (POSIX)
+      - name: Make Driver Executable (POSIX)
         if: matrix.kind != 'windows'
         run: chmod +x driver/FFmpeg-Builds-Full
 
@@ -356,10 +356,6 @@ jobs:
           FFBUILD_CCACHE: ${{ matrix.platform == 'windows-x86_64' && '1' || '' }}
           CCACHE_DIR: ${{ runner.temp }}\ffmpeg-ccache
           CCACHE_MAXSIZE: 2G
-          # 4 vCPU 上超订 50%——MSYS2 的 fork+I/O 停顿让 -j6 常比 -j4
-          # 快 / 50% oversubscription on 4 vCPUs — MSYS2's fork+I/O
-          # stalls often make -j6 faster than -j4
-          FFBUILD_JOBS: "6"
         run: ./driver/FFmpeg-Builds-Full.exe build
 
       # Publish the deps overlay (extras libs) even when the run died; the

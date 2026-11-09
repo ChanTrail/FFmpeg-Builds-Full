@@ -102,25 +102,25 @@ jobs:
           ver="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
           [[ -n "$ver" ]] || { echo "::error::no version in Cargo.toml"; exit 1; }
           echo "version=$ver" >> "$GITHUB_OUTPUT"
-          # 驱动 tag 约定：Driver-v<版本> / driver tag convention:
+          # Driver tag 约定：Driver-v<版本> / Driver tag convention:
           # Driver-v<version>
           echo "tag=Driver-v$ver" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           if git ls-remote --tags origin "Driver-v$ver" | grep -q .; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Tag Driver-v$ver already exists — driver build skipped."
+            echo "Tag Driver-v$ver already exists — Driver build skipped."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "Version changed to $ver — will build and release."
           fi
 
-  # ── 构建驱动二进制 / Build the driver binaries ────────────────────────────
+  # ── 构建驱动二进制 / Build the Driver binaries ────────────────────────────
   # 五平台全覆盖：windows-x86_64、windows-arm64、linux-x86_64、
   # linux-arm64、macos-arm64——缺任何一个都不发 release。
   # All five platforms: windows-x86_64, windows-arm64, linux-x86_64,
   # linux-arm64, macos-arm64 — a release never ships with one missing.
   build:
-    name: Build driver (${{ matrix.platform }})
+    name: Build Driver (${{ matrix.platform }})
     needs: version
     if: needs.version.outputs.changed == 'true'
     runs-on: ${{ matrix.runner }}
@@ -161,7 +161,7 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      - name: Package driver
+      - name: Package Driver
         shell: bash
         run: |
           set -euo pipefail
@@ -179,7 +179,7 @@ jobs:
             (cd out && sha256sum -- "${{ matrix.exe }}" > "${{ matrix.exe }}.sha256")
           fi
 
-      - name: Upload driver
+      - name: Upload Driver
         uses: actions/upload-artifact@v4
         with:
           name: driver-${{ matrix.platform }}

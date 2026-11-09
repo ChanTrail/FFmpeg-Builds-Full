@@ -878,18 +878,38 @@ pub fn fixup() -> Result<(), String> {
     // and leave the generic namespace to libssh
     let zmq_a = libdir.join("libzmq.a");
     if zmq_a.is_file() && sys::which(&t.objcopy).is_some() {
-        for s in ["sha1_init", "sha1_pad", "sha1_loop", "sha1_result"] {
-            let _ = sys::run(
-                &t.objcopy,
-                &[
-                    "--redefine-sym",
-                    &format!("{s}=zmq_{s}"),
-                    &zmq_a.to_string_lossy(),
-                ],
-                &e.work,
-            );
+        // 幂等闸：objcopy/ranlib 无条件重写归档（mtime bump 会让 deps
+        // 差集每轮报脏）——先看 nm 里还有没有未改的 sha1_* 定义，改名
+        // 过的归档整段跳过 / idempotence gate: objcopy/ranlib rewrite
+        // the archive unconditionally (the mtime bump would dirty the
+        // deps delta every run) — only run while nm still shows an
+        // un-renamed sha1_* definition; an already-renamed archive
+        // skips the whole block
+        let needs = sys::capture(&t.nm, &[&zmq_a.to_string_lossy()], &e.work)
+            .unwrap_or_default()
+            .lines()
+            .any(|l| {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                f.len() >= 3
+                    && f[f.len() - 2].len() == 1
+                    && "TtDdRrBb".contains(f[f.len() - 2])
+                    && ["sha1_init", "sha1_pad", "sha1_loop", "sha1_result"]
+                        .contains(&f[f.len() - 1])
+            });
+        if needs {
+            for s in ["sha1_init", "sha1_pad", "sha1_loop", "sha1_result"] {
+                let _ = sys::run(
+                    &t.objcopy,
+                    &[
+                        "--redefine-sym",
+                        &format!("{s}=zmq_{s}"),
+                        &zmq_a.to_string_lossy(),
+                    ],
+                    &e.work,
+                );
+            }
+            let _ = sys::run(&t.ranlib, &[&zmq_a.to_string_lossy()], &e.work);
         }
-        let _ = sys::run(&t.ranlib, &[&zmq_a.to_string_lossy()], &e.work);
     }
 
     // ---- __imp_* shim 注入 / __imp_* shim injection
@@ -1676,7 +1696,18 @@ pub fn save() -> Result<(), String> {
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
     let touched: Vec<String> = fsx::find_newer(&e.prefix_win, stamp_mt);
     fsx::write(&e.work.join("deps-touched.txt"), &touched.join("\n"))?;
-    if !added.is_empty() || !touched.is_empty() {
+    // dirty 只看真实内容变化：.extras/*（status/flags/done——每轮必重写，
+    // 且 status.txt 在基线前被删、恒落 added）与 .deps-sig 是状态元文件，
+    // 不算脏——但它们必须留在 added/touched 里供发布清单打包（.ok 是下轮
+    // cached 的凭据，done/status 是 complete 判定的输入）/ dirty means
+    // real content changes only: .extras/* (status/flags/done — rewritten
+    // every run; status.txt is even deleted before the baseline so it
+    // always lands in `added`) and .deps-sig are state metadata — they
+    // stay in added/touched for the publish manifest (.ok files are next
+    // run's cached evidence; done/status feed the complete check) but
+    // must not count as dirt, or every run republishes forever
+    let is_meta = |p: &String| p.starts_with("./.extras/") || p == "./.deps-sig";
+    if added.iter().any(|p| !is_meta(p)) || touched.iter().any(|p| !is_meta(p)) {
         dirty = true;
     }
     // 反正不可能上传时跳过打包 / skip the tar when no upload can happen

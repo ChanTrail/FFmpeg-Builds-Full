@@ -338,7 +338,6 @@ pub fn packages() -> Result<(), String> {
             "perl",
             "texinfo",
             "zstd",
-            "ccache",
         ],
         3,
     )?;
@@ -361,6 +360,12 @@ pub fn packages() -> Result<(), String> {
             "windows-default-manifest",
             "llvm-openmp",
             "gdb",
+            // 原生 aarch64 ccache——不走 x86 仿真，WoA 的 rdrand 雷
+            // 对它不适用；装上备用，FFBUILD_CCACHE 翻 env 即开 /
+            // native aarch64 ccache — no x86 emulation, so the WoA
+            // rdrand landmine does not apply; installed and ready —
+            // FFBUILD_CCACHE is a pure env flip away
+            "ccache",
         ]
         .iter()
         .map(|p| format!("{}-{}", e.pkgprefix, p))
@@ -368,6 +373,19 @@ pub fn packages() -> Result<(), String> {
         _ => vec![
             format!("{}-toolchain", e.pkgprefix),
             format!("{}-gdb", e.pkgprefix),
+            // 用原生 mingw 版 ccache 而非 MSYS POSIX 版——后者是
+            // cygwin 链接二进制，在驱动 spawn 的环境里会零输出
+            // 静默退出（实证：文件在位、configure 报 C compiler
+            // test failed 且 config.log 无 stderr）；原生版没有
+            // cygwin DLL 依赖，整个失败类被连根除掉 /
+            // the native mingw ccache instead of the MSYS POSIX one —
+            // the latter is a cygwin-linked binary that exits
+            // silently with zero output under the driver's spawned
+            // env (empirical: the file was present yet configure
+            // reported C compiler test failed with no stderr in
+            // config.log); the native one has no cygwin DLL
+            // dependency and the whole failure class disappears
+            format!("{}-ccache", e.pkgprefix),
         ],
     };
     {

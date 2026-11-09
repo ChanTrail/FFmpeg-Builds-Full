@@ -110,10 +110,10 @@ jobs:
         run: |
           set -euo pipefail
           # 按 tag 精确查：/releases/latest 返回的是"Latest 徽章"的
-          # release（驱动 v* 发布也会戴徽章），tag 名 latest 才是
+          # release（Driver v* 发布也会戴徽章），tag 名 latest 才是
           # FFmpeg 首建的可靠凭证。
           # Query by tag, not the badge: /releases/latest answers
-          # "the release wearing the Latest badge" (driver v* releases
+          # "the release wearing the Latest badge" (Driver v* releases
           # wear it too) — the tag named `latest` is the only reliable
           # proof of a first complete FFmpeg build.
           if [ "${{ github.event_name }}" = "schedule" ] && ! gh api "repos/$GITHUB_REPOSITORY/releases/tags/latest" >/dev/null 2>&1; then
@@ -128,7 +128,7 @@ jobs:
       # The driver is always the newest PUBLISHED one: the dispatch
       # payload carries its tag; every other trigger resolves the latest
       # v* release (`gh release list` is newest-first).
-      - name: Resolve driver release
+      - name: Resolve Driver release
         id: drv
         env:
           GH_TOKEN: ${{ github.token }}
@@ -233,7 +233,7 @@ jobs:
       # Download this platform's binary from the newest driver release and
       # verify it; the solid-7z asset unpacks straight to the invocation
       # name FFmpeg-Builds-Full[.exe].
-      - name: Download released driver
+      - name: Download Released Driver
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -263,7 +263,7 @@ jobs:
             mv "$exe" "$tgt"
           fi
 
-      - name: Make driver executable (POSIX)
+      - name: Make Driver Executable (POSIX)
         if: matrix.kind != 'windows'
         run: chmod +x driver/FFmpeg-Builds-Full
 
@@ -361,10 +361,6 @@ jobs:
           FFBUILD_CCACHE: ${{ matrix.platform == 'windows-x86_64' && '1' || '' }}
           CCACHE_DIR: ${{ runner.temp }}\ffmpeg-ccache
           CCACHE_MAXSIZE: 2G
-          # 4 vCPU 上超订 50%——MSYS2 的 fork+I/O 停顿让 -j6 常比 -j4
-          # 快 / 50% oversubscription on 4 vCPUs — MSYS2's fork+I/O
-          # stalls often make -j6 faster than -j4
-          FFBUILD_JOBS: "6"
         run: ./driver/FFmpeg-Builds-Full.exe build
 
       # Publish the deps overlay (extras libs) even when the build died; the
@@ -672,7 +668,7 @@ jobs:
           - platform: macos-arm64
             runner: macos-latest
     steps:
-      - name: Download released driver (for `smoke`)
+      - name: Download Released Driver (for `smoke`)
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
