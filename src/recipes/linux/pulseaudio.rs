@@ -121,6 +121,20 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-Dbluez5-ofono-headset=false",
         ],
     )?;
+    // deps 缓存会把 .so 时代的旧 prefix 整体还原——libpulse.so.0 /
+    // libpulsecommon-17.0.so 等残留 meson install 只装不卸，链接器
+    // 遇 .so/.a 并存永远先选 .so，整条 NEEDED 尾巴死而复燃（实证：
+    // 配方转静态后 ldd 白名单仍抓到全串）。扫到只剩 .a / the deps
+    // cache restores the whole old prefix from the .so era — leftovers
+    // like libpulse.so.0 / libpulsecommon-17.0.so are never uninstalled
+    // by meson install, and the linker always prefers .so over .a, so
+    // the whole NEEDED tail comes back from the dead (empirical: the
+    // ldd allowlist caught the full chain even after the static
+    // conversion). Sweep until only .a remains
+    let e = crate::sys::env();
+    for dir in ["lib", "lib/pulseaudio"] {
+        fsx::rm_glob(&e.prefix_win.join(dir), "libpulse*.so*");
+    }
     // libpulse.pc 的 Libs.private 只有 -lpulsecommon-17.0——sndfile_dep
     // 是硬依赖但 .so 时代靠 NEEDED 动态传递，pkg-config --static 不会
     // 吐 -lsndfile；转 .a 后 sf_* 引用必须显式入链，否则 configure
@@ -130,7 +144,6 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     // never emits -lsndfile; once .a, the sf_* refs must join the link
     // explicitly or the configure test goes undefined and drops all of
     // libpulse
-    let e = crate::sys::env();
     let pc = e.prefix_win.join("lib/pkgconfig/libpulse.pc");
     if pc.is_file() {
         let s = fsx::read(&pc);

@@ -180,6 +180,31 @@ pub fn env() -> &'static Env {
     G.get().expect("env not initialised")
 }
 
+/// 读目录型环境变量：空串当作未设；相对路径落到进程 cwd 上——传给
+/// `current_dir(其它目录)` 的子进程参数必须是绝对路径，否则相对串在
+/// 子进程的工作目录下查无此目录（实证：CI 的 `FFBUILD_DIST: dist`
+/// 让 p7zip 在 pkgroot 里找 dist/ 报 cannot open file）/ read a
+/// directory env var: an empty string counts as unset, and a relative
+/// value resolves against the process cwd — an argument handed to a
+/// child whose current_dir sits elsewhere must be absolute, or the
+/// relative string finds no such directory there (empirical: CI's
+/// `FFBUILD_DIST: dist` sent p7zip hunting dist/ under pkgroot and it
+/// reported 'cannot open file')
+pub fn env_dir(var: &str, default: PathBuf) -> PathBuf {
+    std::env::var(var)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .map(|p| {
+            if p.is_absolute() {
+                p
+            } else {
+                std::env::current_dir().unwrap_or_default().join(p)
+            }
+        })
+        .unwrap_or(default)
+}
+
 /// 系统 pkg-config 的编译期默认搜索路径——读 `pkg-config --variable
 /// pc_path`，跨发行版/架构都正确（自动覆盖 multiarch 目录）。进程级
 /// 缓存一次探测；查不到退化为常见兜底 / the system pkg-config

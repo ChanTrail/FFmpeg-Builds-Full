@@ -56,16 +56,8 @@ pub fn init_env(arch: Arch) -> Result<(), String> {
     }
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let prefix = prefix_dir(arch);
-    let work = std::env::var("FFBUILD_WORK")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| work_root(arch));
-    let dist = std::env::var("FFBUILD_DIST")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| repo_root.join("artifacts"));
+    let work = sys::env_dir("FFBUILD_WORK", work_root(arch));
+    let dist = sys::env_dir("FFBUILD_DIST", repo_root.join("artifacts"));
     let jobs = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);

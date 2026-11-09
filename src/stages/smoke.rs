@@ -213,6 +213,26 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
             .map(|s| s.code().unwrap_or(-1))
             .unwrap_or(1);
         println!("encode test: {enc} retried with AOM_SIMD_CAPS_MASK=0 -> exit {drc}");
+        // 单线程诊断：enc_init 里按核数配 worker/线程资源——高核数
+        // 机器上 av1 的 >64 逻辑核路径（processor groups）有崩溃先例；
+        // -threads 1 过即 MT 分配是死因，仍崩则锁定纯 init 路径 /
+        // single-thread diagnostic: enc_init sizes workers/thread
+        // resources by core count — av1 has a >64-logical-core crash
+        // precedent (processor groups); a -threads 1 pass fingers MT
+        // allocation, a continued crash pins pure init
+        let mut targs: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        // args 里 -c:v <enc> 前插 -threads 1 / splice -threads 1 before
+        // -c:v <enc>
+        if let Some(i) = targs.iter().position(|s| s == "-c:v") {
+            targs.splice(i..i, ["-threads".into(), "1".into()]);
+            let trc = sys::run(
+                &fm,
+                &targs.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                bin,
+            )
+            .unwrap_or(1);
+            println!("encode test: {enc} retried with -threads 1 -> exit {trc}");
+        }
         // 崩溃（132=SIGILL，139=SIGSEGV）且无输出时：PATH 上有 gdb 时在
         // gdb 下重跑抓回溯。打包后的 $FFMPEG strip 过——FFMPEG_GDB 指
         // 未剥离副本 / on a crash with no output, rerun under gdb when one
@@ -244,13 +264,18 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
                     "-ex",
                     "info threads",
                     "-ex",
-                    "bt 30",
-                    "-ex",
-                    "thread apply all bt 30",
-                    "-ex",
                     "info registers",
                     "-ex",
                     "info sharedlibrary",
+                    // bt 压轴：控制台只打尾部 50 行——把帧序列放最后，
+                    // 否则尾窗被 info sharedlibrary 的 DLL 表整个占掉
+                    // / bt goes last: the console shows only the final
+                    // 50 lines — frames must sit at the tail or the DLL
+                    // table of info sharedlibrary fills the window
+                    "-ex",
+                    "thread apply all bt 30",
+                    "-ex",
+                    "bt 30",
                     "-ex",
                     "quit",
                     "--args",

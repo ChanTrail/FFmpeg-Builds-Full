@@ -507,7 +507,7 @@ jobs:
           msys="$(cygpath -u "$FFBUILD_MSYS2")"
           bash "$ws/.github/scripts/collect-logs.sh" \
             "$ws/logs" "$ws/ffmpeg-${{ matrix.platform }}" "$msys/${{ matrix.msysdir }}/.extras" \
-            "ffmpeg-${{ matrix.platform }}"
+            "ffmpeg-${{ matrix.platform }}" "$ws/dist"
 
       - name: Upload build logs (Windows)
         if: always() && matrix.kind == 'windows'
@@ -526,7 +526,7 @@ jobs:
           # world-readable — the runner user collects them directly
           bash "$GITHUB_WORKSPACE/.github/scripts/collect-logs.sh" \
             "$GITHUB_WORKSPACE/logs" /ffmpeg-${{ matrix.platform }} /opt/ffbuild/.extras \
-            "ffmpeg-${{ matrix.platform }}"
+            "ffmpeg-${{ matrix.platform }}" "$GITHUB_WORKSPACE/dist"
 
       - name: Upload build logs (Linux)
         if: always() && matrix.kind == 'linux'
@@ -544,7 +544,7 @@ jobs:
             "$GITHUB_WORKSPACE/logs" \
             "$RUNNER_TEMP/ffmpeg-${{ matrix.platform }}" \
             "$RUNNER_TEMP/ffmpeg-${{ matrix.platform }}-workspace/.extras" \
-            "ffmpeg-${{ matrix.platform }}"
+            "ffmpeg-${{ matrix.platform }}" "$GITHUB_WORKSPACE/dist"
 
       - name: Upload build logs (macOS)
         if: always() && matrix.kind == 'macos'

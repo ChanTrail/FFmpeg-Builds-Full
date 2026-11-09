@@ -921,6 +921,92 @@ fn macho_export_shim_defs(lib: &Path) -> Result<usize, String> {
     Ok(flipped)
 }
 
+/// 枚举 ar 归档全部成员 Mach-O 符号表里的外部定义名（N_EXT 置位 ∧
+/// N_TYPE≠N_UNDF）。自解析替代 `nm -g`——实证 mac nm 在 4000+ 成员的
+/// librsvg-2.a 上漏报：真实共享外部定义 933 个它只吐了 376，dedup 的
+/// shared 集被腰斩，ffmpeg 终链 894 个 duplicate / enumerate external
+/// definition names (N_EXT set ∧ N_TYPE≠N_UNDF) across every member's
+/// Mach-O symtab in an ar archive. Self-parsing replaces `nm -g` —
+/// empirically mac nm under-reports on the 4000+-member librsvg-2.a:
+/// the true shared external-def set is 933 while it emitted only 376,
+/// which halved dedup's `shared` set and left 894 duplicates at the
+/// final ffmpeg link
+fn macho_def_names(lib: &Path) -> HashSet<String> {
+    let Ok(buf) = std::fs::read(lib) else {
+        return HashSet::new();
+    };
+    if buf.len() < 8 || &buf[..8] != b"!<arch>\n" {
+        return HashSet::new();
+    }
+    fn ascii_dec(b: &[u8]) -> usize {
+        b.iter()
+            .filter(|c| c.is_ascii_digit())
+            .fold(0usize, |a, c| a * 10 + (c - b'0') as usize)
+    }
+    let mut out = HashSet::new();
+    let mut pos = 8usize;
+    while pos + 60 <= buf.len() {
+        let hdr = &buf[pos..pos + 60];
+        if &hdr[58..60] != b"`\n" {
+            break;
+        }
+        let size = ascii_dec(&hdr[48..58]);
+        let inline = hdr[0..16].strip_prefix(b"#1/").map(ascii_dec).unwrap_or(0);
+        let dstart = pos + 60 + inline;
+        let dlen = size.saturating_sub(inline);
+        pos += 60 + size + (size & 1);
+        let Some(data) = buf.get(dstart..dstart + dlen) else {
+            continue;
+        };
+        // 只认 64 位小端 Mach-O / 64-bit LE Mach-O only
+        if data.len() < 32 || data[..4] != [0xcf, 0xfa, 0xed, 0xfe] {
+            continue;
+        }
+        let ncmds = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
+        let mut lc = 32usize;
+        let (mut symoff, mut nsyms, mut stroff, mut strsize) = (0usize, 0usize, 0usize, 0usize);
+        for _ in 0..ncmds {
+            if lc + 8 > data.len() {
+                break;
+            }
+            let cmd = u32::from_le_bytes(data[lc..lc + 4].try_into().unwrap());
+            let csz = u32::from_le_bytes(data[lc + 4..lc + 8].try_into().unwrap()) as usize;
+            if cmd == 0x2 && lc + 24 <= data.len() {
+                // LC_SYMTAB / LC_SYMTAB
+                symoff = u32::from_le_bytes(data[lc + 8..lc + 12].try_into().unwrap()) as usize;
+                nsyms = u32::from_le_bytes(data[lc + 12..lc + 16].try_into().unwrap()) as usize;
+                stroff = u32::from_le_bytes(data[lc + 16..lc + 20].try_into().unwrap()) as usize;
+                strsize = u32::from_le_bytes(data[lc + 20..lc + 24].try_into().unwrap()) as usize;
+            }
+            lc = lc.saturating_add(csz.max(8));
+        }
+        if nsyms == 0 || symoff + nsyms * 16 > data.len() || stroff + strsize > data.len() {
+            continue;
+        }
+        for i in 0..nsyms {
+            let n = symoff + i * 16;
+            let strx = u32::from_le_bytes(data[n..n + 4].try_into().unwrap()) as usize;
+            let ntype = data[n + 4];
+            if strx == 0 || strx >= strsize {
+                continue;
+            }
+            if ntype & 0xe0 != 0 || ntype & 0x10 != 0 {
+                continue; // N_STAB / N_PEXT 不参与 / skip stab & private-extern
+            }
+            if ntype & 0x01 == 0 || ntype & 0x0e == 0 {
+                continue; // 只要外部且已定义 / extern ∧ defined only
+            }
+            let s = stroff + strx;
+            let e = match data[s..stroff + strsize].iter().position(|c| *c == 0) {
+                Some(k) => s + k,
+                None => continue,
+            };
+            out.insert(String::from_utf8_lossy(&data[s..e]).into_owned());
+        }
+    }
+    out
+}
+
 /// nm 里是否有匹配模式行的符号（[TtWw]/_? 前缀）/ whether nm output has a
 /// defined/weak symbol matching the name (with optional _ prefix)
 fn nm_has(lib: &Path, sym: &str, dir: &Path) -> bool {
@@ -1034,9 +1120,9 @@ fn postfix() -> Result<(), String> {
     // -multiply_defined 打成 obsolete 直接忽略（实证：ffmpeg_g/ffplay_g
     // 链接 297 个 duplicate symbols）。两对：librav1e∩librsvg-2 嵌同一
     // rustc 的 std/alloc 单态化对象；libxevd∩libxeve 共享 mc/recon 源。
-    // nmedit -R 把后者归档里的交集符号本地化——本地符号不参与链间
-    // 符号解析，归档内引用仍指向自身副本，外部引用则由另一归档的同码
-    // 定义满足（与 windows 的 redefine_sym 同效，Mach-O 等价物）/
+    // byte_rename 把 b 册里的交集符号等长改名（_…→z…）——引用与定义
+    // 同步迁移，b 册自洽且与 a 册零碰撞（与 windows 的 redefine_sym
+    // 同效，Mach-O 等价物）/
     // macOS same-name same-code collisions can only be cured by archive
     // surgery — ld64 long ago declared -multiply_defined obsolete and
     // ignores it (empirical: 297 duplicate symbols at the ffmpeg_g /
@@ -1076,76 +1162,32 @@ fn postfix() -> Result<(), String> {
             let (pa, pb) = (libdir.join(a), libdir.join(b));
             if !(pa.is_file() && pb.is_file()) {
                 log::log(&format!(
-                    "[extras] nmedit pair {a}∩{b}: an archive is absent; skipped"
+                    "[extras] dedup pair {a}∩{b}: an archive is absent; skipped"
                 ));
                 continue;
             }
-            // `nm -g`：只列全局符号。BSD nm（macOS）不认 -P，GNU 与 BSD
-            // 的默认输出同为 "addr 类型 名" 三段式、未定义 "U 名" 两段式，
-            // 故解析按段数判别：≥3 段取末段为名、倒数第二段单字母大写即
-            // 全局定义（U 除外），成员头行 "x.o:" 单字段天然出局 /
-            // `nm -g`: globals only. BSD nm (macOS) rejects -P; GNU and
-            // BSD default output alike is "addr TYPE name" triples for
-            // defined and "U name" pairs for undefined, so parse by field
-            // count: ≥3 fields → last is the name, second-to-last a
-            // single uppercase letter marks a global definition (except
-            // U); member header "x.o:" lines are single-field and drop
-            // out on their own
-            let defined = |p: &PathBuf| -> (HashSet<String>, usize) {
-                // capture_lax：mac nm 对部分成员 exit 1 但 stdout 仍有效
-                // ——非零码只在零输出时才算死 / capture_lax: mac nm exits
-                // 1 on some members while stdout stays valid — a non-zero
-                // code only counts as dead when output is empty
-                match sys::capture_lax("nm", &["-g", &p.to_string_lossy()], &e.work) {
-                    Err(why) => {
-                        log::warn(&format!("[extras] nm -g on {} failed: {why}", p.display()));
-                        (HashSet::new(), 0)
-                    }
-                    Ok((out, code)) => {
-                        if code != 0 && out.is_empty() {
-                            log::warn(&format!(
-                                "[extras] nm -g on {} exited {code} with no output",
-                                p.display()
-                            ));
-                        }
-                        let lines = out.lines().count();
-                        let set: HashSet<String> = out
-                            .lines()
-                            .filter_map(|l| {
-                                let f: Vec<&str> = l.split_whitespace().collect();
-                                if f.len() >= 3
-                                    && f[f.len() - 2].len() == 1
-                                    && f[f.len() - 2]
-                                        .chars()
-                                        .next()
-                                        .is_some_and(|c| c.is_ascii_uppercase() && c != 'U')
-                                {
-                                    Some(f[f.len() - 1].to_string())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-                        (set, lines)
-                    }
-                }
-            };
-            let (sa, na) = defined(&pa);
-            let (sb, nb) = defined(&pb);
+            // 外部定义集自解析枚举（macho_def_names）：`nm -g` 在
+            // 4000+ 成员的 librsvg-2.a 上漏报——真实 shared 933 它只
+            // 给 376，dedup 腰斩后 ffmpeg 终链 894 个 duplicate（实证）
+            // / external-def sets come from self-parsed enumeration
+            // (macho_def_names): `nm -g` under-reports on the 4000+-
+            // member librsvg-2.a — 933 truly shared vs 376 emitted,
+            // leaving 894 duplicates at the final ffmpeg link
+            // (empirical)
+            let sa = macho_def_names(&pa);
+            let sb = macho_def_names(&pb);
             if sa.is_empty() || sb.is_empty() {
                 log::log(&format!(
-                    "[extras] nmedit pair {a}∩{b}: defined sets {} vs {} ({} vs {} nm lines); skipped",
+                    "[extras] dedup pair {a}∩{b}: defined sets {} vs {}; skipped",
                     sa.len(),
-                    sb.len(),
-                    na,
-                    nb
+                    sb.len()
                 ));
                 continue;
             }
             let shared: Vec<String> = sa.intersection(&sb).cloned().collect();
             if shared.is_empty() {
                 log::log(&format!(
-                    "[extras] nmedit pair {a}∩{b}: no shared symbols; skipped"
+                    "[extras] dedup pair {a}∩{b}: no shared symbols; skipped"
                 ));
                 continue;
             }
