@@ -500,7 +500,17 @@ pub fn ffmpeg() -> Result<(), String> {
         // definition; windows dedupes by renaming in fixup, here GNU
         // ld's tolerant switch is the umbrella
         "--extra-ldflags=-static-libgcc -static-libstdc++ -Wl,--allow-multiple-definition".into(),
-        format!("--extra-libs={gomp} -lm -lpthread -lz"),
+        // -lstdc++ 放 extra-libs 尾部：check_lib 型链测（openh264 除外
+        // 全走 .pc）不查 .pc，C++ 归档的 operator delete/vtable 引用只有
+        // 全局尾巴能兜底——openal/裸 -l 检查全靠它（实证：libjxl 修复后
+        // configure 走通，才暴露出 openal -lopenal 检查缺 C++ 运行时）/
+        // -lstdc++ sits in extra-libs' tail: check_lib-style link probes
+        // (every pkg-config check except openh264) never consult a .pc,
+        // and a C++ archive's operator delete/vtable references only a
+        // global tail can satisfy — the bare -lopenal check depends on
+        // it entirely (empirical: once libjxl stopped aborting configure,
+        // the -lopenal check surfaced missing its C++ runtime)
+        format!("--extra-libs={gomp} -lm -lpthread -lz -lstdc++"),
         "--disable-stripping".into(),
     ]);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();

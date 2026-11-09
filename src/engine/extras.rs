@@ -16,6 +16,7 @@ use crate::fsx;
 use crate::log;
 use crate::pkgcfg;
 use crate::sys;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -833,9 +834,22 @@ fn postfix() -> Result<(), String> {
         // std::thread on linux)
         "libjxl",
         "libjxl_threads",
+        // svm.cpp 拉进 vtable/__gxx_personality 全套 / svm.cpp drags in
+        // vtable and __gxx_personality references
+        "libvmaf",
+        // 整个 codec 是 C++（SceneChangeDetection/VAACalculation…）/
+        // the whole codec is C++ (SceneChangeDetection, VAACalculation...)
+        "openh264",
     ] {
         libs_private_tr(pc, &[&e.cxxrt]);
     }
+    // libsrt 按配方编了 cryspr-mbedtls——.pc 只字不提 crypto 归档 /
+    // libsrt compiles cryspr-mbedtls per the recipe — its .pc never
+    // mentions the crypto archives
+    libs_private_tr(
+        "srt",
+        &["-lmbedtls", "-lmbedx509", "-lmbedcrypto", &e.cxxrt],
+    );
     libs_private_tr("twolame", &["-lm"]);
     // soxr WITH_OPENMP 拖入 omp_* 尾巴。只在 linux 修 .pc：windows 的
     // pacman soxr.pc 本就带 -lgomp，而 FFmpeg 对 libsoxr 是裸 -lsoxr
@@ -848,6 +862,77 @@ fn postfix() -> Result<(), String> {
     // gomp probe); macOS's own soxr recipe disables OpenMP
     if e.os == sys::Os::Linux {
         libs_private_tr("soxr", &["-lgomp", "-lm"]);
+    }
+
+    // macOS 的"同名同码"撞名只能靠归档手术——ld64 早把
+    // -multiply_defined 打成 obsolete 直接忽略（实证：ffmpeg_g/ffplay_g
+    // 链接 297 个 duplicate symbols）。两对：librav1e∩librsvg-2 嵌同一
+    // rustc 的 std/alloc 单态化对象；libxevd∩libxeve 共享 mc/recon 源。
+    // nmedit -R 把后者归档里的交集符号本地化——本地符号不参与链间
+    // 符号解析，归档内引用仍指向自身副本，外部引用则由另一归档的同码
+    // 定义满足（与 windows 的 redefine_sym 同效，Mach-O 等价物）/
+    // macOS same-name same-code collisions can only be cured by archive
+    // surgery — ld64 long ago declared -multiply_defined obsolete and
+    // ignores it (empirical: 297 duplicate symbols at the ffmpeg_g /
+    // ffplay_g links). Two pairs: librav1e ∩ librsvg-2 embed one rustc's
+    // std/alloc monomorphs; libxevd ∩ libxeve share mc/recon sources.
+    // `nmedit -R` localizes the intersecting symbols in the second
+    // archive — a local symbol escapes cross-archive resolution,
+    // intra-archive references keep their own copy, and external
+    // references resolve against the other archive's identical
+    // definitions (same effect as windows' redefine_sym; the Mach-O
+    // equivalent)
+    if e.os == sys::Os::Mac {
+        for (a, b) in [("libxevd.a", "libxeve.a"), ("librsvg-2.a", "librav1e.a")] {
+            let (pa, pb) = (libdir.join(a), libdir.join(b));
+            if !(pa.is_file() && pb.is_file()) {
+                continue;
+            }
+            // nm 列全部符号：归档成员行 "…(m.o):" 仅一字段被过滤；
+            // 取 "地址 类型字母 名" 三段式、类型字母大写 = 全局定义
+            // (Mach-O 名带 _ 前缀，nmedit 照单全收) / nm lists all
+            // symbols: archive member headers "...(m.o):" carry a single
+            // field and drop out; take the "addr TYPE name" triples
+            // whose type letter is uppercase = global definition
+            // (Mach-O names keep their _ prefix, nmedit takes them
+            // verbatim)
+            let defined = |p: &PathBuf| -> HashSet<String> {
+                sys::capture("nm", &[&p.to_string_lossy()], &e.work)
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|l| {
+                        let f: Vec<&str> = l.split_whitespace().collect();
+                        if f.len() >= 2
+                            && f[f.len() - 2].len() == 1
+                            && f[f.len() - 2]
+                                .chars()
+                                .next()
+                                .is_some_and(|c| c.is_ascii_uppercase())
+                        {
+                            Some(f[f.len() - 1].to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+            let shared: Vec<String> = defined(&pa).intersection(&defined(&pb)).cloned().collect();
+            if shared.is_empty() {
+                continue;
+            }
+            let list = e.work.join(format!("{b}.nmedit-list"));
+            fsx::write(&list, &shared.join("\n"))?;
+            sys::run_ok(
+                "nmedit",
+                &["-R", &list.to_string_lossy(), &pb.to_string_lossy()],
+                &e.work,
+            )?;
+            let _ = sys::run(&e.ranlib, &[&pb.to_string_lossy()], &e.work);
+            log::log(&format!(
+                "[extras] localized {} {a}-shared symbol(s) in {b} (nmedit -R)",
+                shared.len()
+            ));
+        }
     }
 
     // GnuTLS 的 ARM AES 汇编与 OpenSSL aesv8-armx 同源——导出 aes_v8_* 名

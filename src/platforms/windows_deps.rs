@@ -1128,23 +1128,32 @@ pub fn fixup() -> Result<(), String> {
         }
     }
 
-    // libxevd 与 libxeve 共享 mc/recon 源码——padding/prefetch_for_mc/
-    // processDMVR 等同名非 static 符号同链必 multiple definition（实证：
-    // x86_64 ffmpeg_g 链接全灭）。交集中的每个符号在 libxeve.a 里加
-    // xeve_ 前缀改名——成员内引用一致换名，xeve_* API 不在交集不受影响；
-    // linux 走 ld --allow-multiple-definition，mac 走
-    // -multiply_defined,suppress / libxevd and libxeve share mc/recon
-    // source — same-named non-static symbols (padding, prefetch_for_mc,
-    // processDMVR, ...) are a guaranteed multiple definition in one
-    // link (empirical: the x86_64 ffmpeg_g link died on them). Rename
-    // every shared symbol inside libxeve.a with an xeve_ prefix —
-    // member-internal references are renamed consistently, and the
-    // xeve_* API is not in the intersection so callers stay intact;
-    // linux rides ld --allow-multiple-definition and mac
-    // -multiply_defined,suppress
-    let xevd = libdir.join("libxevd.a");
-    let xeve = libdir.join("libxeve.a");
-    if xevd.is_file() && xeve.is_file() {
+    // 共享源码/共享运行时两类"同名同码"撞名对：libxevd∩libxeve 共用
+    // mc/recon 源（padding/prefetch_for_mc…，实证 x86_64 ffmpeg_g 全灭），
+    // librsvg-2∩librav1e 嵌同一 rustc 的 std/alloc 单态化。交集符号在
+    // 第二个归档里加后缀改名——后缀方案刻意不借任一库的 API 前缀
+    // （实证：xeve_ 前缀撞上了 libxeve 自有的 xeve_alf_create，改名产物
+    // 反而自相重复）；目标名已存在就跳过并告警，改名产物绝不能撞上
+    // 现存符号 / two same-name same-code collision pairs from shared
+    // sources / shared runtimes: libxevd∩libxeve share mc/recon sources
+    // (padding, prefetch_for_mc... — empirically the x86_64 ffmpeg_g
+    // link died on them) and librsvg-2∩librav1e embed one rustc's
+    // std/alloc monomorphs. Intersection symbols get a suffix rename
+    // inside the second archive — a suffix borrows neither library's
+    // API prefix (empirical: an xeve_ prefix collided with libxeve's
+    // own xeve_alf_create and the rename product duplicated itself); a
+    // target name that already exists is skipped with a warning so a
+    // rename can never collide with a live symbol. linux rides
+    // ld --allow-multiple-definition, mac the nmedit pass in
+    // extras::postfix
+    for (a, b, suffix) in [
+        ("libxevd.a", "libxeve.a", "_xevdshr"),
+        ("librsvg-2.a", "librav1e.a", "_rsvgshr"),
+    ] {
+        let (pa, pb) = (libdir.join(a), libdir.join(b));
+        if !(pa.is_file() && pb.is_file()) {
+            continue;
+        }
         let defined = |p: &Path| -> HashSet<String> {
             sys::capture(
                 &t.nm,
@@ -1155,31 +1164,46 @@ pub fn fixup() -> Result<(), String> {
             .lines()
             .filter_map(|l| {
                 let f: Vec<&str> = l.split_whitespace().collect();
-                if f.len() >= 3 {
-                    Some(f[2].to_string())
+                if f.len() >= 2
+                    && f[f.len() - 2].len() == 1
+                    && f[f.len() - 2]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_uppercase())
+                {
+                    Some(f[f.len() - 1].to_string())
                 } else {
                     None
                 }
             })
             .collect()
         };
-        let shared: Vec<String> = defined(&xevd)
-            .intersection(&defined(&xeve))
-            .cloned()
-            .collect();
+        let (da, db) = (defined(&pa), defined(&pb));
+        let shared: Vec<String> = da.intersection(&db).cloned().collect();
         let mut rc = 0u32;
         for s in shared {
-            if redefine_sym(&xeve, &s, &format!("xeve_{s}"), &t) {
+            let tgt = format!("{s}{suffix}");
+            // 哨兵：目标名在任何一册已定义就跳过——改名撞名是上次事故的
+            // 直接死因 / sentinel: skip when the target name is already
+            // defined in either archive — a rename hitting a live name
+            // is exactly what killed the last attempt
+            if da.contains(&tgt) || db.contains(&tgt) {
+                log::warn(&format!(
+                    "dedup: skip '{s}' in {b} — target '{tgt}' already defined"
+                ));
+                continue;
+            }
+            if redefine_sym(&pb, &s, &tgt, &t) {
                 rc += 1;
             } else {
                 log::warn(&format!(
-                    "could not rename '{s}' in libxeve.a — final link may collide"
+                    "could not rename '{s}' in {b} — final link may collide"
                 ));
             }
         }
         if rc > 0 {
             log::log(&format!(
-                "renamed {rc} xevd-shared symbol(s) in libxeve.a (xeve_*)"
+                "renamed {rc} {a}-shared symbol(s) in {b} (*{suffix})"
             ));
         }
     }

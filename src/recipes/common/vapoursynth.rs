@@ -106,6 +106,23 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         ],
         &ctx.wd,
     )?;
+    // FFmpeg 探的是 <vapoursynth/VSScript4.h>——上游"python 包"布局可能
+    // 干脆不装 C 头（实证：上面的 include/. 拷完该头仍缺）。源码树
+    // include/ 自带全套 API 头，补拷成 include/vapoursynth/ 兜底 /
+    // FFmpeg probes <vapoursynth/VSScript4.h> — upstream's
+    // "python package" layout may skip the C headers entirely
+    // (empirical: the header was still absent after the include/. copy
+    // above). The source tree's include/ ships the full API header set;
+    // land them under include/vapoursynth/ as a guaranteed fallback
+    let vsh = e.prefix_win.join("include/vapoursynth");
+    crate::fsx::install_d(&vsh)?;
+    for h in crate::fsx::walk(&src.join("include")) {
+        if h.extension().and_then(|x| x.to_str()) == Some("h")
+            && let Some(name) = h.file_name()
+        {
+            crate::fsx::install(&h, &vsh.join(name))?;
+        }
+    }
     sys::run_ok(
         "cp",
         &[

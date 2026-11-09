@@ -80,6 +80,10 @@
 # X11: vdpau's meson probes x11+xext; libxcb rides in via libx11-dev
 - libx11-dev
 - libxext-dev
+# FFmpeg 的 --enable-xlib 合成功能要 x11+xext+xv 三子检查全过——xv.pc
+# 与 Xvlib.h 只在此包 / FFmpeg's --enable-xlib composite needs all
+# three sub-checks (x11+xext+xv) — xv.pc and Xvlib.h live only here
+- libxv-dev
 # xcbgrab 的扩展模块——xcb.pc 随 libx11-dev 到场，这三个 .pc 在独立的
 # -dev 包里，缺了 features 探针全降级 / xcbgrab's extension modules —
 # xcb.pc rides in with libx11-dev, but these three .pc files live in

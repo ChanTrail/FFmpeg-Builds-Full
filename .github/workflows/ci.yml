@@ -1,19 +1,22 @@
 # Rust 驱动程序（FFmpeg-Builds-Full）的 CI：所有分支 push 与
 # PR→master 先跑五个平台的 fmt/check/clippy/test；全绿后各平台现编
-# release 驱动 → 按 build.yml 的 runner 布局做 FFmpeg 构建准备——
-# 环境就位 + packages + extras（止于 [extras] summary）→ save-deps
-# 把依赖前缀快照发回 "deps" release。FFmpeg 本体构建与发布在
-# build.yml（它监听本 workflow 在非 master 分支的成功完成，链出
+# release 驱动 → 按 build.yml 的 runner 布局做完整 FFmpeg 构建尝试
+# （build 子命令全链：packages + extras + ffmpeg + package，产物进
+# workflow artifact 供检视）→ save-deps 把依赖前缀快照发回 "deps"
+# release。只尝试构建，FFmpeg 产物在本 workflow 一律不发布——发布
+# 在 build.yml（它监听本 workflow 在非 master 分支的成功完成，链出
 # pre-release 构建；release.yml 则在 master 上接棒做驱动发布）。
 # CI for the Rust driver (FFmpeg-Builds-Full): every branch push and
 # PRs to master first run fmt/check/clippy/test on all five platforms;
 # once all green, each platform builds the release driver in place and
-# finishes the FFmpeg build preparation on build.yml's runner layout —
-# env setup + packages + extras (stopping at the [extras] summary) ->
-# save-deps publishing the prefix snapshot back to the "deps" release.
-# The FFmpeg build/release itself lives in build.yml (it listens for
-# this workflow succeeding on non-master branches for pre-release
-# builds; release.yml chains on master for driver releases).
+# attempts a COMPLETE FFmpeg build on build.yml's runner layout (the
+# full `build` subcommand: packages + extras + ffmpeg + package, with
+# the product riding a workflow artifact for inspection) -> save-deps
+# publishing the prefix snapshot back to the "deps" release. The FFmpeg
+# product is never published from this workflow — publishing lives in
+# build.yml (it listens for this workflow succeeding on non-master
+# branches for pre-release builds; release.yml chains on master for
+# driver releases).
 name: CI
 
 on:
@@ -147,20 +150,44 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # ── FFmpeg 构建准备 / FFmpeg build preparation ────────────────────────
-  # 与 build.yml 的 build job 同一 runner 布局、同一环境安装，但驱动只
-  # 走到 [extras] summary（packages + extras 两个子命令——build 子命令
-  # 的前半），然后 save-deps 把前缀快照发回 "deps" release。ffmpeg /
-  # package 阶段留给 build.yml；本 job 的产物就是预热好的 deps 缓存。
-  # The same runner layout and env installation as build.yml's build job,
-  # but the driver only walks to the [extras] summary (the packages +
-  # extras subcommands — the front half of `build`), then save-deps
-  # publishes the prefix snapshot back to the "deps" release. The
-  # ffmpeg/package stages stay in build.yml; this job's product is a
-  # warmed deps cache.
-  deps:
-    name: Deps ${{ matrix.platform }}
-    needs: driver
+  # ── FFmpeg 源码解析 / FFmpeg source resolution ───────────────────────
+  # 五条腿构建同一份 upstream commit——build 阶段每条腿自己 clone 的话，
+  # 上游在跑期间前进会造成跨平台源码漂移，诊断对不上。resolve 一次由
+  # FFMPEG_SHA 喂给所有腿（build.yml 的 prepare job 同款）。
+  # All five legs build the same upstream commit — if every leg cloned
+  # for itself, upstream moving mid-run would skew sources across
+  # platforms and corrupt diagnosis. Resolve once and feed every leg
+  # via FFMPEG_SHA (same as build.yml's prepare job).
+  prepare:
+    name: Resolve FFmpeg master
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.up.outputs.sha }}
+    steps:
+      - name: Resolve FFmpeg master
+        id: up
+        run: |
+          set -euo pipefail
+          sha="$(git ls-remote https://github.com/FFmpeg/FFmpeg.git refs/heads/master | cut -f1)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve FFmpeg master (got '$sha')"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Building FFmpeg commit $sha"
+
+  # ── FFmpeg 构建尝试 / FFmpeg build attempt ───────────────────────────
+  # 与 build.yml 的 build job 同一 runner 布局、同一环境安装、同一
+  # build 子命令（packages + extras + ffmpeg + package 全链）——产物
+  # 随 workflow artifact 留档供检视，save-deps 照旧把前缀快照发回
+  # "deps" release；只不发布 FFmpeg release（那是 build.yml 的地盘）。
+  # The same runner layout, env installation and `build` subcommand as
+  # build.yml's build job (the full packages + extras + ffmpeg + package
+  # chain) — the product rides a workflow artifact for inspection and
+  # save-deps still publishes the prefix snapshot back to the "deps"
+  # release; the only thing skipped is the FFmpeg release itself
+  # (that's build.yml's turf).
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: [driver, prepare]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     permissions:
@@ -192,6 +219,10 @@ jobs:
             runner: macos-latest
             kind: macos
     env:
+      # 钉住的 upstream commit：五条腿构建同一份源码（prepare job 解析
+      # 一次）/ the pinned upstream commit: all five legs build the same
+      # source (resolved once by the prepare job)
+      FFMPEG_SHA: ${{ needs.prepare.outputs.sha }}
       FFBUILD_DIST: dist
       # GitLab 源解析用的 PAT：secrets 优先、仓库变量兜底；都不设则匿名
       # （公共项目可查但限流低）。自托管实例用同一 token。
@@ -271,7 +302,12 @@ jobs:
           restore-keys: |
             env-${{ matrix.platform }}-
 
-      - name: Install packages (Windows, MSYS2 ${{ matrix.msystem || '' }})
+      # 全链构建：packages → extras(恢复+配方) → ffmpeg → package。
+      # MSYS_ENV_RESTORED 照旧传给驱动 packages() 的环境完成戳校验。
+      # The full chain: packages -> extras (restore+recipes) -> ffmpeg ->
+      # package. MSYS_ENV_RESTORED still feeds the driver's packages()
+      # env-stamp check.
+      - name: Build FFmpeg (Windows, MSYS2 ${{ matrix.msystem || '' }})
         if: matrix.kind == 'windows'
         env:
           FFBUILD_WORK: ${{ github.workspace }}/ffmpeg-${{ matrix.platform }}
@@ -281,20 +317,7 @@ jobs:
           # The driver's packages() uses it to decide whether the env
           # completion stamp has to be verified.
           MSYS_ENV_RESTORED: ${{ steps.envcache.outputs.cache-hit }}
-        run: ./driver/FFmpeg-Builds-Full.exe packages
-
-      # 第三方库前缀：restore 上轮 deps → 配方表 → [extras] summary。
-      # 本步超时给 save-deps 留出发 partial 快照的时间窗。
-      # The third-party prefix: restore last run's deps -> recipe table ->
-      # the [extras] summary. The step timeout leaves save-deps a window
-      # to publish a partial snapshot.
-      - name: Build deps [extras] (Windows)
-        if: matrix.kind == 'windows'
-        env:
-          FFBUILD_WORK: ${{ github.workspace }}/ffmpeg-${{ matrix.platform }}
-          FFBUILD_MSYS2: ${{ runner.temp }}\msys64
-          GH_TOKEN: ${{ github.token }}
-        run: ./driver/FFmpeg-Builds-Full.exe extras
+        run: ./driver/FFmpeg-Builds-Full.exe build
 
       # Publish the deps overlay (extras libs) even when the run died; the
       # next run restores it before compiling.
@@ -354,32 +377,39 @@ jobs:
       # compile-time-baked phantom path, a lost GH_TOKEN silently disables
       # deps restore/upload, a lost GITHUB_STEP_SUMMARY silently drops the
       # failure details from the run page.
-      - name: Install packages (Linux)
-        if: matrix.kind == 'linux'
-        env:
-          FFBUILD_WORK: /ffmpeg-${{ matrix.platform }}
-          FFBUILD_DIST: ${{ github.workspace }}/dist
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          sudo env FFBUILD_WORK="$FFBUILD_WORK" FFBUILD_DIST="$FFBUILD_DIST" \
-            GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
-            GITHUB_SHA="$GITHUB_SHA" GITHUB_ACTIONS="$GITHUB_ACTIONS" \
-            ./driver/FFmpeg-Builds-Full packages
-
-      - name: Build deps [extras] (Linux)
+      - name: Build FFmpeg (Linux)
         if: matrix.kind == 'linux'
         timeout-minutes: 325
         env:
           FFBUILD_WORK: /ffmpeg-${{ matrix.platform }}
           FFBUILD_DIST: ${{ github.workspace }}/dist
           GH_TOKEN: ${{ github.token }}
+          FFMPEG_SHA: ${{ needs.prepare.outputs.sha }}
         run: |
+          set -euo pipefail
+          # apt、/opt、/usr/local 安装都需要 root。新版 runner 的 sudo-rs
+          # 不认 -E（直接忽略），改用 `sudo env` 显式透传——FFBUILD_DIST
+          # 丢了产物会写进编译期烤进二进制的幽灵路径；GH_TOKEN 丢了
+          # deps 恢复/上传全体静默跳过；GITHUB_STEP_SUMMARY 丢了
+          # 失败明细进不了 run 页；GITHUB_ACTIONS 丢了驱动的 CI 输出
+          # 闸门判不出来，日志回全量模式；FFMPEG_SHA 丢了退化成各腿
+          # 自解的 HEAD。
+          # apt, /opt and the /usr/local install all want root. sudo-rs on
+          # newer runners silently ignores -E, so pass env through
+          # `sudo env` explicitly — a lost FFBUILD_DIST sends artifacts to
+          # the compile-time-baked phantom path, a lost GH_TOKEN silently
+          # disables deps restore/upload, a lost GITHUB_STEP_SUMMARY
+          # silently drops the failure details from the run page, a lost
+          # GITHUB_ACTIONS leaves the driver's CI output gate disengaged
+          # and the log back at full volume, and a lost FFMPEG_SHA
+          # degrades every leg to resolving its own HEAD.
           sudo env FFBUILD_WORK="$FFBUILD_WORK" FFBUILD_DIST="$FFBUILD_DIST" \
             GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
             GITHUB_SHA="$GITHUB_SHA" \
             GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
             GITHUB_ACTIONS="$GITHUB_ACTIONS" \
-            ./driver/FFmpeg-Builds-Full extras
+            FFMPEG_SHA="$FFMPEG_SHA" \
+            ./driver/FFmpeg-Builds-Full build
 
       - name: Publish deps (Linux)
         if: matrix.kind == 'linux' && always()
@@ -414,21 +444,14 @@ jobs:
           restore-keys: |
             ${{ matrix.platform }}-warm-
 
-      - name: Install packages (macOS)
+      - name: Build FFmpeg (macOS)
         if: matrix.kind == 'macos'
+        timeout-minutes: 340
         env:
           # Oldest macOS the binaries are meant to run on.
           MACOSX_DEPLOYMENT_TARGET: "14.0"
           GH_TOKEN: ${{ github.token }}
-        run: ./driver/FFmpeg-Builds-Full packages
-
-      - name: Build deps [extras] (macOS)
-        if: matrix.kind == 'macos'
-        timeout-minutes: 340
-        env:
-          MACOSX_DEPLOYMENT_TARGET: "14.0"
-          GH_TOKEN: ${{ github.token }}
-        run: ./driver/FFmpeg-Builds-Full extras
+        run: ./driver/FFmpeg-Builds-Full build
 
       # Publish the deps workspace snapshot even when the run died; the
       # next run restores it before compiling.
@@ -439,6 +462,25 @@ jobs:
         run: ./driver/FFmpeg-Builds-Full save-deps
 
       # ----------------------------------------------------------------- common
+      # 完整构建的产物（ffmpeg tar/zip + sha256 + buildinfo）随 workflow
+      # artifact 留档供检视——只留档，任何 FFmpeg release 都不在本
+      # workflow 发 / the complete build's product (the ffmpeg tar/zip +
+      # sha256 + buildinfo) rides a workflow artifact for inspection —
+      # archived only; no FFmpeg release is ever published from this
+      # workflow
+      - name: Upload build
+        if: ${{ !cancelled() && hashFiles('dist/*.zip', 'dist/*.tar.xz') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-${{ matrix.platform }}
+          path: |
+            dist/*.zip
+            dist/*.tar.xz
+            dist/*.sha256
+            dist/*.buildinfo.txt
+          if-no-files-found: error
+          retention-days: 7
+
       # 日志收集统一为"收进 workspace 再上传"，三平台共用
       # .github/scripts/collect-logs.sh：驱动产物在工作区之外（win:
       # ffmpeg-<platform> + <msys64>/<envdir>/.extras，linux:
@@ -544,7 +586,7 @@ jobs:
   # run entry and isolated namespace.
   release:
     name: Kick Release
-    needs: [test, driver, deps]
+    needs: [test, driver, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
