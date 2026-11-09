@@ -13,7 +13,13 @@ use crate::sys::{self, Os};
 /// recipe table entries (one each for macOS and Windows, sharing the
 /// same build body)
 pub fn recipes() -> Vec<Recipe> {
-    let mut a = r("glib", "mac", "glib-2.0,gobject-2.0,gio-2.0", "-", body);
+    let mut a = r(
+        "glib",
+        "linux,mac",
+        "glib-2.0,gobject-2.0,gio-2.0",
+        "-",
+        body,
+    );
     a.src = include_str!("glib.rs");
     let mut b = r(
         "glib",

@@ -1,177 +1,50 @@
-# 杂项/不常用库的源码：按 <os>-<arch> 分节（对应 features/misc.yaml 的键），
-# 各节独立取值。即便特性默认 disable 也声明来源——启用时无需再找地址。
-# Misc/rare library sources: one <os>-<arch> section each (matching
-# features/misc.yaml keys), values independent. Sources are declared even
-# when the feature defaults to disable — enabling needs no further edit.
+# 杂项/不常用库的源码：与 features/misc.yaml 逐键对应（键序相同）。
+# 键是配方源名（feature 名与源名偶有差异，如 libfdk-aac→fdk-aac）。
+# 即便特性默认 disable 也声明来源——启用时无需再找地址；无公开源的
+# 系统/闭源组件以空规格 {} 留档（loader 登记跳过，不取任何东西）。
+# Misc/rare library sources: one-to-one with features/misc.yaml (same
+# key order). Keys are recipe source names (feature and source names
+# occasionally differ, e.g. libfdk-aac→fdk-aac). Sources are declared
+# even when the feature defaults to disable — enabling needs no further
+# edit; system/proprietary components without a public repo get an
+# empty spec {} for the record (the loader registers-and-skips them).
 
-windows-x86_64:
-  openssl:
-    git: https://github.com/openssl/openssl.git
-  fdk-aac:
-    git: https://github.com/mstorsjo/fdk-aac.git
-  libshaderc:
-    git: https://github.com/google/shaderc.git
-  libglslang:
-    git: https://github.com/KhronosGroup/glslang.git
-  decklink: {}            # Blackmagic 闭源 SDK，无公开源码地址 / proprietary SDK, no public source
-  libklvanc:
-    git: https://github.com/stoth68000/libklvanc.git
-  libcelt:
-    git: https://gitlab.xiph.org/xiph/celt.git
-    ref: e18de7747fb1655e66bf8d291560587036bfe53c   # 上游停滞，固化末次提交（2011-09）/ upstream stalled, pinned at last commit
-  libsmbclient:
-    git: https://gitlab.com/samba-team/samba.git
-  libmfx:
-    git: https://github.com/Intel-Media-SDK/MediaSDK.git
-  libopenvino:
-    git: https://github.com/openvinotoolkit/openvino.git
-  libtensorflow:
-    git: https://github.com/tensorflow/tensorflow.git
-  libtorch:
-    git: https://github.com/pytorch/pytorch.git
-  opencv:
-    git: https://github.com/opencv/opencv.git
-  ladspa:
-    archive: https://www.ladspa.org/download/ladspa_sdk_1.17.tgz
-    sha256: 27d24f279e4b81bd17ecbdcc38e4c42991bb388826c0b200067ce0eb59d3da5b
-
-windows-arm64:
-  openssl:
-    git: https://github.com/openssl/openssl.git
-  fdk-aac:
-    git: https://github.com/mstorsjo/fdk-aac.git
-  libshaderc:
-    git: https://github.com/google/shaderc.git
-  libglslang:
-    git: https://github.com/KhronosGroup/glslang.git
-  decklink: {}
-  libklvanc:
-    git: https://github.com/stoth68000/libklvanc.git
-  libcelt:
-    git: https://gitlab.xiph.org/xiph/celt.git
-    ref: e18de7747fb1655e66bf8d291560587036bfe53c   # 上游停滞，固化末次提交（2011-09）/ upstream stalled, pinned at last commit
-  libsmbclient:
-    git: https://gitlab.com/samba-team/samba.git
-  libmfx:
-    git: https://github.com/Intel-Media-SDK/MediaSDK.git
-  libopenvino:
-    git: https://github.com/openvinotoolkit/openvino.git
-  libtensorflow:
-    git: https://github.com/tensorflow/tensorflow.git
-  libtorch:
-    git: https://github.com/pytorch/pytorch.git
-  opencv:
-    git: https://github.com/opencv/opencv.git
-  ladspa:
-    archive: https://www.ladspa.org/download/ladspa_sdk_1.17.tgz
-    sha256: 27d24f279e4b81bd17ecbdcc38e4c42991bb388826c0b200067ce0eb59d3da5b
-
-linux-x86_64:
-  openssl:
-    git: https://github.com/openssl/openssl.git
-  fdk-aac:
-    git: https://github.com/mstorsjo/fdk-aac.git
-  pulseaudio:
-    git: https://gitlab.freedesktop.org/pulseaudio/pulseaudio.git
-  libjack:
-    git: https://github.com/jackaudio/jack2.git
-  sndio:
-    git: https://caoua.org/git/sndio
-  libshaderc:
-    git: https://github.com/google/shaderc.git
-  libglslang:
-    git: https://github.com/KhronosGroup/glslang.git
-  decklink: {}
-  libklvanc:
-    git: https://github.com/stoth68000/libklvanc.git
-  libcelt:
-    git: https://gitlab.xiph.org/xiph/celt.git
-    ref: e18de7747fb1655e66bf8d291560587036bfe53c   # 上游停滞，固化末次提交（2011-09）/ upstream stalled, pinned at last commit
-  libsmbclient:
-    git: https://gitlab.com/samba-team/samba.git
-  libmfx:
-    git: https://github.com/Intel-Media-SDK/MediaSDK.git
-  libopenvino:
-    git: https://github.com/openvinotoolkit/openvino.git
-  libtensorflow:
-    git: https://github.com/tensorflow/tensorflow.git
-  libtorch:
-    git: https://github.com/pytorch/pytorch.git
-  opencv:
-    git: https://github.com/opencv/opencv.git
-  ladspa:
-    archive: https://www.ladspa.org/download/ladspa_sdk_1.17.tgz
-    sha256: 27d24f279e4b81bd17ecbdcc38e4c42991bb388826c0b200067ce0eb59d3da5b
-
-linux-arm64:
-  openssl:
-    git: https://github.com/openssl/openssl.git
-  fdk-aac:
-    git: https://github.com/mstorsjo/fdk-aac.git
-  pulseaudio:
-    git: https://gitlab.freedesktop.org/pulseaudio/pulseaudio.git
-  libjack:
-    git: https://github.com/jackaudio/jack2.git
-  sndio:
-    git: https://caoua.org/git/sndio
-  libshaderc:
-    git: https://github.com/google/shaderc.git
-  libglslang:
-    git: https://github.com/KhronosGroup/glslang.git
-  decklink: {}
-  libklvanc:
-    git: https://github.com/stoth68000/libklvanc.git
-  libcelt:
-    git: https://gitlab.xiph.org/xiph/celt.git
-    ref: e18de7747fb1655e66bf8d291560587036bfe53c   # 上游停滞，固化末次提交（2011-09）/ upstream stalled, pinned at last commit
-  libsmbclient:
-    git: https://gitlab.com/samba-team/samba.git
-  libmfx:
-    git: https://github.com/Intel-Media-SDK/MediaSDK.git
-  libopenvino:
-    git: https://github.com/openvinotoolkit/openvino.git
-  libtensorflow:
-    git: https://github.com/tensorflow/tensorflow.git
-  libtorch:
-    git: https://github.com/pytorch/pytorch.git
-  opencv:
-    git: https://github.com/opencv/opencv.git
-  ladspa:
-    archive: https://www.ladspa.org/download/ladspa_sdk_1.17.tgz
-    sha256: 27d24f279e4b81bd17ecbdcc38e4c42991bb388826c0b200067ce0eb59d3da5b
-
-
-macos-arm64:
-  openssl:
-    git: https://github.com/openssl/openssl.git
-  fdk-aac:
-    git: https://github.com/mstorsjo/fdk-aac.git
-  pulseaudio:
-    git: https://gitlab.freedesktop.org/pulseaudio/pulseaudio.git
-  libjack:
-    git: https://github.com/jackaudio/jack2.git
-  libshaderc:
-    git: https://github.com/google/shaderc.git
-  libglslang:
-    git: https://github.com/KhronosGroup/glslang.git
-  decklink: {}
-  libklvanc:
-    git: https://github.com/stoth68000/libklvanc.git
-  libcelt:
-    git: https://gitlab.xiph.org/xiph/celt.git
-    ref: e18de7747fb1655e66bf8d291560587036bfe53c   # 上游停滞，固化末次提交（2011-09）/ upstream stalled, pinned at last commit
-  libsmbclient:
-    git: https://gitlab.com/samba-team/samba.git
-  libmfx:
-    git: https://github.com/Intel-Media-SDK/MediaSDK.git
-  libopenvino:
-    git: https://github.com/openvinotoolkit/openvino.git
-  libtensorflow:
-    git: https://github.com/tensorflow/tensorflow.git
-  libtorch:
-    git: https://github.com/pytorch/pytorch.git
-  opencv:
-    git: https://github.com/opencv/opencv.git
-  ladspa:
-    archive: https://www.ladspa.org/download/ladspa_sdk_1.17.tgz
-    sha256: 27d24f279e4b81bd17ecbdcc38e4c42991bb388826c0b200067ce0eb59d3da5b
+fdk-aac:                   # libfdk-aac
+  git: https://github.com/mstorsjo/fdk-aac.git
+openssl:
+  git: https://github.com/openssl/openssl.git
+# mbedtls 的源在 common.yaml——它是 libssh 的 crypto 后端（真依赖），
+# 与"特性 mbedtls: disable"是两回事 / mbedtls's source lives in
+# common.yaml — it's libssh's crypto backend (a real dependency), which
+# is a different matter from the `mbedtls: disable` feature
+gcrypt:
+  git: https://github.com/gpg/libgcrypt.git
+schannel: {}               # Windows SDK 组件，无独立仓库 / part of the Windows SDK, no standalone repo
+libjack:
+  git: https://github.com/jackaudio/jack2.git
+sndio:
+  git: https://caoua.org/git/sndio
+libshaderc:
+  git: https://github.com/google/shaderc.git
+libglslang:
+  git: https://github.com/KhronosGroup/glslang.git
+cuda-nvcc: {}              # NVIDIA CUDA Toolkit 组件，无独立公开仓库 / part of the NVIDIA CUDA Toolkit, no standalone repo
+libnpp: {}                 # 同上——CUDA Toolkit 头文件库 / same — a CUDA Toolkit headers lib
+decklink: {}               # Blackmagic 闭源 SDK，无公开源码地址 / proprietary SDK, no public source
+libklvanc:
+  git: https://github.com/stoth68000/libklvanc.git
+libcelt:
+  git: https://gitlab.xiph.org/xiph/celt.git
+  ref: e18de7747fb1655e66bf8d291560587036bfe53c   # 上游停滞，固化末次提交（2011-09）/ upstream stalled, pinned at last commit
+libsmbclient:
+  git: https://gitlab.com/samba-team/samba.git
+libmfx:
+  git: https://github.com/Intel-Media-SDK/MediaSDK.git
+libopenvino:
+  git: https://github.com/openvinotoolkit/openvino.git
+libtensorflow:
+  git: https://github.com/tensorflow/tensorflow.git
+libtorch:
+  git: https://github.com/pytorch/pytorch.git
+opencv:
+  git: https://github.com/opencv/opencv.git

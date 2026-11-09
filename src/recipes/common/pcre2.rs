@@ -7,7 +7,7 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("pcre2", "mac", "libpcre2-8", "-", body);
+    let mut x = r("pcre2", "linux,mac", "libpcre2-8", "-", body);
     x.src = include_str!("pcre2.rs");
     x
 }

@@ -55,6 +55,7 @@
 - itstool
 - xxd
 - autoconf
+- autoconf-archive
 - automake
 - libtool
 - libtool-bin
@@ -76,25 +77,22 @@
 - libasound2-dev
 - linux-libc-dev
 - ladspa-sdk
-# X11：vdpau meson 探 x11+xext；libxcb 由 libx11-dev 拉入
-# X11: vdpau's meson probes x11+xext; libxcb rides in via libx11-dev
+# X11/xcb/平台栈现由自家静态配方产出（src/recipes/linux/）——系统
+# -dev 包退居二线：一为未覆盖库的 .pc 兜底（PKG_CONFIG_LIBDIR 前缀
+# 优先、系统垫后），二为不产 .a 的探针/头文件场合留活路；同目录下
+# ld 恒优先 .so，靠系统包静态链是死路，已实证 / the X11/xcb/platform
+# stack now comes from our own static recipes (src/recipes/linux/) —
+# system -dev packages are demoted to two roles: a .pc fallback for
+# libraries we don't cover (PKG_CONFIG_LIBDIR puts the prefix first,
+# system last) and a header/probe fallback where no .a exists; ld
+# always prefers .so in the same directory, so static linking via
+# system packages was proven a dead end
 - libx11-dev
 - libxext-dev
-# FFmpeg 的 --enable-xlib 合成功能要 x11+xext+xv 三子检查全过——xv.pc
-# 与 Xvlib.h 只在此包 / FFmpeg's --enable-xlib composite needs all
-# three sub-checks (x11+xext+xv) — xv.pc and Xvlib.h live only here
 - libxv-dev
-# xcbgrab 的扩展模块——xcb.pc 随 libx11-dev 到场，这三个 .pc 在独立的
-# -dev 包里，缺了 features 探针全降级 / xcbgrab's extension modules —
-# xcb.pc rides in with libx11-dev, but these three .pc files live in
-# their own -dev packages; without them every feature probe degrades
 - libxcb-shm0-dev
 - libxcb-shape0-dev
 - libxcb-xfixes0-dev
-# 平台采集/硬件栈（运行时本就 dlopen 驱动后端，静态链接意义不大，
-# 走系统 -dev 包拿 .pc+.a）/ platform capture/hw stack — the runtime
-# dlopens driver backends anyway, so the system -dev packages' .pc+.a
-# are the right source
 - libdrm-dev
 - libva-dev
 - libpulse-dev

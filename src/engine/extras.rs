@@ -889,20 +889,25 @@ fn postfix() -> Result<(), String> {
                 continue;
             }
             // nm 列全部符号：归档成员行 "…(m.o):" 仅一字段被过滤；
-            // 取 "地址 类型字母 名" 三段式、类型字母大写 = 全局定义
-            // (Mach-O 名带 _ 前缀，nmedit 照单全收) / nm lists all
-            // symbols: archive member headers "...(m.o):" carry a single
-            // field and drop out; take the "addr TYPE name" triples
-            // whose type letter is uppercase = global definition
-            // (Mach-O names keep their _ prefix, nmedit takes them
-            // verbatim)
+            // 取 "地址 类型字母 名" 三段式、类型字母大写 = 全局定义。
+            // 未定义行 "U _malloc" 只有两段——len>=3 才安全（U 恰好也是
+            // 大写，两段式下会混进定义集，nmedit 随即报 "symbols not
+            // defined"）(Mach-O 名带 _ 前缀，nmedit 照单全收) / nm lists
+            // all symbols: archive member headers "...(m.o):" carry a
+            // single field and drop out; take the "addr TYPE name"
+            // triples whose type letter is uppercase = global definition.
+            // Undefined lines "U _malloc" have only two fields — len>=3
+            // is required (U is uppercase too, so a two-field line leaks
+            // into the defined set and nmedit errors "symbols not
+            // defined") (Mach-O names keep their _ prefix, nmedit takes
+            // them verbatim)
             let defined = |p: &PathBuf| -> HashSet<String> {
                 sys::capture("nm", &[&p.to_string_lossy()], &e.work)
                     .unwrap_or_default()
                     .lines()
                     .filter_map(|l| {
                         let f: Vec<&str> = l.split_whitespace().collect();
-                        if f.len() >= 2
+                        if f.len() >= 3
                             && f[f.len() - 2].len() == 1
                             && f[f.len() - 2]
                                 .chars()

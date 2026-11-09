@@ -1,9 +1,14 @@
-# 通用库：全平台共享的 FFmpeg 特性开关，值为 enable 或 disable。
-# 键不能出现在 base.yaml、misc.yaml 的本平台分节、或本平台文件里——重复即报错。
-# Common libraries: FFmpeg feature switches shared by every platform;
-# values are enable or disable. A key must not appear in base.yaml, in this
-# platform's section of misc.yaml, or in this platform's file — duplicates
-# are errors.
+# 通用库：多平台共享的 FFmpeg 特性开关。值两种形态——标量 enable|disable
+# 表示全平台统一取值；映射 {all: v, <os>-<arch>: v, ...} 先取本平台键、
+# 缺省回退 all，两者皆无即本平台未声明（已知特性默认 disable）。
+# 键不能出现在 base.yaml、misc.yaml 或平台文件里——重复即报错。
+# Common libraries: FFmpeg feature switches shared by multiple platforms.
+# Two value shapes — a scalar enable|disable applies to every platform;
+# a map {all: v, <os>-<arch>: v, ...} reads this platform's key first,
+# then falls back to `all`; a platform covered by neither is undeclared
+# (known features default to disable anyway).
+# A key must not appear in base.yaml, misc.yaml, or a platform file —
+# duplicates are errors.
 #
 # 未列出的已知特性一律按 --disable 处理（严格默认关闭）。
 # Known features absent from every file resolve to --disable (strict).
@@ -27,6 +32,26 @@ liboapv: enable
 libxeve: enable
 libxevd: enable
 libvvenc: enable
+# AVS2/AVS3/JPEG-XS/LCEVC/QSV 只有 x86 配方 / AVS2/AVS3/JPEG-XS/LCEVC/QSV
+# have x86-only recipes
+libdavs2:
+  windows-x86_64: enable
+  linux-x86_64: enable
+libxavs2:
+  windows-x86_64: enable
+  linux-x86_64: enable
+libsvtjpegxs:
+  windows-x86_64: enable
+  linux-x86_64: enable
+liblcevc-dec:                # arm 上 linux 有汇编支持，windows-arm64 缺席 / linux-arm64 ships asm support; windows-arm64 misses out
+  all: enable
+  windows-arm64: disable
+libuavs3d:                   # 同上 / same as above
+  all: enable
+  windows-arm64: disable
+libvpl:                      # Intel QSV 运行时（x86 only）/ Intel QSV runtime, x86 only
+  windows-x86_64: enable
+  linux-x86_64: enable
 
 # ---- 音频编解码 / audio codecs ----
 libvorbis: enable
@@ -70,15 +95,17 @@ frei0r: enable
 libaribcaption: enable
 libaribb24: enable
 libzvbi: enable
-# vapoursynth 挪到四个平台文件——mac 的配方有意出局（上游只产 .dylib
-# 进 python site-packages，静态/运行时双无解），放 common 必降级 /
-# vapoursynth moved to the four platform files — the recipe deliberately
-# excludes mac (upstream only yields a .dylib inside python site-packages,
-# a dead end both statically and at runtime); in common it always degrades
 libtesseract: enable
 libqrencode: enable
 libquirc: enable
 liblensfun: enable
+vapoursynth:
+  all: enable
+  # mac 配方有意出局——上游只产 .dylib 进 python site-packages，
+  # 静态/运行时双无解 / the recipe deliberately excludes mac — upstream
+  # only yields a .dylib inside python site-packages, a dead end both
+  # statically and at runtime
+  macos-arm64: disable
 
 # ---- 容器、协议、光盘 / containers, protocols, discs ----
 gmp: enable
@@ -96,16 +123,95 @@ libcaca: enable
 librtmp: enable
 libcurl: enable
 
+# ---- TLS ----
+gnutls:
+  all: enable
+  macos-arm64: disable # mac TLS 走 Secure Transport 系统后端 / mac TLS goes through the Secure Transport system backend
+
 # ---- 杂项库 / misc libraries ----
-# 硬件/GPU 栈是平台受限的：amf/nv-codec-headers 只有 linux+windows 的
-# 配方（头文件安装）；vulkan/opencl 的静态 shim 只在 linux+windows
-# 编；libplacebo 要整条 SPIRV 链，只在 windows。它们各自在平台文件
-# 里 enable。
-# The hardware/GPU stack is platform-bound: amf/nv-codec-headers have
-# linux+windows recipes (header installs); the static vulkan/opencl
-# shims build only on linux+windows; libplacebo wants the whole SPIRV
-# chain and stays on windows. Each is enabled in its platform files.
 libsnappy: enable
 whisper: enable
 lv2: enable
 avisynth: enable
+
+# ---- 硬件加速 / hardware acceleration ----
+# NVIDIA/通用 GPU 栈：windows+linux 有头文件/shim 配方，mac 缺席 /
+# NVIDIA/generic GPU stack: windows+linux have header/shim recipes,
+# mac misses out
+nvdec:
+  all: enable
+  macos-arm64: disable
+nvenc:
+  all: enable
+  macos-arm64: disable
+cuvid:                       # NVIDIA CUVID 解码（ffnvcodec 自动随之）/ NVIDIA CUVID decode (pulls ffnvcodec automatically)
+  all: enable
+  macos-arm64: disable
+ffnvcodec:                   # nv-codec-headers 头文件 / nv-codec-headers headers
+  all: enable
+  macos-arm64: disable
+vulkan:                      # 前缀 shim（头+dlopen 加载器）/ prefix shim (headers + dlopen loader)
+  all: enable
+  macos-arm64: disable
+opencl:                      # 前缀 ICD shim / prefix ICD shim
+  all: enable
+  macos-arm64: disable
+cuda-llvm:                   # CUDA 工具链：libplacebo/glslang 着色器编译 / CUDA toolchain: shader compilation for libplacebo/glslang
+  windows-x86_64: enable
+  windows-arm64: enable
+amf:                         # AMF 头文件（x86 only）/ AMF headers, x86 only
+  windows-x86_64: enable
+  linux-x86_64: enable
+# libplacebo 要整条 SPIRV-Cross 链，只在 windows / libplacebo wants the
+# whole SPIRV-Cross stack, windows only
+libplacebo:
+  windows-x86_64: enable
+  windows-arm64: enable
+# Direct3D/MediaFoundation：windows 独占 / windows exclusives
+d3d11va:
+  windows-x86_64: enable
+  windows-arm64: enable
+d3d12va:
+  windows-x86_64: enable
+  windows-arm64: enable
+dxva2:
+  windows-x86_64: enable
+  windows-arm64: enable
+mediafoundation:
+  windows-x86_64: enable
+  windows-arm64: enable
+
+# ---- Linux 平台栈 / the linux platform stack ----
+vaapi:
+  linux-x86_64: enable
+  linux-arm64: enable
+vdpau:
+  linux-x86_64: enable
+  linux-arm64: enable
+libdrm:
+  linux-x86_64: enable
+  linux-arm64: enable
+alsa:
+  linux-x86_64: enable
+  linux-arm64: enable
+libpulse:                    # PulseAudio 兼容层（pipewire 也响应）/ PulseAudio shim (pipewire answers too)
+  linux-x86_64: enable
+  linux-arm64: enable
+libdc1394:
+  linux-x86_64: enable
+  linux-arm64: enable
+xlib:
+  linux-x86_64: enable
+  linux-arm64: enable
+libxcb:
+  linux-x86_64: enable
+  linux-arm64: enable
+libxcb-shm:
+  linux-x86_64: enable
+  linux-arm64: enable
+libxcb-shape:
+  linux-x86_64: enable
+  linux-arm64: enable
+libxcb-xfixes:
+  linux-x86_64: enable
+  linux-arm64: enable

@@ -8,7 +8,7 @@
 //! concurrently with compilation.
 //! 布局 / layout:
 //!   sources/common.yaml         {lib: {git|archive: ..., ref:, sha256:, submodules:}}
-//!   sources/misc.yaml           {<os>-<arch>: {lib: spec}}   —— 按平台分节
+//!   sources/misc.yaml           {lib: spec}                  —— 不分平台的杂项
 //!   sources/<os>-<arch>.yaml    {lib: spec}                  —— 整值覆盖
 //! git 解析策略 / git resolution:
 //!   1) ref 是 40-hex sha → 钉死检出
@@ -41,8 +41,8 @@ pub struct Spec {
     pub submodules: bool,
 }
 
-/// 加载并合并 sources 清单（common → misc[平台] → 平台文件；同键整值替换）
-/// Load+merge the sources map (common → misc[platform] → platform file;
+/// 加载并合并 sources 清单（common → misc → 平台文件；同键整值替换）
+/// Load+merge the sources map (common → misc → platform file;
 /// a same-named key replaces the whole value)
 fn load() -> &'static HashMap<String, Spec> {
     static MAP: OnceLock<HashMap<String, Spec>> = OnceLock::new();
@@ -106,13 +106,14 @@ fn load() -> &'static HashMap<String, Spec> {
                 _ => {}
             }
         }
+        // misc.yaml 是扁平 {lib: spec}——源码只定位仓库，与平台无关 /
+        // misc.yaml is a flat {lib: spec} — sources only locate the
+        // repo and never differ by platform
         let miscf = dir.join("misc.yaml");
         if miscf.is_file() {
             match read(&miscf) {
                 Ok(m) => {
-                    if !m[plat.as_str()].is_badvalue()
-                        && let Err(e) = absorb(&m[plat.as_str()], "misc.yaml")
-                    {
+                    if let Err(e) = absorb(&m, "misc.yaml") {
                         log::warn(&format!("sources/misc.yaml: {e}"));
                     }
                 }

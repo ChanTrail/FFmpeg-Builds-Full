@@ -1,128 +1,28 @@
-# 杂项/不常用库：按 <os>-<arch> 分节，各自独立取值——杂项天然因平台而异，
-# 不与通用文件共享默认值。要启用某项，直接改本平台分节里对应行的值即可，
-# 不要挪到平台文件（平台文件只放该平台常规特化项，且键全局不可重复）。
-# Misc/rare libraries: one <os>-<arch> section each, values independent —
-# misc items are inherently platform-differentiated and share no default
-# with the common file. To enable one, edit its value in THIS platform's
-# section directly; do not move it into the platform file (those hold the
-# platform's regular specifics only, and keys must stay globally unique).
+# 杂项/不常用库：刻意关闭或仅留档的已知特性，键全局唯一。
+# 值形态与 common.yaml 相同（标量 | {all: v, <os>-<arch>: v}）。
+# 有任何平台启用的条目请进 common.yaml（多平台共享）或平台文件（平台独有）。
+# Misc/rare libraries: known features deliberately disabled or kept only
+# for the record; keys are globally unique. Value shapes match common.yaml
+# (scalar | {all: v, <os>-<arch>: v}). Entries enabled on any platform
+# belong in common.yaml (multi-platform) or a platform file (exclusive).
 
-windows-x86_64:
-  libfdk-aac: disable      # nonfree，开启即不可再分发 / nonfree — enabling blocks redistribution
-  gnutls: enable         # TLS 后端（唯一）/ the single TLS backend
-  openssl: disable         # TLS 走 gnutls；openssl 库仍会作为 srt/rist 依赖构建 / TLS via gnutls; openssl still builds as an srt/rist dep
-  mbedtls: disable
-  gcrypt: disable
-  schannel: disable        # Windows 系统 TLS 后端
-  libshaderc: disable      # vulkan 着色器走 SPIRV-Cross，不用 shaderc 链 / shaders via SPIRV-Cross
-  libglslang: disable
-  cuda-nvcc: disable
-  libnpp: disable
-  decklink: disable        # 需要 Blackmagic SDK / needs the Blackmagic SDK
-  libklvanc: disable
-  libcelt: disable
-  libsmbclient: disable
-  libmfx: disable          # 已被 libvpl 取代 / superseded by libvpl
-  libopenvino: disable
-  libtensorflow: disable
-  libtorch: disable
-  opencv: disable
-  ladspa: disable
-
-windows-arm64:
-  gnutls: enable
-  libfdk-aac: disable
-  openssl: disable
-  mbedtls: disable
-  gcrypt: disable
-  schannel: disable
-  libshaderc: disable
-  libglslang: disable
-  cuda-nvcc: disable
-  libnpp: disable
-  decklink: disable
-  libklvanc: disable
-  libcelt: disable
-  libsmbclient: disable
-  libmfx: disable
-  libopenvino: disable
-  libtensorflow: disable
-  libtorch: disable
-  opencv: disable
-  ladspa: disable
-
-linux-x86_64:
-  libfdk-aac: disable
-  gnutls: enable
-  openssl: disable
-  mbedtls: disable
-  gcrypt: disable
-  libpulse: enable         # Linux 桌面音频主力栈 / the desktop audio stack
-  libjack: disable         # 音频工作站场景 / pro-audio
-  sndio: disable
-  libshaderc: disable
-  libglslang: disable
-  cuda-llvm: disable
-  cuda-nvcc: disable
-  libnpp: disable
-  decklink: disable
-  libklvanc: disable
-  libcelt: disable
-  libsmbclient: disable
-  libmfx: disable
-  libopenvino: disable
-  libtensorflow: disable
-  libtorch: disable
-  opencv: disable
-  ladspa: disable
-
-linux-arm64:
-  libfdk-aac: disable
-  gnutls: enable
-  openssl: disable
-  mbedtls: disable
-  gcrypt: disable
-  libpulse: enable
-  libjack: disable
-  sndio: disable
-  libshaderc: disable
-  libglslang: disable
-  cuda-llvm: disable
-  cuda-nvcc: disable
-  libnpp: disable
-  decklink: disable
-  libklvanc: disable
-  libcelt: disable
-  libsmbclient: disable
-  libmfx: disable
-  libopenvino: disable
-  libtensorflow: disable
-  libtorch: disable
-  opencv: disable
-  ladspa: disable
-
-
-macos-arm64:
-  libfdk-aac: disable
-  gnutls: disable        # mac TLS 走 Secure Transport/ mac TLS via Secure Transport
-  openssl: disable
-  mbedtls: disable
-  gcrypt: disable
-  securetransport: enable         # Apple 系统 TLS：钥匙串、无需 CA bundle/ Apple system TLS: keychain, no CA bundle
-  ladspa: enable
-  libpulse: disable
-  libjack: disable
-  libshaderc: disable
-  libglslang: disable
-  cuda-llvm: disable
-  cuda-nvcc: disable
-  libnpp: disable
-  decklink: disable
-  libklvanc: disable
-  libcelt: disable
-  libsmbclient: disable
-  libmfx: disable
-  libopenvino: disable
-  libtensorflow: disable
-  libtorch: disable
-  opencv: disable
+libfdk-aac: disable      # nonfree，开启即不可再分发 / nonfree — enabling blocks redistribution
+openssl: disable         # TLS 走 gnutls；openssl 库仍会作为 srt/rist 依赖构建 / TLS via gnutls; openssl still builds as an srt/rist dep
+mbedtls: disable         # 仅作 srt 的私用 TLS 后端进包 / only ever ships as srt's private TLS backend
+gcrypt: disable
+schannel: disable        # Windows 系统 TLS 后端（不用，统一走 gnutls）/ Windows' system TLS backend (unused — gnutls everywhere)
+libjack: disable         # 音频工作站场景 / pro-audio
+sndio: disable
+libshaderc: disable      # vulkan 着色器走 SPIRV-Cross，不用 shaderc 链 / shaders via SPIRV-Cross
+libglslang: disable
+cuda-nvcc: disable
+libnpp: disable
+decklink: disable        # 需要 Blackmagic SDK / needs the Blackmagic SDK
+libklvanc: disable
+libcelt: disable
+libsmbclient: disable
+libmfx: disable          # 已被 libvpl 取代 / superseded by libvpl
+libopenvino: disable
+libtensorflow: disable
+libtorch: disable
+opencv: disable

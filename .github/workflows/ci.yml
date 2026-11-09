@@ -106,7 +106,7 @@ jobs:
   # never compile the driver themselves. --locked pins Cargo.lock so the
   # binary is bit-faithful to the checked-in manifests.
   driver:
-    name: Driver (${{ matrix.platform }})
+    name: Build driver (${{ matrix.platform }})
     needs: test
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -186,7 +186,7 @@ jobs:
   # release; the only thing skipped is the FFmpeg release itself
   # (that's build.yml's turf).
   build:
-    name: Build ${{ matrix.platform }}
+    name: Build (${{ matrix.platform }})
     needs: [driver, prepare]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360

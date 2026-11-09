@@ -171,7 +171,7 @@ jobs:
   # The driver binary is downloaded from the newest published release
   # (prepare.outputs.driver_tag).
   build:
-    name: Build ${{ matrix.platform }}
+    name: Build (${{ matrix.platform }})
     needs: prepare
     # 定时未过首建门时整条流水线停在这里，verify/release 随 needs 跳过
     # when the schedule gate rejects, the pipeline stops here and
@@ -555,7 +555,7 @@ jobs:
   # architecture, without any of the build tools in the PATH — the driver's own
   # `smoke` subcommand performs the test.
   verify:
-    name: Verify ${{ matrix.platform }}
+    name: Verify (${{ matrix.platform }})
     needs: [prepare, build]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30

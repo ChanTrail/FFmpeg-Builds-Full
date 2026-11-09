@@ -2,9 +2,9 @@
 //! FFmpeg feature lists: features/*.yaml → configure flags
 //! 布局 / layout:
 //!   features/base.yaml            [zlib, ...]                 —— 恒 enable
-//!   features/common.yaml          {libx264: enable, ...}      —— 通用库
-//!   features/misc.yaml            {<os>-<arch>: {libfoo: disable}}  —— 按平台分节的杂项
-//!   features/<os>-<arch>.yaml     {libvpl: enable, ...}       —— 平台×架构特化
+//!   features/common.yaml          {libx264: enable | {all: v, <os>-<arch>: v}}  —— 多平台共享
+//!   features/misc.yaml            {libfoo: disable | {all: v, <os>-<arch>: v}}  —— 稀有可选
+//!   features/<os>-<arch>.yaml     {metal: enable, ...}        —— 本平台独有
 //! 规则 / rules:
 //! * 键 = FFmpeg configure 特性名（libx264、gnutls、avisynth……必须已知）
 //!   key = FFmpeg configure feature name (must be a known feature)
@@ -14,9 +14,9 @@
 //!   "enable" is probed first; a missing library warns + degrades to --disable
 //! * 已知特性没在任何文件出现 → --disable（默认全 disable 的严格语义）
 //!   every KNOWN feature absent from all files → --disable (strict default)
-//! * 同一键出现在两个位置 → 报错（禁止重复键；misc 只取本平台分节）
-//!   a key defined twice → hard error (duplicates forbidden; only this
-//!   platform's misc.yaml section is read)
+//! * 同一键出现在两个位置 → 报错（禁止重复键；misc 每个键只解析本
+//!   平台相关值）/ a key defined twice → hard error (duplicates
+//!   forbidden; misc resolves only this platform's relevant value)
 
 use crate::log;
 use crate::pkgcfg;
@@ -278,33 +278,81 @@ fn load_yaml(p: &Path) -> Result<Yaml, String> {
     }
 }
 
-/// 从 {name: enable|disable} 映射 <doc> 里取键值并经 <insert> 插入合并表
-///（<file> 为错误定位用清单名）
-/// pull entries out of the {name: enable|disable} map <doc> into the
-/// merged table via <insert> (<file> is the manifest name used in error
-/// messages)
+/// 特性值的两种形态：<v> 标量 enable|disable（全平台统一），或映射
+/// {all: v, <os>-<arch>: v, ...}（先取本平台键、缺省回退 all，两者皆
+/// 无 → None = 本平台未声明）。映射内平台名限已知五键+all，且所有
+/// 内部值先过 enable|disable 校验——别平台行的坏值当场报错，不闷
+/// 到轮值才炸 / the two value shapes of a feature: a scalar
+/// enable|disable (uniform across platforms), or a map
+/// {all: v, <os>-<arch>: v, ...} (this platform's key first, `all` as
+/// fallback; neither → None = undeclared here). Inner platform keys
+/// are restricted to the five known names plus `all`, and every inner
+/// value is validated up front — a bad value on another platform's
+/// line fails loudly here instead of waiting for that leg
+fn pick_value(v: &Yaml, name: &str, file: &str, plat: &str) -> Result<Option<bool>, String> {
+    const PLATS: &[&str] = &[
+        "windows-x86_64",
+        "windows-arm64",
+        "linux-x86_64",
+        "linux-arm64",
+        "macos-arm64",
+    ];
+    let onoff = |s: &str, ctx: &str| -> Result<bool, String> {
+        match s {
+            "enable" => Ok(true),
+            "disable" => Ok(false),
+            other => Err(format!(
+                "{file}: '{ctx}' must be enable or disable, got '{other}'"
+            )),
+        }
+    };
+    if let Some(s) = v.as_str() {
+        return onoff(s, name).map(Some);
+    }
+    let h = v
+        .as_hash()
+        .ok_or_else(|| format!("{file}: '{name}' must be enable|disable or a platform map"))?;
+    for (pk, pv) in h {
+        let pkey = pk
+            .as_str()
+            .ok_or_else(|| format!("{file}: '{name}' has a non-string platform key"))?;
+        if pkey != "all" && !PLATS.contains(&pkey) {
+            return Err(format!("{file}: '{name}' has unknown platform '{pkey}'"));
+        }
+        // 全体校验，不止选中值 / validate every entry, not only the pick
+        onoff(
+            pv.as_str()
+                .ok_or_else(|| format!("{file}: '{name}.{pkey}' is not a string"))?,
+            &format!("{name}.{pkey}"),
+        )?;
+    }
+    match v[plat].as_str().or(v["all"].as_str()) {
+        Some(s) => onoff(s, name).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// 从 {name: value} 映射 <doc> 里取键值并经 <insert> 插入合并表（<file>
+/// 为错误定位用清单名；本平台未声明的键跳过）
+/// pull entries out of the {name: value} map <doc> into the merged table
+/// via <insert> (<file> is the manifest name used in error messages; keys
+/// undeclared for this platform are skipped)
 fn absorb_map(
     doc: &Yaml,
     file: &str,
+    plat: &str,
     insert: &mut impl FnMut(&str, bool, bool, &str) -> Result<(), String>,
 ) -> Result<(), String> {
     let h = doc
         .as_hash()
-        .ok_or_else(|| format!("{file}: expected a name: enable|disable mapping"))?;
+        .ok_or_else(|| format!("{file}: expected a name: value mapping"))?;
     for (k, v) in h {
         let name = k
             .as_str()
             .ok_or_else(|| format!("{file}: feature key must be a string"))?;
-        let en = match v.as_str() {
-            Some("enable") => true,
-            Some("disable") => false,
-            _ => {
-                return Err(format!(
-                    "{file}: '{name}' must be enable or disable, got {v:?}"
-                ));
-            }
-        };
-        insert(name, en, false, file)?;
+        if let Some(en) = pick_value(v, name, file, plat)? {
+            insert(name, en, false, file)?;
+        }
     }
     Ok(())
 }
@@ -339,26 +387,35 @@ pub fn resolve() -> Result<Resolved, String> {
         insert(n, true, true, "base.yaml")?;
     }
 
-    // common.yaml：{name: enable|disable} 全平台共享
-    // common.yaml: {name: enable|disable} shared by every platform
+    // common.yaml/misc.yaml/平台文件同享"标量 | {all: v, <os>-<arch>: v}"
+    // 值形态——差异只在职责：common 放多平台共享项，misc 放稀有可选项，
+    // 平台文件放本平台独有项 / common.yaml, misc.yaml and the platform
+    // file share the same scalar|platform-map value shapes — they differ
+    // only in duty: common holds multi-platform shared items, misc the
+    // rare optional ones, platform files the platform-exclusive ones
     absorb_map(
         &load_yaml(&dir.join("common.yaml"))?,
         "common.yaml",
+        &plat,
         &mut insert,
     )?;
 
-    // misc.yaml：{<os>-<arch>: {name: enable|disable}} 只取本平台分节；
-    // 分节缺失视为空（不报错）/ misc.yaml: per-platform sections; only this
-    // platform's section is read, a missing section means empty
-    let misc = load_yaml(&dir.join("misc.yaml"))?;
-    if !misc[plat.as_str()].is_badvalue() {
-        absorb_map(&misc[plat.as_str()], "misc.yaml", &mut insert)?;
-    }
+    absorb_map(
+        &load_yaml(&dir.join("misc.yaml"))?,
+        "misc.yaml",
+        &plat,
+        &mut insert,
+    )?;
 
     // 平台文件可缺省 / platform file is optional
     let pfile = dir.join(format!("{plat}.yaml"));
     if pfile.is_file() {
-        absorb_map(&load_yaml(&pfile)?, &format!("{plat}.yaml"), &mut insert)?;
+        absorb_map(
+            &load_yaml(&pfile)?,
+            &format!("{plat}.yaml"),
+            &plat,
+            &mut insert,
+        )?;
     }
 
     let mut r = Resolved {

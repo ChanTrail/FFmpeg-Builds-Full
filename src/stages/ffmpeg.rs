@@ -235,11 +235,24 @@ pub fn configure(
                             "[ffconfigure] this FFmpeg has no option '{kind}{opt}'; skipping it"
                         ));
                         // 只有被丢掉的 --enable-* 才计入"缺失的库"——要求
-                        // 关闭一个 FFmpeg 本就没有的选项不构成能力缺失 /
-                        // only a dropped --enable-* counts as a missing
-                        // library — asking to disable an option FFmpeg
-                        // never had removes no requested capability
+                        // 关闭一个 FFmpeg 本就没有的选项不构成能力缺失；而
+                        // enable 被丢是"请求了却交付不了"：enabled 清单此刻
+                        // 仍声称它已启用，库也白编了，必须升级警告（原先只
+                        // 发 note + dropped-libs.txt，BUILDINFO 事后才看得
+                        // 到）/ only a dropped --enable-* counts as a
+                        // missing library — asking to disable an option
+                        // FFmpeg never had removes no requested capability;
+                        // a dropped --enable-* means a requested feature
+                        // silently stays off while the enabled list still
+                        // claims it and the dep was built for nothing —
+                        // escalate to warn (it used to be note-only plus a
+                        // dropped-libs.txt line only visible in BUILDINFO)
                         if kind == "--enable-" {
+                            log::warn(&format!(
+                                "feature '{base}' was enabled but this FFmpeg has no \
+                                 '--enable-{opt}' option; the flag was dropped and \
+                                 it stays off"
+                            ));
                             let _ =
                                 fsx::append_line(dropped_file, &format!("{base} (unknown option)"));
                         }

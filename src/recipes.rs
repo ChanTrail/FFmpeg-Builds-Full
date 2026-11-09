@@ -162,6 +162,25 @@ const ORDER: &[(&str, &str)] = &[
     ("lz4", ""),
     ("raw1394", ""),
     ("dc1394", ""),
+    // linux 平台栈：X11/xcb 链按依赖序（macros→proto→xau/xdmcp→xcb
+    // →xtrans→x11→xext→xfixes→xv），libdrm 独立，libva 收尾 / the
+    // linux platform stack: the X11/xcb chain in dependency order
+    // (macros→proto→xau/xdmcp→xcb→xtrans→x11→xext→xfixes→xv), libdrm
+    // standalone, libva last
+    ("xorg-macros", ""),
+    ("xorgproto", ""),
+    ("xcb-proto", ""),
+    ("libxau", ""),
+    ("libxdmcp", ""),
+    ("libxcb", ""),
+    ("xtrans", ""),
+    ("libx11", ""),
+    ("libxext", ""),
+    ("libxfixes", ""),
+    ("libxv", ""),
+    ("libdrm", ""),
+    ("libva", ""),
+    ("pulseaudio", ""),
     ("vulkan", ""),
     ("opencl", ""),
     ("whisper", ""),

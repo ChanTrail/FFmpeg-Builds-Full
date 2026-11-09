@@ -68,6 +68,22 @@ libjxl:
   submodules: true
 libwebp:
   git: https://chromium.googlesource.com/webm/libwebp
+# x86-only（features/common.yaml 同节）/ x86-only (same section in
+# features/common.yaml)
+libvpl:
+  git: https://github.com/intel/libvpl.git
+svtjpegxs:
+  git: https://github.com/OpenVisualCloud/SVT-JPEG-XS.git
+davs2:
+  git: https://github.com/pkuvcl/davs2.git
+xavs2:
+  git: https://github.com/pkuvcl/xavs2.git
+  ref: eae1e8b9d12468059bdd7dee893508e470fa83d8   # 上游停滞，固化末次提交（2019-04）/ upstream stalled, pinned at last commit
+# 除 windows-arm64 全平台（无汇编）/ all but windows-arm64 (no asm)
+lcevcdec:
+  git: https://github.com/v-novaltd/LCEVCdec.git
+uavs3d:
+  git: https://github.com/uavs3/uavs3d.git
 
 # ================= 音频编解码 / audio codecs =================
 lame:
@@ -330,3 +346,63 @@ sratom:
 lilv:
   git: https://github.com/lv2/lilv.git
   ref: 4b8f30055fa5cb4134a2eb45fc1555bc04289314
+
+# ================= Linux 平台栈（linux 双架构同一批源；其他平台配方表
+#      不含这些键，源躺在这里也无人来取）/ Linux platform stack (both
+#      linux arches share these; other platforms' recipe tables never
+#      reference the keys, so the entries simply sit unused) ==========
+alsa:
+  archive: https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.16.1.tar.bz2
+  sha256: f740db7f488255944ffd4428416ee3390a96742856916433df468c281436480e
+libva:
+  git: https://github.com/intel/libva.git
+vdpau:
+  git: https://gitlab.freedesktop.org/vdpau/libvdpau.git
+libdrm:
+  git: https://gitlab.freedesktop.org/mesa/drm.git
+v4l-utils:
+  git: https://git.linuxtv.org/v4l-utils.git
+raw1394:
+  archive: https://www.kernel.org/pub/linux/libs/ieee1394/libraw1394-2.1.2.tar.xz
+  sha256: 03ccc69761d22c7deb1127fc301010dd13e70e44bb7134b8ff0d07590259a55e
+dc1394:
+  archive: https://downloads.sourceforge.net/project/libdc1394/libdc1394-2/2.2.6/libdc1394-2.2.6.tar.gz
+  sha256: 2b905fc9aa4eec6bdcf6a2ae5f5ba021232739f5be047dec8fe8dd6049c10fed
+lz4:
+  git: https://github.com/lz4/lz4.git
+pulseaudio:                # libpulse 特性对应 / matches the libpulse feature
+  git: https://gitlab.freedesktop.org/pulseaudio/pulseaudio.git
+
+# ---- X11 / xcb 栈 / the X11/xcb stack ----
+xcb-proto:
+  git: https://gitlab.freedesktop.org/xorg/proto/xcbproto.git
+libxcb:
+  git: https://gitlab.freedesktop.org/xorg/lib/libxcb.git
+xorgproto:
+  git: https://gitlab.freedesktop.org/xorg/proto/xorgproto.git
+libx11:
+  git: https://gitlab.freedesktop.org/xorg/lib/libx11.git
+libxext:
+  git: https://gitlab.freedesktop.org/xorg/lib/libxext.git
+libxau:
+  git: https://gitlab.freedesktop.org/xorg/lib/libxau.git
+libxdmcp:
+  git: https://gitlab.freedesktop.org/xorg/lib/libxdmcp.git
+xtrans:
+  git: https://gitlab.freedesktop.org/xorg/lib/libxtrans.git
+xorg-macros:
+  git: https://gitlab.freedesktop.org/xorg/util/macros.git
+libxv:                     # xlib 特性三件套之一（Xvlib.h）/ one of the xlib trio (Xvlib.h)
+  git: https://gitlab.freedesktop.org/xorg/lib/libXv.git
+libxfixes:                 # libva-x11 后端要求 / required by the libva-x11 backend
+  git: https://gitlab.freedesktop.org/xorg/lib/libXfixes.git
+
+# ================= Windows 平台栈（windows 双架构同一批源）/ Windows
+#      platform stack (shared by both windows arches) =================
+vulkan-loader:             # 备用加载器（spirv-cross/libplacebo 链）/ spare loader (spirv-cross/libplacebo chain)
+  git: https://github.com/KhronosGroup/Vulkan-Loader.git
+spirv-cross:
+  git: https://github.com/KhronosGroup/SPIRV-Cross.git
+libplacebo:
+  git: https://code.videolan.org/videolan/libplacebo.git
+  submodules: true
