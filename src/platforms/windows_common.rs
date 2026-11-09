@@ -312,7 +312,7 @@ pub fn packages() -> Result<(), String> {
             "git",
             "patch",
             "diffutils",
-            "zip",
+            "p7zip",
             "unzip",
             "tar",
             "gawk",
@@ -565,9 +565,9 @@ pub fn ffmpeg() -> Result<(), String> {
 }
 
 /// package 阶段：收集二进制/文档/预设 → DLL 导入白名单 → 冒烟测试 →
-/// BUILDINFO → zip + sha256
+/// BUILDINFO → 7z + sha256
 /// Package stage: collect binaries/docs/presets -> DLL import allowlist ->
-/// smoke test -> BUILDINFO -> zip + sha256
+/// smoke test -> BUILDINFO -> 7z + sha256
 pub fn package() -> Result<(), String> {
     let e = sys::env();
     // 源码身份（ffmpeg() 落的盘；独立调用 package 时凭它命名）
@@ -701,8 +701,8 @@ pub fn package() -> Result<(), String> {
     log::group_end();
     smoke_rc?;
 
-    // BUILDINFO 收集 + zip 打包 + sha256 校验和
-    // BUILDINFO + zip + sha256
+    // BUILDINFO 收集 + 7z 打包 + sha256 校验和
+    // BUILDINFO + 7z + sha256
     let buildconf = sys::capture(
         &pkg.join("bin/ffmpeg.exe").to_string_lossy(),
         &["-hide_banner", "-buildconf"],
@@ -733,20 +733,25 @@ pub fn package() -> Result<(), String> {
             .join("\n"),
     );
     fsx::write(&pkg.join("BUILDINFO.txt"), &info)?;
-    fsx::write(&e.dist.join(format!("{name}.buildinfo.txt")), &info)?;
 
     fsx::install_d(&e.dist)?;
-    let zipname = format!("{name}.zip");
+    // 固实 7z（-ms=on 全档一个 solid block，压缩率最优）；msys zip 包
+    // 在 arm64 runner 上缺席（spawn zip 实证），7z 双保险：MSYS2
+    // 包 + GHA 镜像自带 / solid 7z (-ms=on puts the whole archive in
+    // one solid block, best ratio); the msys zip package is absent on
+    // the arm64 runner (spawn zip empirical) — 7z has a double source:
+    // the MSYS2 package and the GHA image
+    let zipname = format!("{name}.7z");
     let zippath = e.dist.join(&zipname);
     fsx::rm_rf(&zippath);
     sys::run_ok(
-        "zip",
+        &sys::sevenz()?,
         &[
-            "-q",
-            "-r",
-            "-9",
-            "-X",
-            &sys::win_to_posix(&zippath, &e.msys2_root),
+            "a",
+            "-t7z",
+            "-mx=9",
+            "-ms=on",
+            &zippath.to_string_lossy(),
             &name,
         ],
         &pkgroot,

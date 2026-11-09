@@ -789,6 +789,28 @@ pub fn which(prog: &str) -> Option<PathBuf> {
     None
 }
 
+/// 7-Zip 解析：子进程 PATH 的 7z/7za/7zr，最后退 GHA Windows 镜像预装
+/// 位置（`C:\Program Files\7-Zip`，不经 MSYS2 PATH 也能命中）/
+/// resolve 7-Zip: 7z/7za/7zr on the child PATH, then the preinstalled
+/// location in the GHA Windows image (`C:\Program Files\7-Zip` —
+/// reachable even when MSYS2's PATH shadows it)
+pub fn sevenz() -> Result<String, String> {
+    for c in ["7z", "7za", "7zr"] {
+        if let Some(p) = which(c) {
+            return Ok(p.to_string_lossy().to_string());
+        }
+    }
+    for p in [
+        "C:/Program Files/7-Zip/7z.exe",
+        "C:/Program Files (x86)/7-Zip/7z.exe",
+    ] {
+        if Path::new(p).is_file() {
+            return Ok(p.to_string());
+        }
+    }
+    Err("7z not found (child PATH 7z/7za/7zr; C:/Program Files/7-Zip)".into())
+}
+
 /// sha256：优先 sha256sum（GNU），退回 shasum -a 256（macOS），再退 openssl
 /// sha256 of a byte slice: sha256sum → shasum -a 256 → openssl
 pub fn sha256_data(data: &[u8]) -> Result<String, String> {

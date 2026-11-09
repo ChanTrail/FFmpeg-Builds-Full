@@ -811,6 +811,116 @@ pub(crate) fn byte_rename(
     Ok(renamed)
 }
 
+/// 把"册内全局 UNDEF ∩ 局部定义"的 Mach-O 符号就地提升为外部符号
+/// （`n_type |= N_EXT`），返回改动的 nlist 条目数 /
+/// promote archive members' symbols that are "global UNDEF ∩ local def"
+/// to external (`n_type |= N_EXT`) in place; returns patched nlist count
+///
+/// 起因：新版 rustc 把 `__rustc` 分配/panic shim 以局部符号（N_SECT
+/// 无 N_EXT）发进静态库成员——同 crate-hash 的 librsvg 同类 shim 仍
+/// 是全局（0x0f），两版 rustc 的 codegen 差异。局部定义够不着其它
+/// 成员的外部 UNDEF，裸 `-lrav1e` 链测 `__rust_alloc`/`realloc`/
+/// `start_panic`/`alloc_zeroed`/`panic_cleanup` 全家 undefined——
+/// 与 dedup 无关，归档天生不自洽。提升判据"本册某成员对外引它 ∧
+/// 本册某成员局部定义它"恰好命中 mis-localized 导出 /
+/// cause: newer rustc emits the `__rustc` alloc/panic shim as LOCAL
+/// symbols (N_SECT without N_EXT) inside staticlib members — the
+/// same-crate-hash librsvg shim is still global (0x0f), a codegen
+/// difference across rustc versions. A local definition can't satisfy
+/// the other members' external UNDEFs, so the bare `-lrav1e` test dies
+/// on the whole `__rust_alloc/realloc/start_panic/alloc_zeroed/
+/// panic_cleanup` family — inherent self-inconsistency, unrelated to
+/// dedup. The criterion "undef'd globally in ≥1 member ∧ defined
+/// locally in ≥1 member" hits exactly the mis-localized exports
+fn macho_export_shim_defs(lib: &Path) -> Result<usize, String> {
+    let mut buf = std::fs::read(lib).map_err(|e| format!("read {lib:?}: {e}"))?;
+    if buf.len() < 8 || &buf[..8] != b"!<arch>\n" {
+        return Err(format!("{lib:?}: not a standard ar archive"));
+    }
+    fn ascii_dec(b: &[u8]) -> usize {
+        b.iter()
+            .filter(|c| c.is_ascii_digit())
+            .fold(0usize, |a, c| a * 10 + (c - b'0') as usize)
+    }
+    let mut undefs: HashSet<Vec<u8>> = HashSet::new();
+    let mut locals: Vec<(Vec<u8>, usize)> = Vec::new(); // (名, n_type 字节位置) / (name, file offset of n_type byte)
+    let mut pos = 8usize;
+    while pos + 60 <= buf.len() {
+        let hdr = &buf[pos..pos + 60];
+        if &hdr[58..60] != b"`\n" {
+            break;
+        }
+        let size = ascii_dec(&hdr[48..58]);
+        let inline = hdr[0..16].strip_prefix(b"#1/").map(ascii_dec).unwrap_or(0);
+        let dstart = pos + 60 + inline;
+        let dlen = size.saturating_sub(inline);
+        pos += 60 + size + (size & 1);
+        let Some(data) = buf.get(dstart..dstart + dlen) else {
+            continue;
+        };
+        // 只认 64 位小端 Mach-O；`.SYMDEF`/位码/文本成员自然出局 /
+        // 64-bit LE Mach-O only — SYMDEF/bitcode/text members bow out
+        if data.len() < 32 || data[..4] != [0xcf, 0xfa, 0xed, 0xfe] {
+            continue;
+        }
+        let ncmds = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
+        let mut lc = 32usize;
+        let (mut symoff, mut nsyms, mut stroff, mut strsize) = (0usize, 0usize, 0usize, 0usize);
+        for _ in 0..ncmds {
+            if lc + 8 > data.len() {
+                break;
+            }
+            let cmd = u32::from_le_bytes(data[lc..lc + 4].try_into().unwrap());
+            let csz = u32::from_le_bytes(data[lc + 4..lc + 8].try_into().unwrap()) as usize;
+            if cmd == 0x2 && lc + 24 <= data.len() {
+                // LC_SYMTAB / LC_SYMTAB
+                symoff = u32::from_le_bytes(data[lc + 8..lc + 12].try_into().unwrap()) as usize;
+                nsyms = u32::from_le_bytes(data[lc + 12..lc + 16].try_into().unwrap()) as usize;
+                stroff = u32::from_le_bytes(data[lc + 16..lc + 20].try_into().unwrap()) as usize;
+                strsize = u32::from_le_bytes(data[lc + 20..lc + 24].try_into().unwrap()) as usize;
+            }
+            lc = lc.saturating_add(csz.max(8));
+        }
+        if nsyms == 0 || symoff + nsyms * 16 > data.len() || stroff + strsize > data.len() {
+            continue;
+        }
+        for i in 0..nsyms {
+            let n = symoff + i * 16;
+            let strx = u32::from_le_bytes(data[n..n + 4].try_into().unwrap()) as usize;
+            let ntype = data[n + 4];
+            if strx == 0 || strx >= strsize {
+                continue;
+            }
+            let s = stroff + strx;
+            let e = match data[s..stroff + strsize].iter().position(|c| *c == 0) {
+                Some(k) => s + k,
+                None => continue,
+            };
+            let name = data[s..e].to_vec();
+            let ty = ntype & 0x0e;
+            if ntype & 0xe0 != 0 || ntype & 0x10 != 0 {
+                continue; // N_STAB / N_PEXT 不参与 / skip stab & private-extern
+            }
+            if ty == 0 && ntype & 0x01 != 0 {
+                undefs.insert(name);
+            } else if (ty == 0x0e || ty == 0x02) && ntype & 0x01 == 0 {
+                locals.push((name, dstart + n + 4));
+            }
+        }
+    }
+    let mut flipped = 0usize;
+    for (name, at) in locals {
+        if undefs.contains(&name) {
+            buf[at] |= 0x01; // 打 N_EXT / set N_EXT
+            flipped += 1;
+        }
+    }
+    if flipped > 0 {
+        std::fs::write(lib, &buf).map_err(|e| format!("write {lib:?}: {e}"))?;
+    }
+    Ok(flipped)
+}
+
 /// nm 里是否有匹配模式行的符号（[TtWw]/_? 前缀）/ whether nm output has a
 /// defined/weak symbol matching the name (with optional _ prefix)
 fn nm_has(lib: &Path, sym: &str, dir: &Path) -> bool {
@@ -939,6 +1049,29 @@ fn postfix() -> Result<(), String> {
     // definitions (same effect as windows' redefine_sym; the Mach-O
     // equivalent)
     if e.os == sys::Os::Mac {
+        // 先修自洽性再 dedup：新 rustc 把 __rustc shim 发成局部符号，
+        // 裸 -lrav1e 链测全家 undefined。提升为全局后它进 shared，
+        // 随 byte_rename 与引用同步迁移 / fix self-consistency before
+        // dedup: new rustc emits __rustc shims local so the bare -lrav1e
+        // test dies; once global they enter `shared` and migrate with
+        // their references under byte_rename
+        for l in ["librav1e.a", "librsvg-2.a"] {
+            let p = libdir.join(l);
+            if !p.is_file() {
+                continue;
+            }
+            match macho_export_shim_defs(&p) {
+                Ok(0) => {}
+                Ok(n) => {
+                    let _ = sys::run(&e.ranlib, &[&p.to_string_lossy()], &e.work);
+                    log::log(&format!(
+                        "[extras] promoted {n} local def(s) to external in {l} \
+                         (__rustc shim locality)"
+                    ));
+                }
+                Err(why) => log::warn(&format!("[extras] shim promote on {l}: {why}")),
+            }
+        }
         for (a, b) in [("libxevd.a", "libxeve.a"), ("librsvg-2.a", "librav1e.a")] {
             let (pa, pb) = (libdir.join(a), libdir.join(b));
             if !(pa.is_file() && pb.is_file()) {

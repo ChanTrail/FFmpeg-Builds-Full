@@ -9,7 +9,7 @@ The whole pipeline is driven by this repository's **Rust driver program** (`FFmp
 
 ## Downloads
 
-File names: `ffmpeg-<first-10-of-upstream-commit>-<platform>.<ext>`, e.g. `ffmpeg-46f23be8b1-windows-x86_64.zip`.
+File names: `ffmpeg-<first-10-of-upstream-commit>-<platform>.<ext>`, e.g. `ffmpeg-46f23be8b1-windows-x86_64.7z`.
 
 **Floating `latest` (stable links, script-friendly)**:
 
@@ -17,7 +17,7 @@ File names: `ffmpeg-<first-10-of-upstream-commit>-<platform>.<ext>`, e.g. `ffmpe
 https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-latest-<platform>.<ext>
 ```
 
-`<platform>`: `windows-x86_64`, `windows-arm64`, `linux-x86_64`, `linux-arm64`, `macos-arm64`; Windows ships `.zip`, the others `.tar.xz`.
+`<platform>`: `windows-x86_64`, `windows-arm64`, `linux-x86_64`, `linux-arm64`, `macos-arm64`; Windows ships `.7z` (solid archive), the others `.tar.xz`.
 
 **Dated releases**: tagged `YYYYMMDD` (a same-day rebuild appends `-HHMM`), the newest 30 are kept (about 3 months). Every archive ships:
 
@@ -32,8 +32,8 @@ https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-
 
 | Platform | File suffix | Build environment | Runtime requirement |
 |:--|:--|:--|:--|
-| Windows x86_64 | `-windows-x86_64.zip` | `windows-latest`, MSYS2 UCRT64 | Windows 10+ |
-| Windows arm64 | `-windows-arm64.zip` | `windows-11-arm`, MSYS2 CLANGARM64 | Windows 11 ARM64 |
+| Windows x86_64 | `-windows-x86_64.7z` | `windows-latest`, MSYS2 UCRT64 | Windows 10+ |
+| Windows arm64 | `-windows-arm64.7z` | `windows-11-arm`, MSYS2 CLANGARM64 | Windows 11 ARM64 |
 | Linux x86_64 | `-linux-x86_64.tar.xz` | `ubuntu-26.04` | the runner's glibc |
 | Linux arm64 | `-linux-arm64.tar.xz` | `ubuntu-26.04-arm` | the runner's glibc |
 | macOS arm64 | `-macos-arm64.tar.xz` | `macos-latest` | macOS 14+ (Apple Silicon) |

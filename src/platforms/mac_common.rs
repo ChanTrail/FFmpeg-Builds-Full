@@ -506,7 +506,6 @@ pub fn package() -> Result<(), String> {
             .join("\n"),
     );
     fsx::write(&pkg.join("BUILDINFO.txt"), &info)?;
-    fsx::write(&e.dist.join(format!("{name}.buildinfo.txt")), &info)?;
 
     fsx::install_d(&e.dist)?;
     let tarname = format!("{name}.tar.xz");

@@ -226,7 +226,13 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
         if (rc == 132 || rc == 139 || rc < 0) && sys::which("gdb").is_some() {
             log::group_begin(&format!("gdb backtrace: {enc}"));
             let target = std::env::var("FFMPEG_GDB").unwrap_or_else(|_| fm.clone());
-            let _ = sys::run(
+            // 全文落 dist 诊断件——CI output gate 会把大输出吞掉（实证：
+            // 25KiB 回溯只剩一行 suppressed 提示），控制台只留尾部精要 /
+            // the full trace goes to a dist diagnostics file — the CI
+            // output gate eats large output (empirical: a 25KiB backtrace
+            // shrank to a one-line suppression note); the console keeps
+            // only a tail excerpt
+            let (trace, _) = sys::capture_lax(
                 "gdb",
                 &[
                     "-q",
@@ -266,7 +272,17 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
                     "-",
                 ],
                 bin,
-            );
+            )
+            .unwrap_or_default();
+            let dist = sys::env().dist.clone();
+            let diag = dist.join(format!("smoke-gdb-{enc}.txt"));
+            let _ = crate::fsx::install_d(&dist);
+            let _ = crate::fsx::write(&diag, &trace);
+            println!("[smoke] full gdb trace -> {}", diag.display());
+            let tail: Vec<&str> = trace.lines().collect();
+            for l in tail.iter().skip(tail.len().saturating_sub(50)) {
+                println!("{l}");
+            }
             log::group_end();
         }
         annotate_error(&format!(

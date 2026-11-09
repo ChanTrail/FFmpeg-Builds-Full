@@ -231,8 +231,8 @@ jobs:
       # 从最新驱动 release 下载本平台二进制并校验；产物名带平台后缀，
       # 重命名回调用名 FFmpeg-Builds-Full[.exe]。
       # Download this platform's binary from the newest driver release and
-      # verify it; assets carry the platform suffix and are renamed back
-      # to the invocation name FFmpeg-Builds-Full[.exe].
+      # verify it; the solid-7z asset unpacks straight to the invocation
+      # name FFmpeg-Builds-Full[.exe].
       - name: Download released driver
         shell: bash
         env:
@@ -245,18 +245,23 @@ jobs:
           cd driver
           exe="FFmpeg-Builds-Full-${{ matrix.platform }}"
           tgt="FFmpeg-Builds-Full"
-          # Windows 的产物名和回调名都带 .exe —— 显式推导，别用参数展开
-          # （*FFmpeg-Builds-Full-* 的尾 * 会把整个文件名剥光）
-          # Both the asset and the callback name carry .exe on Windows —
-          # derive explicitly; parameter expansion (*FFmpeg-Builds-Full-*
-          # strips the whole filename via its trailing *)
           if [[ "${{ matrix.kind }}" == windows ]]; then
-            exe="$exe.exe"
-            tgt="FFmpeg-Builds-Full.exe"
+            # Windows 驱动产物是固实 7z（调用名二进制在包内）/
+            # the windows driver asset is a solid 7z carrying the
+            # invocation-name binary
+            sha256sum -c -- "$exe.7z.sha256"
+            7z x -y "$exe.7z" >/dev/null
+            rm -f "$exe.7z" "$exe.7z.sha256"
+          else
+            # Windows 的产物名和回调名都带 .exe —— 显式推导，别用参数展开
+            # （*FFmpeg-Builds-Full-* 的尾 * 会把整个文件名剥光）
+            # Both the asset and the callback name carry .exe on Windows —
+            # derive explicitly; parameter expansion (*FFmpeg-Builds-Full-*
+            # strips the whole filename via its trailing *)
+            sha256sum -c -- "$exe.sha256"
+            rm "$exe.sha256"
+            mv "$exe" "$tgt"
           fi
-          sha256sum -c -- "$exe.sha256"
-          rm "$exe.sha256"
-          mv "$exe" "$tgt"
 
       - name: Make driver executable (POSIX)
         if: matrix.kind != 'windows'
@@ -456,15 +461,14 @@ jobs:
 
       # ----------------------------------------------------------------- common
       - name: Upload build
-        if: ${{ !cancelled() && hashFiles('dist/*.zip', 'dist/*.tar.xz') != '' }}
+        if: ${{ !cancelled() && hashFiles('dist/*.7z', 'dist/*.tar.xz') != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: build-${{ matrix.platform }}
           path: |
-            dist/*.zip
+            dist/*.7z
             dist/*.tar.xz
             dist/*.sha256
-            dist/*.buildinfo.txt
           if-no-files-found: error
           retention-days: 3
 
@@ -607,14 +611,17 @@ jobs:
             shasum -a 256 -c -- *.sha256
           fi
 
+      # 仅 Windows 产物是固实 7z——GHA windows 镜像自带 7z（MSYS2
+      # 包栈另有 p7zip 兜底）/ only Windows products are solid 7z —
+      # the GHA windows image ships 7z (with the MSYS2 stack's p7zip
+      # as fallback)
       - name: Extract (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: bash
         run: |
-          New-Item -ItemType Directory -Force -Path pkg | Out-Null
-          Get-ChildItem dist -Filter *.zip | ForEach-Object {
-            Expand-Archive -LiteralPath $_.FullName -DestinationPath pkg
-          }
+          set -euo pipefail
+          mkdir -p pkg
+          for f in dist/*.7z; do 7z x -y "$f" -opkg >/dev/null; done
 
       - name: Extract (Linux / macOS)
         if: runner.os != 'Windows'
@@ -642,10 +649,9 @@ jobs:
         with:
           name: ffmpeg-${{ matrix.platform }}
           path: |
-            dist/*.zip
+            dist/*.7z
             dist/*.tar.xz
             dist/*.sha256
-            dist/*.buildinfo.txt
           if-no-files-found: error
           retention-days: 30
 
@@ -704,13 +710,13 @@ jobs:
           ls -lh artifacts/
 
           # Belt and braces: refuse to publish unless every platform is present,
-          # built from the pinned commit, with its checksum and build report.
+          # built from the pinned commit, with its checksum.
           files=()
           for p in windows-x86_64 windows-arm64 linux-x86_64 linux-arm64 macos-arm64; do
             ext="tar.xz"
-            [[ "$p" == windows-* ]] && ext="zip"
+            [[ "$p" == windows-* ]] && ext="7z"
             base="artifacts/ffmpeg-$FFMPEG_HASH-$p"
-            for f in "$base.$ext" "$base.$ext.sha256" "$base.buildinfo.txt"; do
+            for f in "$base.$ext" "$base.$ext.sha256"; do
               [[ -f "$f" ]] || { echo "::error::missing $f"; exit 1; }
               files+=("$f")
             done
@@ -748,14 +754,14 @@ jobs:
 
       # A floating "latest" release with hash-less file names, so download
       # links never change (master builds only — pre-releases never touch it):
-      #   https://github.com/<owner>/<repo>/releases/latest/download/ffmpeg-latest-windows-x86_64.zip
+      #   https://github.com/<owner>/<repo>/releases/latest/download/ffmpeg-latest-windows-x86_64.7z
       - name: Update "latest" release
         if: env.PRERELEASE != 'true'
         run: |
           set -euo pipefail
           mkdir latest
-          re='^ffmpeg-[0-9a-f]{10}-(windows-x86_64|windows-arm64|linux-x86_64|linux-arm64|macos-arm64)\.(zip|tar\.xz)$'
-          for f in artifacts/*.zip artifacts/*.tar.xz; do
+          re='^ffmpeg-[0-9a-f]{10}-(windows-x86_64|windows-arm64|linux-x86_64|linux-arm64|macos-arm64)\.(7z|tar\.xz)$'
+          for f in artifacts/*.7z artifacts/*.tar.xz; do
             name="$(basename "$f")"
             [[ "$name" =~ $re ]] || { echo "::error::unexpected archive name $name"; exit 1; }
             p="${BASH_REMATCH[1]}"
@@ -763,7 +769,6 @@ jobs:
             cp "$f" "latest/$new"
             # Same-named checksum file; it has to reference the new file name.
             (cd latest && sha256sum -- "$new" > "$new.sha256")
-            cp "artifacts/ffmpeg-$FFMPEG_HASH-$p.buildinfo.txt" "latest/ffmpeg-latest-$p.buildinfo.txt"
           done
           # 正文与刚发的日期 tag release 逐字同步（同一份 notes.md；
           # 里面的链接指向日期 tag 资产，永久有效）

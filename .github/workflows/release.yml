@@ -167,7 +167,17 @@ jobs:
           set -euo pipefail
           mkdir -p out
           cp "target/release/${{ matrix.exe }}" "out/"
-          (cd out && sha256sum -- "${{ matrix.exe }}" > "${{ matrix.exe }}.sha256")
+          if [[ "${{ matrix.platform }}" == windows-* ]]; then
+            # Windows 驱动产物 = 固实 7z（调用名二进制在包内）+ 覆盖
+            # 它的 sha256 / the windows driver asset = a solid 7z
+            # carrying the invocation-name binary plus its sha256
+            pkg7z="FFmpeg-Builds-Full-${{ matrix.platform }}.7z"
+            (cd out && 7z a -t7z -mx=9 -ms=on "$pkg7z" "${{ matrix.exe }}" >/dev/null \
+              && rm "${{ matrix.exe }}" \
+              && sha256sum -- "$pkg7z" > "$pkg7z.sha256")
+          else
+            (cd out && sha256sum -- "${{ matrix.exe }}" > "${{ matrix.exe }}.sha256")
+          fi
 
       - name: Upload driver
         uses: actions/upload-artifact@v4
@@ -212,13 +222,25 @@ jobs:
           set -euo pipefail
           mkdir -p assets
           for p in windows-x86_64 windows-arm64 linux-x86_64 linux-arm64 macos-arm64; do
-            case "$p" in windows-*) exe=FFmpeg-Builds-Full.exe ;; *) exe=FFmpeg-Builds-Full ;; esac
-            src="dist/driver-$p/$exe"
-            [[ -f "$src" ]] || { echo "::error::missing $src"; exit 1; }
-            (cd "dist/driver-$p" && sha256sum -c -- "$exe.sha256")
-            cp "$src" "assets/FFmpeg-Builds-Full-$p${exe##*FFmpeg-Builds-Full}"
+            if [[ "$p" == windows-* ]]; then
+              # Windows 驱动产物 = 固实 7z（平台后缀名，打包步已附带
+              # sha256）；.7z 内是调用名二进制，下游 7z x 即用 /
+              # windows driver asset = platform-suffixed solid 7z (the
+              # packaging step already ships its sha256); inside is the
+              # invocation-name binary, usable straight after 7z x
+              f="FFmpeg-Builds-Full-$p.7z"
+              src="dist/driver-$p/$f"
+              [[ -f "$src" ]] || { echo "::error::missing $src"; exit 1; }
+              (cd "dist/driver-$p" && sha256sum -c -- "$f.sha256")
+              cp "$src" "$src.sha256" assets/
+            else
+              src="dist/driver-$p/FFmpeg-Builds-Full"
+              [[ -f "$src" ]] || { echo "::error::missing $src"; exit 1; }
+              (cd "dist/driver-$p" && sha256sum -c -- "FFmpeg-Builds-Full.sha256")
+              cp "$src" "assets/FFmpeg-Builds-Full-$p"
+              (cd assets && sha256sum -- "FFmpeg-Builds-Full-$p" > "FFmpeg-Builds-Full-$p.sha256")
+            fi
           done
-          (cd assets && for f in FFmpeg-Builds-Full-*; do sha256sum -- "$f" > "$f.sha256"; done)
           ls -lh assets/
 
       # Release 正文按仓库规范拼装：What's Changed → 产物表格 →

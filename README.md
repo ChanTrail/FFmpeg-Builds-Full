@@ -9,7 +9,7 @@
 
 ## 下载
 
-文件名：`ffmpeg-<上游提交前10位>-<平台>.<扩展名>`，例如 `ffmpeg-46f23be8b1-windows-x86_64.zip`。
+文件名：`ffmpeg-<上游提交前10位>-<平台>.<扩展名>`，例如 `ffmpeg-46f23be8b1-windows-x86_64.7z`。
 
 **浮动 `latest`（链接固定，适合脚本）**：
 
@@ -17,7 +17,7 @@
 https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-latest-<platform>.<ext>
 ```
 
-`<platform>`：`windows-x86_64`、`windows-arm64`、`linux-x86_64`、`linux-arm64`、`macos-arm64`；Windows 为 `.zip`，其余为 `.tar.xz`。
+`<platform>`：`windows-x86_64`、`windows-arm64`、`linux-x86_64`、`linux-arm64`、`macos-arm64`；Windows 为 `.7z`（固实压缩），其余为 `.tar.xz`。
 
 **带日期的 Release**：标签 `YYYYMMDD`（同日多次构建附加 `-HHMM`），保留最近 30 个（约 3 个月）。每个压缩包附带：
 
@@ -32,8 +32,8 @@ https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-
 
 | 平台 | 文件名后缀 | 构建环境 | 运行要求 |
 |:--|:--|:--|:--|
-| Windows x86_64 | `-windows-x86_64.zip` | `windows-latest`，MSYS2 UCRT64 | Windows 10+ |
-| Windows arm64 | `-windows-arm64.zip` | `windows-11-arm`，MSYS2 CLANGARM64 | Windows 11 ARM64 |
+| Windows x86_64 | `-windows-x86_64.7z` | `windows-latest`，MSYS2 UCRT64 | Windows 10+ |
+| Windows arm64 | `-windows-arm64.7z` | `windows-11-arm`，MSYS2 CLANGARM64 | Windows 11 ARM64 |
 | Linux x86_64 | `-linux-x86_64.tar.xz` | `ubuntu-26.04` | 随 runner 的 glibc |
 | Linux arm64 | `-linux-arm64.tar.xz` | `ubuntu-26.04-arm` | 随 runner 的 glibc |
 | macOS arm64 | `-macos-arm64.tar.xz` | `macos-latest` | macOS 14+（Apple Silicon） |

@@ -9,21 +9,21 @@
 # external library FFmpeg's configure knows about, whether each platform's
 # build has it, plus what failed to build on each platform.
 #
-# 用法 / Usage: completeness-report.sh <ffmpeg-source-dir> <buildinfo-dir>
+# 用法 / Usage: completeness-report.sh <ffmpeg-source-dir> <archives-dir>
 #
 # <ffmpeg-source-dir> 只需要 FFmpeg 的 `configure`（以 --help 运行）。
-# <buildinfo-dir> 存放每个平台的 ffmpeg-*-<platform>.buildinfo.txt；
-# 这些文件由构建脚本写出，内容是 `ffmpeg -buildconf` 的输出。
+# <archives-dir> 存放每个平台的 ffmpeg-*-<platform>.{7z,tar.xz}；构建
+# 报告在包内 <name>/BUILDINFO.txt，内容是 `ffmpeg -buildconf` 的输出。
 # <ffmpeg-source-dir> only needs FFmpeg's `configure` (it is run with --help).
-# <buildinfo-dir> holds ffmpeg-*-<platform>.buildinfo.txt for every platform;
-# the files are written by the build scripts and contain the output of
-# `ffmpeg -buildconf`.
+# <archives-dir> holds ffmpeg-*-<platform>.{7z,tar.xz} for every platform;
+# the build report lives inside each archive as <name>/BUILDINFO.txt and
+# contains the output of `ffmpeg -buildconf`.
 # =============================================================================
 set -euo pipefail
 shopt -s nullglob
 
-SRC="${1:?usage: $0 <ffmpeg-source-dir> <buildinfo-dir>}"
-DIR="${2:?usage: $0 <ffmpeg-source-dir> <buildinfo-dir>}"
+SRC="${1:?usage: $0 <ffmpeg-source-dir> <archives-dir>}"
+DIR="${2:?usage: $0 <ffmpeg-source-dir> <archives-dir>}"
 
 # 全部目标平台清单 / All target platforms
 PLATFORMS=(windows-x86_64 windows-arm64 linux-x86_64 linux-arm64 macos-arm64)
@@ -49,12 +49,25 @@ trap 'rm -rf "$tmp"' EXIT
 total="$(wc -l <"$tmp/candidates.txt" | tr -d ' ')"
 [[ "$total" -gt 0 ]] || { echo "::error::no external libraries found in configure --help" >&2; exit 1; }
 
-# 每个平台启用的选项。
-# The enabled options of each platform.
+# 每个平台启用的选项：从压缩包内抽出 BUILDINFO.txt 到 stdout
+# （.7z 走 7z x -so，.tar.xz 走 tar -xO；两者都支持通配成员名）。
+# The enabled options of each platform: BUILDINFO.txt is pulled from inside
+# the archive straight to stdout (7z x -so for .7z, tar -xO for .tar.xz;
+# both accept a wildcard member name).
 for p in "${PLATFORMS[@]}"; do
-  found=("$DIR"/*-"$p".buildinfo.txt)
-  [[ ${#found[@]} -eq 1 ]] || { echo "::error::expected one build report for $p in $DIR, found ${#found[@]}" >&2; exit 1; }
-  cp "${found[0]}" "$tmp/$p.info"
+  found=("$DIR"/*-"$p".7z "$DIR"/*-"$p".tar.xz)
+  [[ ${#found[@]} -eq 1 ]] || { echo "::error::expected one archive for $p in $DIR, found ${#found[@]}" >&2; exit 1; }
+  f="${found[0]}"
+  case "$f" in
+    *.7z)
+      sevenz="$(command -v 7zz || command -v 7z)"
+      "$sevenz" x -so "$f" '*/BUILDINFO.txt' >"$tmp/$p.info"
+      ;;
+    *.tar.xz)
+      tar -xOf "$f" --wildcards '*/BUILDINFO.txt' >"$tmp/$p.info"
+      ;;
+  esac
+  [[ -s "$tmp/$p.info" ]] || { echo "::error::no BUILDINFO.txt inside $f" >&2; exit 1; }
   grep -oE -- '--enable-[A-Za-z0-9_-]+' "$tmp/$p.info" | sed 's/^--enable-//' | sort -u >"$tmp/$p.enabled"
 done
 

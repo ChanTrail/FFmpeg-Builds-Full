@@ -462,22 +462,20 @@ jobs:
         run: ./driver/FFmpeg-Builds-Full save-deps
 
       # ----------------------------------------------------------------- common
-      # 完整构建的产物（ffmpeg tar/zip + sha256 + buildinfo）随 workflow
-      # artifact 留档供检视——只留档，任何 FFmpeg release 都不在本
-      # workflow 发 / the complete build's product (the ffmpeg tar/zip +
-      # sha256 + buildinfo) rides a workflow artifact for inspection —
-      # archived only; no FFmpeg release is ever published from this
-      # workflow
+      # 完整构建的产物（ffmpeg 压缩包 + sha256）随 workflow artifact
+      # 留档供检视——只留档，任何 FFmpeg release 都不在本 workflow 发
+      # / the complete build's product (the ffmpeg archive + sha256)
+      # rides a workflow artifact for inspection — archived only;
+      # no FFmpeg release is ever published from this workflow
       - name: Upload build
-        if: ${{ !cancelled() && hashFiles('dist/*.zip', 'dist/*.tar.xz') != '' }}
+        if: ${{ !cancelled() && hashFiles('dist/*.7z', 'dist/*.tar.xz') != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: build-${{ matrix.platform }}
           path: |
-            dist/*.zip
+            dist/*.7z
             dist/*.tar.xz
             dist/*.sha256
-            dist/*.buildinfo.txt
           if-no-files-found: error
           retention-days: 7
 

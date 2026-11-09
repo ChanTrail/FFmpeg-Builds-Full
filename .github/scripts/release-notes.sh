@@ -62,33 +62,26 @@ EOF
 # Platform names as table columns; rows are the artifact kinds. Cells link
 # each artifact name to its download — same layout as the deps release.
 header="| 产物 Artifact |" sep="|" arow="| **压缩包 Archive** |"
-srow="| **校验 SHA-256** |" brow="| **构建报告 Build report** |"
+srow="| **校验 SHA-256** |"
 for p in "${PLATFORMS[@]}"; do
-  found=("$DIR"/*-"$p".zip "$DIR"/*-"$p".tar.xz)
+  found=("$DIR"/*-"$p".7z "$DIR"/*-"$p".tar.xz)
   if [[ ${#found[@]} -ne 1 ]]; then
     echo "::error::expected exactly one archive for platform '$p' in $DIR, found ${#found[@]}" >&2
     exit 1
   fi
   f="${found[0]}"
   name="$(basename "$f")"
-  base="${name%.zip}"
-  base="${base%.tar.xz}"
   size="$(human_size "$(wc -c <"$f" | tr -d ' ')")"
   header="$header $p |"; sep="$sep---|"
   arow="$arow [$name]($BASE/$name)<br>$size |"
   srow="$srow [$name.sha256]($BASE/$name.sha256) |"
-  if [[ -f "$DIR/$base.buildinfo.txt" ]]; then
-    brow="$brow [$base.buildinfo.txt]($BASE/$base.buildinfo.txt) |"
-  else
-    brow="$brow — |"
-  fi
 done
-printf '%s\n%s\n%s\n%s\n%s\n' "$header" "$sep" "$arow" "$srow" "$brow"
+printf '%s\n%s\n%s\n%s\n' "$header" "$sep" "$arow" "$srow"
 
 cat <<'EOF'
 
-每个压缩包都有同名的 `.sha256` 文件：把两者放在同一目录，执行 `sha256sum -c <压缩包>.sha256` 即可校验（macOS：`shasum -a 256 -c <压缩包>.sha256`）。构建报告列出了该平台启用的全部配置选项，以及构建失败或被放弃的库。
-<br>Every archive has a same-named `.sha256` file; put both in one folder and run `sha256sum -c <archive>.sha256` (macOS: `shasum -a 256 -c <archive>.sha256`). The build report lists every configure option of that platform and the libraries that failed or were dropped.
+每个压缩包都有同名的 `.sha256` 文件：把两者放在同一目录，执行 `sha256sum -c <压缩包>.sha256` 即可校验（macOS：`shasum -a 256 -c <压缩包>.sha256`）。包内的 `BUILDINFO.txt` 列出了该平台启用的全部配置选项，以及构建失败或被放弃的库。
+<br>Every archive has a same-named `.sha256` file; put both in one folder and run `sha256sum -c <archive>.sha256` (macOS: `shasum -a 256 -c <archive>.sha256`). `BUILDINFO.txt` inside the archive lists every configure option of that platform and the libraries that failed or were dropped.
 
 ## 关于这些构建 / About these builds
 
