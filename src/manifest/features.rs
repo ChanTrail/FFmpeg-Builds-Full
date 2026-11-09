@@ -79,7 +79,10 @@ pub const FEATURES: &[Feature] = &[
     // 放行后掉 / FFmpeg's require links both -ltheoraenc and -ltheoradec
     // — probe both so the gate can't pass then drop
     f("libtheora", "theoraenc,theoradec"),
-    f("libxvid", "xvidcore"),
+    // msys2 的 xvidcore 包不产 .pc——头文件验收通吃配方与 pacman 两路 /
+    // msys2's xvidcore package ships no .pc — a header check covers
+    // both the recipe and the pacman paths
+    f("libxvid", "hdrsym:xvid.h@xvid_global"),
     f("libkvazaar", "kvazaar"),
     f("libopenh264", "openh264"),
     f("liboapv", "oapv"),

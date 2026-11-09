@@ -177,38 +177,53 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
             continue;
         }
         println!("encode test: {enc}");
-        let rc = sys::run(
-            &fm,
-            &[
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                "testsrc2=size=640x360:rate=25",
-                "-frames:v",
-                "5",
-                "-c:v",
-                enc,
-                "-f",
-                "null",
-                "-",
-            ],
-            bin,
-        )
-        .unwrap_or(1);
+        let args = [
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x360:rate=25",
+            "-frames:v",
+            "5",
+            "-c:v",
+            enc,
+            "-f",
+            "null",
+            "-",
+        ];
+        let rc = sys::run(&fm, &args, bin).unwrap_or(1);
         if rc == 0 {
             continue;
         }
         println!("encode test: {enc} FAILED (exit status {rc})");
+        // SIMD 掩码诊断：libaom 读 AOM_SIMD_CAPS_MASK——0 掩掉全部 SIMD
+        // 档回落纯 C，过即"SIMD 路径崩"反证（libaom-av1 在 avx512 平台
+        // 的 0xC0000005 实证）。其它编码器不吃这个变量，无副作用 /
+        // SIMD-mask diagnostic: libaom honors AOM_SIMD_CAPS_MASK — 0
+        // masks every SIMD level onto the C path, so a pass is
+        // counter-evidence for a SIMD-path crash (empirical:
+        // libaom-av1's 0xC0000005 on an avx512 host). Other encoders
+        // ignore the var — no side effects
+        let drc = sys::cmd(&fm, &args)
+            .env("AOM_SIMD_CAPS_MASK", "0")
+            .status()
+            .map(|s| s.code().unwrap_or(-1))
+            .unwrap_or(1);
+        println!("encode test: {enc} retried with AOM_SIMD_CAPS_MASK=0 -> exit {drc}");
         // 崩溃（132=SIGILL，139=SIGSEGV）且无输出时：PATH 上有 gdb 时在
         // gdb 下重跑抓回溯。打包后的 $FFMPEG strip 过——FFMPEG_GDB 指
         // 未剥离副本 / on a crash with no output, rerun under gdb when one
         // is on PATH: the packaged ffmpeg is stripped, FFMPEG_GDB points at
         // the unstripped copy
-        if (rc == 132 || rc == 139) && sys::which("gdb").is_some() {
+        // Windows 崩溃走 NTSTATUS 负码（0xC0000005 即 -1073741819），
+        // 不是 POSIX 信号值——负数退出码一并算崩溃 / Windows crashes
+        // surface as negative NTSTATUS codes (0xC0000005 ==
+        // -1073741819), not POSIX signal values — any negative exit
+        // code counts as a crash
+        if (rc == 132 || rc == 139 || rc < 0) && sys::which("gdb").is_some() {
             log::group_begin(&format!("gdb backtrace: {enc}"));
             let target = std::env::var("FFMPEG_GDB").unwrap_or_else(|_| fm.clone());
             let _ = sys::run(

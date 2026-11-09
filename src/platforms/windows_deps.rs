@@ -312,6 +312,47 @@ fn redefine_sym(lib: &Path, old: &str, new: &str, tools: &Toolchain) -> bool {
 /// (empirical: postfix froze for hours); this is ~members × 2-3
 fn redefine_syms(lib: &Path, pairs: &[(String, String)], tools: &Toolchain) -> u32 {
     let e = sys::env();
+    if pairs.is_empty() {
+        return 0;
+    }
+    // 归档级直改：objcopy 原生认识归档——`--redefine-syms <file>`
+    // 一趟把全部改名对应用到每个成员并整体重写新归档，全量只花 3
+    // 个 spawn。对比逐成员版：rav1e∩rsvg 在 MSYS2 上 ≈4000 成员 ×
+    // 2-3 spawn（每 spawn 百毫秒级）仍是分钟级冻结；写回失败再退回
+    // 逐成员慢路兜底 / archive-level rewrite: objcopy natively
+    // understands archives — `--redefine-syms <file>` applies every
+    // rename pair to each member and emits a whole new archive in ~3
+    // spawns total. The member-wise version still costs ≈4000
+    // members × 2-3 spawns at ~100ms+ per spawn under MSYS2
+    // (empirical: minutes); fall back to it only if the wholesale
+    // write fails
+    let pf = e.work.join(format!("rsyms-{}.txt", std::process::id()));
+    let body = pairs
+        .iter()
+        .map(|(o, n)| format!("{o} {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let lib_s = lib.to_string_lossy().to_string();
+    if fsx::write(&pf, format!("{body}\n").as_str()).is_ok() {
+        let out_s = format!("{lib_s}.rsym.tmp");
+        let ok = sys::run(
+            &tools.objcopy,
+            &["--redefine-syms", &pf.to_string_lossy(), &lib_s, &out_s],
+            &e.work,
+        )
+        .unwrap_or(1)
+            == 0
+            && std::fs::rename(&out_s, lib).is_ok();
+        let _ = std::fs::remove_file(&pf);
+        let _ = std::fs::remove_file(&out_s);
+        if ok {
+            let _ = sys::run(&tools.ranlib, &[&lib_s], &e.work);
+            return pairs.len() as u32;
+        }
+        log::warn(&format!(
+            "dedup: archive-wide --redefine-syms failed on {lib_s}; falling back to member-wise"
+        ));
+    }
     let mdir = e.work.join(format!("rsym-{}", std::process::id()));
     fsx::rm_rf(&mdir);
     if fsx::install_d(&mdir).is_err() {
@@ -1234,6 +1275,16 @@ pub fn fixup() -> Result<(), String> {
             continue;
         }
         let defined = |p: &Path| -> HashSet<String> {
+            // 类型白名单：只收真·全局定义 {T,D,B,R,C,S,W,V}。I=导入描述
+            // 符、A=absolute、N=debug 都要排除——实证：PE 下 WaitOnAddress
+            // 这类 I 型导入桩被 nm 计为 defined，改名把引用扭向新名而
+            // 定义仍在别册，链测当场 undefined / type whitelist: only
+            // true global definitions {T,D,B,R,C,S,W,V}. I=import
+            // descriptor, A=absolute and N=debug must stay out —
+            // empirical: PE import stubs like WaitOnAddress report 'I'
+            // yet count as defined; renaming bent references onto the
+            // new name while the definition stayed in the sibling
+            // archive — instant undefined at the link test
             sys::capture(
                 &t.nm,
                 &["--defined-only", "-g", &p.to_string_lossy()],
@@ -1248,7 +1299,7 @@ pub fn fixup() -> Result<(), String> {
                     && f[f.len() - 2]
                         .chars()
                         .next()
-                        .is_some_and(|c| c.is_ascii_uppercase())
+                        .is_some_and(|c| "TDBRCSWV".contains(c))
                 {
                     Some(f[f.len() - 1].to_string())
                 } else {

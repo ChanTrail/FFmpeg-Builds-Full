@@ -961,16 +961,60 @@ fn postfix() -> Result<(), String> {
                 continue;
             }
             let list = e.work.join(format!("{b}.nmedit-list"));
-            fsx::write(&list, &shared.join("\n"))?;
-            sys::run_ok(
-                "nmedit",
-                &["-R", &list.to_string_lossy(), &pb.to_string_lossy()],
-                &e.work,
-            )?;
+            // nmedit -R 对"列表里任一名字未定义"直接整体报错——而 nm 的
+            // 符号表视图会把索引伪成员/弱符号鬼影也算成 defined（实证：
+            // compiler_builtins 单态化鬼名）。自纠循环：跑出 stderr，
+            // 剥掉被点名的行再重试，最多 5 轮 / nmedit -R aborts the
+            // whole run when any listed name is not defined — while nm's
+            // view of the archive counts index pseudo-member / weak
+            // ghosts as defined (empirical: compiler_builtins
+            // monomorph ghosts). Self-correcting loop: capture stderr,
+            // strip the named offenders, retry — 5 rounds max
+            let mut names = shared.clone();
+            for _ in 0..5 {
+                fsx::write(&list, &names.join("\n"))?;
+                let (out, code) = sys::capture_lax(
+                    "bash",
+                    &[
+                        "-c",
+                        &format!("nmedit -R '{}' '{}' 2>&1", list.display(), pb.display()),
+                    ],
+                    &e.work,
+                )
+                .unwrap_or_else(|why| (format!("spawn: {why}"), 127));
+                if code == 0 {
+                    break;
+                }
+                // 点名行是 "not defined in:" 之后的裸符号名 / offender
+                // lines are bare symbol names after "not defined in:"
+                let mut bad = false;
+                let offenders: HashSet<String> = out
+                    .lines()
+                    .filter_map(|l| {
+                        let l = l.trim();
+                        if l.contains("not defined in:") {
+                            bad = true;
+                            return None;
+                        }
+                        if bad && !l.is_empty() && !l.contains(':') {
+                            Some(l.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if offenders.is_empty() {
+                    return Err(format!("nmedit -R on {} failed: {out}", pb.display()));
+                }
+                names.retain(|n| !offenders.contains(n));
+                if names.is_empty() {
+                    break;
+                }
+            }
             let _ = sys::run(&e.ranlib, &[&pb.to_string_lossy()], &e.work);
             log::log(&format!(
                 "[extras] localized {} {a}-shared symbol(s) in {b} (nmedit -R)",
-                shared.len()
+                names.len()
             ));
         }
     }

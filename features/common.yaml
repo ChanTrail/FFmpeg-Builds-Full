@@ -95,7 +95,13 @@ frei0r: enable
 libaribcaption: enable
 libaribb24: enable
 libzvbi: enable
-libtesseract: enable
+libtesseract:
+  all: enable
+  # clangarm64 的 msys2 包缺 NEON 对象（DotProductNEON/
+  # intSimdMatrixNEON 未定义——上游打包缺陷）/ the msys2 clangarm64
+  # package lacks its NEON objects (DotProductNEON/intSimdMatrixNEON
+  # undefined — upstream packaging defect)
+  windows-arm64: disable
 libqrencode: enable
 libquirc: enable
 liblensfun: enable
