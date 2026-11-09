@@ -31,6 +31,10 @@ on:
     paths-ignore:
       - '**.md'
       - 'old/**'
+  # GitHub 偶发静默丢 push 事件（实证 cddbce7 推送零 run）——留个手动
+  # 补发口子 / GitHub occasionally drops push events silently (empirical:
+  # cddbce7 produced zero runs) — keep a manual retrigger hatch
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
