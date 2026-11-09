@@ -477,8 +477,12 @@ pub fn ffmpeg() -> Result<(), String> {
     ];
     args.extend(r.flags);
     args.extend([
-        format!("--cc={}", e.cc),
-        format!("--cxx={}", e.cxx),
+        // ccache 前缀由 FFBUILD_CCACHE 控制（显式调用模式，非
+        // masquerade）；configure 的探针编译同样命中缓存 / the ccache
+        // prefix is gated by FFBUILD_CCACHE (explicit invocation, not
+        // masquerade); configure's probe compiles hit the cache too
+        format!("--cc={}", sys::ccache(&e.cc)),
+        format!("--cxx={}", sys::ccache(&e.cxx)),
         format!("--ar={}", e.ar),
         format!("--ranlib={}", e.ranlib),
         format!("--nm={}", e.nm),

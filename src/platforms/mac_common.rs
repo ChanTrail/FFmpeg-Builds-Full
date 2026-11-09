@@ -328,8 +328,12 @@ pub fn ffmpeg() -> Result<(), String> {
     ];
     args.extend(r.flags);
     args.extend([
-        format!("--cc={}", e.cc),
-        format!("--cxx={}", e.cxx),
+        // ccache 前缀由 FFBUILD_CCACHE 控制（显式调用模式，非
+        // masquerade）；configure 的探针编译同样命中缓存 / the ccache
+        // prefix is gated by FFBUILD_CCACHE (explicit invocation, not
+        // masquerade); configure's probe compiles hit the cache too
+        format!("--cc={}", sys::ccache(&e.cc)),
+        format!("--cxx={}", sys::ccache(&e.cxx)),
         format!("--ar={}", e.ar),
         format!("--ranlib={}", e.ranlib),
         format!("--nm={}", e.nm),
@@ -364,6 +368,14 @@ pub fn ffmpeg() -> Result<(), String> {
         // unwinding: no functional loss and the binary even saves
         // one unwind table
         "--extra-ldflags=-Wl,-no_compact_unwind".into(),
+        // runner 上 /usr/local/share/man/man1 是 root 拥有不可写
+        // （bin/share 可写但 man1 子树不是）——把 man 页改装进 work
+        // 目录，package 阶段从那里收，不碰系统目录权限 / the runner's
+        // /usr/local/share/man/man1 is root-owned and unwritable
+        // (bin/share are writable but the man1 subtree is not) —
+        // install man pages under work/ instead and let the package
+        // stage harvest them there, avoiding system-dir permissions
+        format!("--mandir={}", e.work.join("man").display()),
         format!("--extra-libs={} -lm -liconv -lz", e.cxxrt),
         "--disable-stripping".into(),
     ]);
@@ -428,7 +440,11 @@ pub fn package() -> Result<(), String> {
             }
         }
     }
-    let man1 = usrlocal.join("share/man/man1");
+    // man 页被 configure 的 --mandir 重定向到 work/man（runner 的
+    // /usr/local/share/man/man1 不可写）/ man pages were redirected
+    // to work/man by configure's --mandir (the runner's
+    // /usr/local/share/man/man1 is unwritable)
+    let man1 = e.work.join("man/man1");
     if man1.is_dir()
         && let Ok(rd) = std::fs::read_dir(&man1)
     {

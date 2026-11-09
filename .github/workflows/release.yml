@@ -9,7 +9,7 @@
 # dispatch works the same way — and is bound by the same "no release
 # without green CI" rule (it consults the newest completed CI run on
 # the branch).
-name: Release driver
+name: Release Driver
 
 on:
   # 由 ci.yml 尾部的 release job 发 repository_dispatch 调起——它
@@ -30,7 +30,7 @@ on:
   # includes failures — so the old design always logged a fully-skipped
   # record).
   repository_dispatch:
-    types: [Release driver]
+    types: [Release Driver]
   workflow_dispatch:
 
 env:
@@ -189,7 +189,7 @@ jobs:
 
   # ── 发布 / Release ────────────────────────────────────────────────────────
   release:
-    name: Release driver
+    name: Release Driver
     needs: [version, build]
     if: needs.version.outputs.changed == 'true'
     runs-on: ubuntu-26.04

@@ -164,8 +164,15 @@ pub fn smoke_env() {
         objdump: String::new(),
         cxxrt: String::new(),
         gomp: RwLock::new(String::new()),
-        jobs: std::thread::available_parallelism()
-            .map(|n| n.get())
+        // FFBUILD_JOBS 可超订/限核——MSYS2 的 fork+I/O 停顿多，
+        // -j6 超订常比核数更快；缺省探测逻辑核，兜底 4 /
+        // FFBUILD_JOBS can oversubscribe or cap the core count —
+        // MSYS2's fork+I/O stalls often make -j6 faster than the
+        // core count; default is detected logical cores, fallback 4
+        jobs: std::env::var("FFBUILD_JOBS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or_else(|| std::thread::available_parallelism().map(|n| n.get()).ok())
             .unwrap_or(4),
         work,
         dist: std::env::temp_dir(),
@@ -203,6 +210,22 @@ pub fn env_dir(var: &str, default: PathBuf) -> PathBuf {
             }
         })
         .unwrap_or(default)
+}
+
+/// FFBUILD_CCACHE 非空时给编译器名加 "ccache " 前缀——显式调用模式，
+/// 不是 symlink masquerade：档案里记载的 MSYS2 雷（冒名 shim 弄坏
+/// gcc libexec 推导）只在 masquerade 下炸；WoA 仿真的 rdrand 崩溃是
+/// arm64 专属，那边的工作流不设此变量 / prepend "ccache " to the
+/// compiler name when FFBUILD_CCACHE is set non-empty — explicit
+/// invocation mode, not symlink masquerade: the documented MSYS2
+/// landmine (masquerade shims breaking gcc's libexec derivation) only
+/// triggers in masquerade mode, and the WoA-emulation rdrand crash is
+/// arm64-only — that leg's workflow simply never sets the variable
+pub fn ccache(tool: &str) -> String {
+    match std::env::var("FFBUILD_CCACHE") {
+        Ok(v) if !v.is_empty() => format!("ccache {tool}"),
+        _ => tool.to_string(),
+    }
 }
 
 /// 系统 pkg-config 的编译期默认搜索路径——读 `pkg-config --variable

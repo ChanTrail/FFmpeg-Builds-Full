@@ -316,6 +316,32 @@ jobs:
           restore-keys: |
             env-${{ matrix.platform }}-
 
+      # Defender 实时扫描对 MSYS2 的 fork+编译风暴是实打实的损耗——
+      # 把工作目录、msys2 树与 ccache 目录加进排除表（runner 是管理
+      # 员，失败也无害）/ Defender's real-time scan is a measurable tax
+      # on MSYS2's fork+compile storms — exclude the work dir, the msys2
+      # tree and the ccache dir (the runner is admin; failure is
+      # harmless)
+      - name: Exclude build dirs from Defender (Windows)
+        if: matrix.kind == 'windows'
+        run: |
+          try { Add-MpPreference -ExclusionPath "$env:RUNNER_TEMP\msys64","$env:RUNNER_TEMP\ffmpeg-ccache","$env:GITHUB_WORKSPACE" } catch { }
+
+      # ccache 滚动缓存——显式调用模式（驱动按 FFBUILD_CCACHE 给 --cc
+      # 加前缀，不走 symlink masquerade）；arm64 腿不设开关（WoA 仿真的
+      # rdrand 崩溃有案底）/ rolling ccache cache — explicit-invocation
+      # mode (the driver prefixes --cc when FFBUILD_CCACHE is set; no
+      # symlink masquerade); the arm64 leg never gets the flag (the WoA
+      # rdrand crash is on record)
+      - name: Restore ccache (Windows)
+        if: matrix.kind == 'windows'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}\ffmpeg-ccache
+          key: ccache-${{ matrix.platform }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ matrix.platform }}-
+
       - name: Build FFmpeg (Windows, MSYS2 ${{ matrix.msystem || '' }})
         if: matrix.kind == 'windows'
         env:
@@ -326,6 +352,15 @@ jobs:
           # The driver's packages() uses it to decide whether the env
           # completion stamp has to be verified.
           MSYS_ENV_RESTORED: ${{ steps.envcache.outputs.cache-hit }}
+          # 只开 x86_64——arm64 的 WoA 仿真 rdrand 崩溃有案底 / x86_64
+          # only — the arm64 WoA-emulation rdrand crash is on record
+          FFBUILD_CCACHE: ${{ matrix.platform == 'windows-x86_64' && '1' || '' }}
+          CCACHE_DIR: ${{ runner.temp }}\ffmpeg-ccache
+          CCACHE_MAXSIZE: 2G
+          # 4 vCPU 上超订 50%——MSYS2 的 fork+I/O 停顿让 -j6 常比 -j4
+          # 快 / 50% oversubscription on 4 vCPUs — MSYS2's fork+I/O
+          # stalls often make -j6 faster than -j4
+          FFBUILD_JOBS: "6"
         run: ./driver/FFmpeg-Builds-Full.exe build
 
       # Publish the deps overlay (extras libs) even when the build died; the
@@ -342,7 +377,24 @@ jobs:
       - name: Free disk space
         if: matrix.kind == 'linux'
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          # 每棵目录树各起一个后台 rm——串行删 ~25GB 里 Android SDK
+          # 一家（~12GB/14 万 inode）就要烧大半分钟，并行后总时长
+          # ≈最慢那棵树 / one background rm per tree: serially, the
+          # Android SDK alone (~12GB/140k inodes) burns most of a
+          # minute; in parallel the step lasts as long as the
+          # slowest single tree
+          for d in /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                   /opt/cabal /usr/local/.ghcup /opt/hostedtoolcache \
+                   /usr/local/share/boost /usr/share/swift /usr/lib/jvm \
+                   /usr/local/graalvm /usr/local/lib/node_modules; do
+            [ -d "$d" ] && sudo rm -rf "$d" &
+          done
+          wait || true
+          # hostedtoolcache 整树可删：本工作流无 setup-* 步骤，
+          # checkout/cache 跑的是 runner 自带 node / the whole
+          # hostedtoolcache is dead weight: no setup-* steps here,
+          # checkout/cache run on the runner-bundled node
+          sudo docker image prune -af >/dev/null 2>&1 || true
           sudo apt-get clean || true
           df -h /
 
@@ -355,7 +407,14 @@ jobs:
       # that caching a root-owned download dir is not worth the plumbing.
       - name: Prepare tool cache dirs (Linux)
         if: matrix.kind == 'linux'
-        run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/pyenv /opt/cargo /opt/rustup /opt/ffbuild /ffmpeg-${{ matrix.platform }}
+        run: |
+          sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/pyenv /opt/cargo /opt/rustup /opt/ffbuild /ffmpeg-${{ matrix.platform }}
+          # ccache 目录预建成 runner 属主——build 步经 sudo 以 root 跑，
+          # root 建出的目录下轮 restore（runner 身份）就写不进去了 /
+          # pre-create the ccache dir owned by the runner — the build
+          # step runs as root via sudo, and a root-owned dir would be
+          # unwritable for next run's restore (which runs as runner)
+          mkdir -p "${{ runner.temp }}/ffmpeg-ccache"
 
       - name: Restore tool cache (Linux)
         if: matrix.kind == 'linux'
@@ -375,6 +434,22 @@ jobs:
           # probes would take them for the new version.
           key: tools-${{ matrix.platform }}-${{ hashFiles('src/platforms/linux_common.rs', 'packages/linux.yaml') }}
 
+      # ccache 滚动缓存——显式调用模式（驱动按 FFBUILD_CCACHE 给 --cc
+      # 加前缀）；ffmpeg 跟 master 但跨 run 大部分文件不变，预处理
+      # 哈希照样命中（configure 探针编译同吃）/ rolling ccache cache —
+      # explicit-invocation mode (the driver prefixes --cc when
+      # FFBUILD_CCACHE is set); ffmpeg tracks master but most files are
+      # unchanged run-to-run, so the preprocessed-source hash still hits
+      # (configure's probe compiles included)
+      - name: Restore ccache (Linux)
+        if: matrix.kind == 'linux'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/ffmpeg-ccache
+          key: ccache-${{ matrix.platform }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ matrix.platform }}-
+
       # The library prefix is restored from / published to the "deps" release
       # by the driver itself. That is durable (unlike the 10 GB shared
       # actions/cache) and lets the build resume mid-way after a timeout:
@@ -386,6 +461,9 @@ jobs:
           FFBUILD_WORK: /ffmpeg-${{ matrix.platform }}
           FFBUILD_DIST: ${{ github.workspace }}/dist
           GH_TOKEN: ${{ github.token }}
+          FFBUILD_CCACHE: "1"
+          CCACHE_DIR: ${{ runner.temp }}/ffmpeg-ccache
+          CCACHE_MAXSIZE: 2G
         run: |
           set -euo pipefail
           # apt、/opt、/usr/local 安装都需要 root。新版 runner 的 sudo-rs
@@ -393,7 +471,8 @@ jobs:
           # 丢了产物会写进编译期烤进二进制的幽灵路径；GH_TOKEN 丢了
           # deps 恢复/上传全体静默跳过；GITHUB_STEP_SUMMARY 丢了
           # 失败明细进不了 run 页；GITHUB_ACTIONS 丢了驱动的 CI 输出
-          # 闸门判不出来，日志回全量模式。
+          # 闸门判不出来，日志回全量模式；CCACHE_DIR/FFBUILD_CCACHE
+          # 丢了 ccache 静默失效。
           # apt, /opt and the /usr/local install all want root. sudo-rs on
           # newer runners silently ignores -E, so pass env through
           # `sudo env` explicitly — a lost FFBUILD_DIST sends artifacts to
@@ -401,12 +480,15 @@ jobs:
           # disables deps restore/upload, a lost GITHUB_STEP_SUMMARY
           # silently drops the failure details from the run page, a lost
           # GITHUB_ACTIONS leaves the driver's CI output gate disengaged
-          # and the log back at full volume.
+          # and the log back at full volume, and lost CCACHE_DIR /
+          # FFBUILD_CCACHE silently disables ccache.
           sudo env FFBUILD_WORK="$FFBUILD_WORK" FFBUILD_DIST="$FFBUILD_DIST" \
             GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
             GITHUB_SHA="$GITHUB_SHA" \
             GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
             GITHUB_ACTIONS="$GITHUB_ACTIONS" \
+            FFBUILD_CCACHE="$FFBUILD_CCACHE" CCACHE_DIR="$CCACHE_DIR" \
+            CCACHE_MAXSIZE="$CCACHE_MAXSIZE" \
             ./driver/FFmpeg-Builds-Full build
 
       - name: Publish deps (Linux)
@@ -449,6 +531,14 @@ jobs:
           # Oldest macOS the binaries are meant to run on.
           MACOSX_DEPLOYMENT_TARGET: "14.0"
           GH_TOKEN: ${{ github.token }}
+          # warm cache 已含此目录——把死缓存接上电：驱动按
+          # FFBUILD_CCACHE 给 --cc 加 "ccache " 前缀 / the warm cache
+          # already covers this dir — wire up the dormant cache: the
+          # driver prefixes --cc with "ccache " when FFBUILD_CCACHE is
+          # set
+          FFBUILD_CCACHE: "1"
+          CCACHE_DIR: ${{ runner.temp }}/ffmpeg-ccache
+          CCACHE_MAXSIZE: 2G
         run: ./driver/FFmpeg-Builds-Full build
 
       # Publish the deps workspace snapshot even when the build died; the
