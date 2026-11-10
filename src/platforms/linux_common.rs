@@ -432,6 +432,83 @@ pub fn save() -> Result<(), String> {
 /// drop-and-retry configure -> make/install. No --prefix on Linux —
 /// running as root, `make install` lands in /usr/local which is where
 /// the package stage collects from
+/// 逐 token 重写 .pc 文本里的运行时库 -l 名。返回是否改动 /
+/// Rewrite runtime -l names in .pc text token by token; returns whether
+/// anything changed
+fn sanitize_pc_text(text: &str) -> (String, bool) {
+    let mut out = String::with_capacity(text.len());
+    let mut tok = String::new();
+    let mut changed = false;
+    let flush = |tok: &mut String, out: &mut String, changed: &mut bool| {
+        if let Some(orig) = tok.strip_prefix("-l") {
+            // -l<name>_asneeded → -l<name>：Ubuntu/Debian gcc 的 as-needed
+            // 包装名只有 .so/链接脚本无 .a（libgcc_s_asneeded、
+            // libatomic_asneeded 等）；gcc_s_asneeded 先折叠出 gcc_s
+            // 再进下一条规则 / -l<name>_asneeded → -l<name>: Ubuntu/Debian
+            // gcc's as-needed wrapper names exist only as .so/linker
+            // scripts, never as .a (libgcc_s_asneeded, libatomic_asneeded
+            // ...); gcc_s_asneeded collapses to gcc_s first, then the rule
+            // below finishes it
+            let name = orig.strip_suffix("_asneeded").unwrap_or(orig);
+            // -lgcc_s → -lgcc：共享版 libgcc 同样只有 .so，全静态下必须
+            // 落到 libgcc.a / -lgcc_s → -lgcc: the shared libgcc name
+            // resolves only to .so; under -static it must fall back to
+            // libgcc.a
+            let name = if name == "gcc_s" { "gcc" } else { name };
+            *changed |= name != orig;
+            out.push_str("-l");
+            out.push_str(name);
+        } else {
+            out.push_str(tok);
+        }
+        tok.clear();
+    };
+    for ch in text.chars() {
+        if ch.is_ascii_whitespace() {
+            flush(&mut tok, &mut out, &mut changed);
+            out.push(ch);
+        } else {
+            tok.push(ch);
+        }
+    }
+    flush(&mut tok, &mut out, &mut changed);
+    (out, changed)
+}
+
+/// 全静态化前的 pkg-config 消毒：配方产出的 .pc 其 Libs.private 带着发行
+/// 版工具链的运行时库共享名（rav1e/x265/srt/librsvg 的 -lgcc_s，whisper
+/// 的 -lgcc_s_asneeded/-latomic_asneeded）——--pkg-config-flags=--static
+/// 会把它们原样吐进 configure 探测链接行，而 -static 下根本没有
+/// libgcc_s.a/libatomic_asneeded.a。Libs.private 只在 --static 查询展开，
+/// shared 变体改了也无伤 / pkg-config sanitization ahead of full-static:
+/// recipe-produced .pc Libs.private carry distro-toolchain shared runtime
+/// names (-lgcc_s from rav1e/x265/srt/librsvg, -lgcc_s_asneeded /
+/// -latomic_asneeded from whisper) — --pkg-config-flags=--static expands
+/// them verbatim into configure probe link lines, and no libgcc_s.a /
+/// libatomic_asneeded.a exists under -static. Libs.private only expands
+/// for --static queries, so the rewrite is harmless for the shared variant
+fn sanitize_pc() -> Result<(), String> {
+    let mut n = 0usize;
+    for sub in ["lib/pkgconfig", "share/pkgconfig"] {
+        let dir = Path::new(PREFIX).join(sub);
+        for f in fsx::walk(&dir) {
+            if f.extension().and_then(|x| x.to_str()) != Some("pc") {
+                continue;
+            }
+            let text = fsx::read(&f);
+            let (fixed, changed) = sanitize_pc_text(&text);
+            if changed {
+                fsx::write(&f, &fixed)?;
+                n += 1;
+            }
+        }
+    }
+    if n > 0 {
+        println!("[pkgconfig] sanitized runtime -l names in {n} .pc file(s)");
+    }
+    Ok(())
+}
+
 pub fn ffmpeg() -> Result<(), String> {
     let e = sys::env();
     const REQUIRED: &[&str] = &[
@@ -542,14 +619,20 @@ pub fn ffmpeg() -> Result<(), String> {
         // -lstdc++ 放 extra-libs 尾部：check_lib 型链测（openh264 除外
         // 全走 .pc）不查 .pc，C++ 归档的 operator delete/vtable 引用只有
         // 全局尾巴能兜底——openal/裸 -l 检查全靠它（实证：libjxl 修复后
-        // configure 走通，才暴露出 openal -lopenal 检查缺 C++ 运行时）/
-        // -lstdc++ sits in extra-libs' tail: check_lib-style link probes
-        // (every pkg-config check except openh264) never consult a .pc,
-        // and a C++ archive's operator delete/vtable references only a
-        // global tail can satisfy — the bare -lopenal check depends on
-        // it entirely (empirical: once libjxl stopped aborting configure,
-        // the -lopenal check surfaced missing its C++ runtime)
-        format!("--extra-libs={gomp} -lm -lpthread -lz -lstdc++"),
+        // configure 走通，才暴露出 openal -lopenal 检查缺 C++ 运行时）。
+        // -lm 必须比 -lstdc++ 更靠后：GCC≥13 的 libstdc++.a 里
+        // __floating_to_chars 引用 fegetround/fesetround，静态归档按序
+        // 扫描不回拉——-lm 在前则 openal 探测直接 undefined / -lstdc++
+        // sits in extra-libs' tail: check_lib-style link probes (every
+        // pkg-config check except openh264) never consult a .pc, and a C++
+        // archive's operator delete/vtable references only a global tail
+        // can satisfy — the bare -lopenal check depends on it entirely
+        // (empirical: once libjxl stopped aborting configure, the -lopenal
+        // check surfaced missing its C++ runtime). -lm must trail -lstdc++:
+        // GCC≥13's libstdc++.a __floating_to_chars references
+        // fegetround/fesetround, and static archives scan in order without
+        // backtracking — -lm earlier leaves the openal probe undefined
+        format!("--extra-libs={gomp} -lpthread -lz -lstdc++ -lm"),
     ]);
     // FFBUILD_DEBUG 非空 = 真·调试构建：--enable-debug=3 全开调试
     // 信息、--disable-optimizations 关掉全部优化、--disable-stripping
@@ -583,6 +666,10 @@ pub fn ffmpeg() -> Result<(), String> {
     } else {
         args.push("--disable-shared".into());
     }
+    // .pc 静态名消毒必须在 configure 探测之前（探测链接行直接消费
+    // Libs.private）/ the .pc static-name sanitization must run before
+    // configure probing (probe link lines consume Libs.private verbatim)
+    sanitize_pc()?;
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let dropped = e.work.join("dropped-libs.txt");
     crate::ffmpeg::configure(
