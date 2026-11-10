@@ -34,25 +34,29 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         .replace("EGIB", "bss")
         .replace("naidnePF", "bss");
     fsx::write(&cf, &text)?;
-    sys::run_ok(
-        "./configure",
-        &[
-            "--disable-cli",
-            "--enable-static",
-            "--enable-pic",
-            // asm nasm de 2019 é a superfície do crash silencioso
-            // (~0.5s, exit -1/sinal) que migra entre legs = CPU por VM
-            // diferente → dispatch asm. C puro elimina; encoder é só
-            // cobertura. --disable-thread NÃO: no Windows o windows.h
-            // só entra via cadeia de include dos thread types — sem
-            // thread, xavs2_mdate() quebra (LARGE_INTEGER indefinido) /
-            // 2019-era nasm asm is the silent-crash surface (~0.5s
-            // signal death) that migrates between legs = different VM
-            // CPUs → asm dispatch. Pure C removes it; the encoder is
-            // coverage only. NOT --disable-thread: on Windows windows.h
-            // only arrives via the thread-type include chain — without
-            // threads, xavs2_mdate() breaks (LARGE_INTEGER undefined)
-            "--disable-asm",
+    // asm nasm de 2019 与内部 pool 是静默 SIGSEGV（~0.5s，-11）的两
+    // 个嫌疑面：crash 跨 leg 漂移 = VM CPU 不同 → asm dispatch；4
+    // worker 线程同构挂起 + 主线程崩在派发路径 → pool。asm 全平台
+    // 关；thread 仅 Linux 关——Windows 下 --disable-thread 拆掉
+    // windows.h 的 include 链（xavs2_mdate 编译炸，实证），且
+    // Windows 腿带 pool 通过 / 2019 nasm asm and the internal pool
+    // are the two silent-SIGSEGV suspects (~0.5s, -11): leg-migrating
+    // crash = per-VM CPU asm dispatch; 4 identically-parked worker
+    // threads + main dead inside dispatch = pool. asm off everywhere;
+    // thread off on Linux only — on Windows it removes the windows.h
+    // include chain (xavs2_mdate fails, proven) and the Windows leg
+    // passes with the pool anyway
+    let mut args = vec![
+        "--disable-cli".to_string(),
+        "--enable-static".into(),
+        "--enable-pic".into(),
+        "--disable-asm".into(),
+    ];
+    if e.os == sys::Os::Linux {
+        args.push("--disable-thread".into());
+    }
+    args.extend(
+        [
             "--disable-avs",
             "--disable-swscale",
             "--disable-lavf",
@@ -61,10 +65,13 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "--disable-lsmash",
             "--extra-asflags=-w-macro-params-legacy",
             "--extra-cflags=-Wno-error=incompatible-pointer-types",
-            &format!("--prefix={}", e.prefix),
-        ],
-        &b,
-    )?;
+        ]
+        .iter()
+        .map(|s| s.to_string()),
+    );
+    args.push(format!("--prefix={}", e.prefix));
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    sys::run_ok("./configure", &refs, &b)?;
     let jobs = e.jobs.to_string();
     sys::run_ok("make", &["-j", &jobs], &b)?;
     sys::run_ok("make", &["install"], &b)?;
