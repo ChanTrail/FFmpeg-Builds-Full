@@ -46,37 +46,45 @@ human_size() {
 COMMIT_LINE_ZH="每个文件名中包含其构建所用的上游提交的前 10 位哈希。"
 COMMIT_LINE_EN="The first 10 digits of the upstream commit each file was built from are part of its name."
 if [[ -n "${FFMPEG_COMMIT:-}" ]]; then
-  COMMIT_LINE_ZH="构建所用的上游提交：[\`${FFMPEG_COMMIT:0:10}\`](https://github.com/FFmpeg/FFmpeg/commit/$FFMPEG_COMMIT)，文件名中包含其前 10 位哈希。"
-  COMMIT_LINE_EN="Built from upstream commit [\`${FFMPEG_COMMIT:0:10}\`](https://github.com/FFmpeg/FFmpeg/commit/$FFMPEG_COMMIT); its first 10 digits are part of every file name."
+  COMMIT_LINE_ZH="构建所用的上游提交：[\`${FFMPEG_COMMIT:0:10}\`](https://git.ffmpeg.org/gitweb/ffmpeg.git/commit/$FFMPEG_COMMIT)，文件名中包含其前 10 位哈希。"
+  COMMIT_LINE_EN="Built from upstream commit [\`${FFMPEG_COMMIT:0:10}\`](https://git.ffmpeg.org/gitweb/ffmpeg.git/commit/$FFMPEG_COMMIT); its first 10 digits are part of every file name."
 fi
 
 cat <<EOF
 # FFmpeg master 自动构建 / auto-build
 
-自动构建上游 [FFmpeg](https://github.com/FFmpeg/FFmpeg) \`master\` 分支。$COMMIT_LINE_ZH
-<br>Automated build of upstream [FFmpeg](https://github.com/FFmpeg/FFmpeg) \`master\`. $COMMIT_LINE_EN
+自动构建上游 [FFmpeg](https://git.ffmpeg.org/gitweb/ffmpeg.git) \`master\` 分支。$COMMIT_LINE_ZH
+<br>Automated build of upstream [FFmpeg](https://git.ffmpeg.org/gitweb/ffmpeg.git) \`master\`. $COMMIT_LINE_EN
 EOF
 
-# 平台名作为表格列；行是产物种类。单元格把每个产物名链接到它的下载——
-# 与 deps 发布同布局。
-# Platform names as table columns; rows are the artifact kinds. Cells link
-# each artifact name to its download — same layout as the deps release.
-header="| 产物 Artifact |" sep="|" arow="| **压缩包 Archive** |"
-srow="| **校验 SHA-256** |"
+# 平台名作为表格列；行是三个产物变体（静态/共享/调试）。单元格内嵌
+# 压缩包与校验双链接——与 deps 发布同布局。
+# Platform names as table columns; rows are the three artifact variants
+# (static/shared/debug). Each cell carries both the archive and the
+# checksum links — same layout as the deps release.
+header="| 产物 Artifact |" sep="|"
+declare -A ROWS=()
+# (变体后缀, 行标签) / (variant suffix, row label)
+VARIANTS=("" "-shared" "-debug")
+LABELS=("**静态 Static**" "**共享 Shared**" "**调试 Debug**")
+for vi in "${!VARIANTS[@]}"; do ROWS[$vi]="| ${LABELS[$vi]} |"; done
 for p in "${PLATFORMS[@]}"; do
-  found=("$DIR"/*-"$p".7z "$DIR"/*-"$p".tar.xz)
-  if [[ ${#found[@]} -ne 1 ]]; then
-    echo "::error::expected exactly one archive for platform '$p' in $DIR, found ${#found[@]}" >&2
-    exit 1
-  fi
-  f="${found[0]}"
-  name="$(basename "$f")"
-  size="$(human_size "$(wc -c <"$f" | tr -d ' ')")"
   header="$header $p |"; sep="$sep---|"
-  arow="$arow [$name]($BASE/$name)<br>$size |"
-  srow="$srow [$name.sha256]($BASE/$name.sha256) |"
+  for vi in "${!VARIANTS[@]}"; do
+    v="${VARIANTS[$vi]}"
+    found=("$DIR"/*-"$p$v".7z "$DIR"/*-"$p$v".tar.xz)
+    if [[ ${#found[@]} -ne 1 ]]; then
+      echo "::error::expected exactly one archive for platform '$p' variant '$v' in $DIR, found ${#found[@]}" >&2
+      exit 1
+    fi
+    f="${found[0]}"
+    name="$(basename "$f")"
+    size="$(human_size "$(wc -c <"$f" | tr -d ' ')")"
+    ROWS[$vi]="${ROWS[$vi]} [$name]($BASE/$name)<br>$size<br>[$name.sha256]($BASE/$name.sha256) |"
+  done
 done
-printf '%s\n%s\n%s\n%s\n' "$header" "$sep" "$arow" "$srow"
+printf '%s\n%s\n' "$header" "$sep"
+for vi in "${!VARIANTS[@]}"; do printf '%s\n' "${ROWS[$vi]}"; done
 
 cat <<'EOF'
 

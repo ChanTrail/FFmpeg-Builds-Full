@@ -31,6 +31,9 @@ use yaml_rust2::{Yaml, YamlLoader};
 pub struct Spec {
     /// git 仓库地址 / git repo URL
     pub git: Option<String>,
+    /// git 仓源回退镜像（按序尝试，仅随 git: 生效）/ ordered git
+    /// repo fallbacks (tried in order, only meaningful alongside git:)
+    pub mirrors: Vec<String>,
     /// 固定归档地址 / fixed archive URL
     pub archive: Option<String>,
     /// 可选 ref（分支/tag/sha）/ optional ref (branch|tag|sha)
@@ -62,6 +65,14 @@ fn load() -> &'static HashMap<String, Spec> {
                     .ok_or_else(|| format!("{file}: source key must be a string"))?;
                 let spec = Spec {
                     git: v["git"].as_str().map(String::from),
+                    mirrors: v["mirrors"]
+                        .as_vec()
+                        .map(|vs| {
+                            vs.iter()
+                                .filter_map(|u| u.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                     archive: v["archive"].as_str().map(String::from),
                     ref_: v["ref"].as_str().map(String::from),
                     sha256: v["sha256"].as_str().map(String::from),
@@ -76,6 +87,11 @@ fn load() -> &'static HashMap<String, Spec> {
                 if spec.git.is_some() && spec.archive.is_some() {
                     return Err(format!(
                         "{file}: '{name}' needs exactly one of git: or archive:"
+                    ));
+                }
+                if !spec.mirrors.is_empty() && spec.git.is_none() {
+                    return Err(format!(
+                        "{file}: '{name}' has mirrors: but no git: to mirror"
                     ));
                 }
                 map.insert(name.to_string(), spec);
@@ -218,19 +234,143 @@ fn resolve_git(url: &str, ref_: Option<&str>) -> Result<Checkout, String> {
     gate(&sha, &format!("default branch {branch}"))
 }
 
+/// git 源的归档兜底候选：主机 tarball 端点与检出内容等价但走
+/// reqwest（可续传+自有重试），仅在 git 传输全灭后启用
+/// archive fallback candidates for a git source: the hosts' tarball
+/// endpoints carry identical content but ride reqwest (resumable +
+/// own retries) — only engaged after the git transport is fully dead
+fn archive_candidates(url: &str, rev: &str) -> Vec<String> {
+    let url = url.trim_end_matches('/');
+    // git:// 与 https:// 同主机——归档端点一律走 https（git.ffmpeg.org
+    // 的 cgit snapshot 同样吃）/ git:// and https:// are the same
+    // host — archive endpoints always ride https (git.ffmpeg.org's
+    // cgit snapshot accepts them too)
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("git://"))
+    else {
+        return vec![];
+    };
+    let Some((host, path)) = rest.split_once('/') else {
+        return vec![];
+    };
+    let noext = path.strip_suffix(".git").unwrap_or(path);
+    let repo = noext.rsplit('/').next().unwrap_or(noext);
+    let web = format!("https://{host}/{noext}");
+    match host {
+        // github 的 /archive/<rev> 接受 sha/分支/tag 三种原名；rev 是
+        // tag 时 refs/tags/ 形式最精确——两候选都排上 / github's
+        // /archive/<rev> accepts sha/branch/tag verbatim; the refs/tags
+        // form is the precise spelling for tags — list both
+        "github.com" => vec![
+            format!("{web}/archive/{rev}.tar.gz"),
+            format!("{web}/archive/refs/tags/{rev}.tar.gz"),
+        ],
+        "bitbucket.org" => vec![format!("{web}/get/{rev}.tar.gz")],
+        h if h.ends_with("googlesource.com") => {
+            vec![format!("{web}/+archive/{rev}.tar.gz")]
+        }
+        // gitlab.com 与自托管实例（freedesktop/videolan/gnome/xiph）同
+        // 端点 / gitlab.com and the self-hosted instances
+        // (freedesktop/videolan/gnome/xiph) share the endpoint
+        h if h.starts_with("gitlab.") || h == "code.videolan.org" => {
+            vec![format!("{web}/-/archive/{rev}/{repo}-{rev}.tar.gz")]
+        }
+        // 其余按 cgit 系赌一把 snapshot 端点（git.ffmpeg.org/libssh/
+        // linuxtv/caoua，404 代价极低）/ everything else gets a cgit
+        // snapshot guess (git.ffmpeg.org/libssh/linuxtv/caoua — a 404
+        // costs very little)
+        _ => vec![format!("{web}/snapshot/{rev}.tar.gz")],
+    }
+}
+
 /// 把规格物化成 <wd>/src 检出 / materialise a spec into <wd>/src
 fn fetch_into(wd: &Path, spec: &Spec) -> Result<PathBuf, String> {
     let src = if let Some(url) = &spec.archive {
         net::fetch_tar(wd, url, spec.sha256.as_deref())?
     } else {
-        let url = spec.git.as_ref().unwrap();
-        let src = match resolve_git(url, spec.ref_.as_deref())? {
-            Checkout::Commit(sha) => net::fetch_git_commit(wd, url, &sha)?,
-            Checkout::Tag(tag) => net::fetch_git(wd, url, &tag, None)?,
+        // 仓源链：git: 主仓 + mirrors: 顺序兜底——每条 URL 走完整
+        // 解析+拉取；无子模块的源单 URL 全灭后转该仓主机的归档端点
+        // （树内容与检出等价，.git 缺席由 materialize 死仓探活/配方
+        // 自修复消化；reqwest 可续传+重试，远比整包重拉友好）/
+        // repo chain: git: primary + mirrors: fallbacks — each URL
+        // gets the full resolve+fetch; a submodule-free spec whose URL
+        // dies outright falls back to that host's archive endpoints
+        // (identical tree, and a missing .git is absorbed by
+        // materialize's dead-repo probe / recipe self-repair; reqwest
+        // resumes + retries — far kinder than re-pulling whole packs)
+        let urls: Vec<&str> = spec
+            .git
+            .iter()
+            .map(String::as_str)
+            .chain(spec.mirrors.iter().map(String::as_str))
+            .collect();
+        let archive_fallback = |url: &str, rev: &str| -> Option<PathBuf> {
+            if spec.submodules {
+                return None;
+            }
+            // 先清场——失败的 clone 可能在 src/ 留下半截树，直接解包
+            // 会混入残骸 / clear first — a failed clone can leave a
+            // half tree in src/ and extracting over it mixes the debris
+            // in
+            let _ = std::fs::remove_dir_all(wd.join("src"));
+            for au in archive_candidates(url, rev) {
+                if let Ok(s) = net::fetch_tar(wd, &au, None) {
+                    log::warn(&format!(
+                        "[sources] {url}@{rev}: git transport failed — archive fallback {au} / git 传输失败转归档 {au}"
+                    ));
+                    return Some(s);
+                }
+            }
+            None
         };
+        // 单 URL 的完整尝试：解析 → 拉取，失败转本仓的归档端点 /
+        // one URL's full attempt: resolve → fetch, falling to this
+        // repo's own archive endpoints on transport death
+        let try_url = |url: &str| -> Result<PathBuf, String> {
+            match resolve_git(url, spec.ref_.as_deref()) {
+                // 解析本身已死（ls-remote 停滞）——钉住的 ref 名仍可赌
+                // 归档端点（github/gitlab 接受分支/tag 原名）/ resolution
+                // itself died (ls-remote stall) — a pinned ref name can
+                // still try the archive endpoints (github/gitlab accept
+                // raw branch/tag names)
+                Err(e) => spec
+                    .ref_
+                    .as_deref()
+                    .filter(|&r| !is_sha(r))
+                    .and_then(|r| archive_fallback(url, r))
+                    .ok_or(e),
+                Ok(co) => {
+                    let (rev, git_res) = match &co {
+                        Checkout::Commit(s) => (s.clone(), net::fetch_git_commit(wd, url, s)),
+                        Checkout::Tag(t) => (t.clone(), net::fetch_git(wd, url, t, None)),
+                    };
+                    git_res.or_else(|e| archive_fallback(url, &rev).ok_or(e))
+                }
+            }
+        };
+        let mut last_err = String::new();
+        let mut got = None;
+        for (i, url) in urls.iter().enumerate() {
+            if i > 0 {
+                log::warn(&format!("[sources] trying mirror {url} / 换镜像仓 {url}"));
+            }
+            match try_url(url) {
+                Ok(s) => {
+                    got = Some(s);
+                    break;
+                }
+                Err(e) => last_err = e,
+            }
+        }
+        let src = got.ok_or(last_err)?;
         if spec.submodules {
-            sys::run_ok(
-                "git",
+            // submodule 拉取同属网络传输——收进 git_run 的停滞探测+退
+            // 避重试（-c 经 GIT_CONFIG_PARAMETERS 传到子 git 进程）/
+            // submodule fetches are the same transport — under
+            // git_run's stall detection + backoff retries (-c options
+            // reach the child git processes via GIT_CONFIG_PARAMETERS)
+            net::git_run(
                 &[
                     "submodule",
                     "update",
@@ -240,6 +380,7 @@ fn fetch_into(wd: &Path, spec: &Spec) -> Result<PathBuf, String> {
                     "--filter=blob:none",
                 ],
                 &src,
+                None,
             )?;
         }
         src
@@ -666,11 +807,16 @@ pub fn dump() -> Result<(), String> {
         let kind = if s.git.is_some() { "git" } else { "archive" };
         let url = s.git.as_deref().or(s.archive.as_deref()).unwrap_or("");
         println!(
-            "{name}: {kind} {url}{}",
+            "{name}: {kind} {url}{}{}",
             s.ref_
                 .as_deref()
                 .map(|r| format!(" ref={r}"))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            if s.mirrors.is_empty() {
+                String::new()
+            } else {
+                format!(" mirrors=[{}]", s.mirrors.join(", "))
+            }
         );
     }
     Ok(())

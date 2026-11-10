@@ -40,6 +40,11 @@ FFmpeg-Builds-Full — FFmpeg 静态构建驱动 / static FFmpeg build driver
 命令 / Commands:
   build      全流水线：extras → ffmpeg → package
              the whole pipeline: extras → ffmpeg → package
+  build-all  全变体一次建：首变体（静态）走完整流水线产出 deps
+             前缀，后续 shared/debug 变体只跑 ffmpeg → package /
+             every variant in one run: the first (static) takes the
+             full pipeline to produce the deps prefix, the shared /
+             debug variants then only re-run ffmpeg → package
   packages   安装/确认平台包栈（MSYS2 pacman 等）
              install or verify the platform package stack (MSYS2 pacman etc.)
   extras     只跑 extras 配方引擎（第三方库）
@@ -50,13 +55,6 @@ FFmpeg-Builds-Full — FFmpeg 静态构建驱动 / static FFmpeg build driver
              package and verify the artifact
   save-deps  保存依赖缓存
              save the dependency cache
-  选项 / Options:
-  --mirror <名|基址 / name|base>
-             pacman 换源：ustc / tuna / aliyun / repo 或任意镜像基址，
-             改写 mirrorlist.* 里的 mirror.msys2.org（默认不改）
-             switch the pacman mirror: ustc / tuna / aliyun / repo or any
-             mirror base; rewrites mirror.msys2.org in mirrorlist.*
-             (left untouched by default)
   smoke [目录/dir]
              对目录里的 ffmpeg/ffprobe/ffplay 跑冒烟测试
              smoke-test the ffmpeg/ffprobe/ffplay in a directory
@@ -67,14 +65,36 @@ FFmpeg-Builds-Full — FFmpeg 静态构建驱动 / static FFmpeg build driver
              print the source map merged from sources/*.yaml (debug)
   help       显示本帮助 / show this help
 
+选项 / Options（均可 = 直写，也可空格后接值 / all take --opt=value or --opt value）:
+  --work <dir>     工作目录 / scratch dir   (默认 / default: ffmpeg-<os>-<arch>)
+  --dist <dir>     产物输出目录 / artifact dir (默认 / default: <repo>/artifacts)
+  --msys2 <dir>    MSYS2 根目录 / MSYS2 root (Windows)
+  --mirror <名|基址 / name|base>
+                   pacman 换源：ustc / tuna / aliyun / repo 或任意镜像基址
+                   switch the pacman mirror (ustc / tuna / aliyun / repo
+                   or any mirror base)
+  --repo <url>     FFmpeg 仓库地址 / FFmpeg repo URL
+                   (缺省读 sources/base.yaml 的 ffmpeg: 键 /
+                    default: the ffmpeg: key in sources/base.yaml)
+  --ref <ref>      FFmpeg 分支或 tag / FFmpeg branch or tag
+  --sha <sha>      钉住的 FFmpeg commit / pinned FFmpeg commit
+  --jobs <n>       并行编译数 / parallel jobs (默认 / default: CPU 核数 / cores)
+  --ccache         编译经 ccache / compile through ccache
+  --shared         共享构建：产物 = 可执行文件 + 共享库（bin/ 旁位自解析）
+                   shared build: binaries + shared libs (sibling-resolved in bin/)
+  --debug          调试构建：-g3 + 零优化 + 留符号
+                   debug build: -g3 + no optimizations + keep symbols
+
 环境变量 / Environment variables:
-  FFBUILD_WORK   工作目录 / scratch dir      (默认 / default: ffmpeg-<os>-<arch>)
-  FFBUILD_DIST   产物输出目录 / artifact dir  (默认 / default: <repo>/artifacts)
-  FFBUILD_MSYS2  MSYS2 根目录 / MSYS2 root    (Windows)
-  FFBUILD_MIRROR pacman 镜像基址 / pacman mirror base (同 / as --mirror)
-  FFMPEG_REPO    FFmpeg 仓库地址 / FFmpeg repo URL
-  FFMPEG_REF     FFmpeg 分支或 tag / FFmpeg branch or tag
-  FFMPEG_SHA     钉住的 FFmpeg commit / pinned FFmpeg commit"
+  每个选项都透传成同名环境变量（--work→FFBUILD_WORK 等），CI 直传 env 与
+  命令行等效 / every option forwards to its namesake env var
+  (--work -> FFBUILD_WORK, ...) — passing env on CI equals the flag
+  GITHUB_TOKEN / GH_TOKEN、GITLAB_TOKEN / GL_TOKEN
+                   git 源 CI 查询提额、私有实例 / git-source CI quota, private instances
+  HTTPS_PROXY 等   代理变量，reqwest 原生支持 / proxy vars, natively honoured
+  FFBUILD_CHILD / FFMPEG_GDB
+                   内部管道变量（父子进程通信），非用户旋钮 /
+                   internal plumbing (parent<->child IPC), not user knobs"
     );
 }
 
@@ -95,27 +115,56 @@ fn main() {
         usage(&prog);
         exit(0);
     }
-    // 解析命令行选项：--mirror[=]<名|基址> 透传成 FFBUILD_MIRROR 环境
-    // 变量，platforms 各阶段自取；其余非选项参数收进 positional。
-    // Parse command-line options: --mirror[=]<name|base> is forwarded as
-    // the FFBUILD_MIRROR env var for platform stages to pick up; other
-    // non-option args are collected into positional.
+    // 解析命令行选项：(旗标, 透传的环境变量, 是否取值)。选项统一改写
+    // 成同名环境变量后由 platforms/各阶段自取——CI workflow 直传 env
+    // 与本地传参两条路殊途同归，读取侧零改动 / parse command-line
+    // options as (flag, forwarded env var, takes-value): every option
+    // rewrites to its namesake env var for platform stages to pick up —
+    // CI workflows passing env directly and locals passing flags
+    // converge on the same read sites with zero changes downstream
+    const OPTS: &[(&str, &str, bool)] = &[
+        ("--work", "FFBUILD_WORK", true),
+        ("--dist", "FFBUILD_DIST", true),
+        ("--msys2", "FFBUILD_MSYS2", true),
+        ("--mirror", "FFBUILD_MIRROR", true),
+        ("--repo", "FFMPEG_REPO", true),
+        ("--ref", "FFMPEG_REF", true),
+        ("--sha", "FFMPEG_SHA", true),
+        ("--jobs", "FFBUILD_JOBS", true),
+        ("--ccache", "FFBUILD_CCACHE", false),
+        ("--shared", "FFBUILD_SHARED", false),
+        ("--debug", "FFBUILD_DEBUG", false),
+    ];
     let mut positional: Vec<String> = Vec::new();
     let mut i = 2usize;
     while i < args.len() {
         let a = &args[i];
-        if let Some(v) = a.strip_prefix("--mirror=") {
-            // SAFETY：单线程驱动，子进程尚未派生，改环境无并发读写
-            // SAFETY: single-threaded driver, no children spawned yet
-            unsafe { std::env::set_var("FFBUILD_MIRROR", v) };
-        } else if a == "--mirror" || a == "-m" {
-            i += 1;
-            match args.get(i) {
-                Some(v) => unsafe { std::env::set_var("FFBUILD_MIRROR", v) },
-                None => log::die("--mirror needs a value / --mirror 需要一个值"),
+        // --opt=value 形态先拆 / split the --opt=value form first
+        let (name, inline_val) = match a.split_once('=') {
+            Some((n, v)) if n.starts_with("--") => (n, Some(v.to_string())),
+            _ => (a.as_str(), None),
+        };
+        // -m 是 --mirror 的短别名 / -m is the short alias of --mirror
+        let name = if name == "-m" { "--mirror" } else { name };
+        match OPTS.iter().find(|(f, _, _)| *f == name) {
+            Some((_, var, takes)) => {
+                let v = if *takes {
+                    match inline_val.or_else(|| {
+                        i += 1;
+                        args.get(i).cloned()
+                    }) {
+                        Some(v) => v,
+                        None => log::die(&format!("{name} needs a value / {name} 需要一个值")),
+                    }
+                } else {
+                    "1".to_string()
+                };
+                // SAFETY：单线程驱动，子进程尚未派生，改环境无并发读写
+                // SAFETY: single-threaded driver, no children spawned
+                // yet — env writes are race-free
+                unsafe { std::env::set_var(var, v) };
             }
-        } else {
-            positional.push(a.clone());
+            None => positional.push(a.clone()),
         }
         i += 1;
     }
@@ -160,6 +209,48 @@ fn main() {
     ));
     let rc = match cmd {
         "build" => (p.build)(),
+        // build-all：变体集合一次建完——FFBUILD_SHARED/FFBUILD_DEBUG
+        // 由本命令逐变体接管（外部同名旋钮被覆盖）；首变体走完整流
+        // 水线产出 deps 前缀，后续变体直跑 ffmpeg→package（extras
+        // 的 .ok 标记本来也会 no-op，直接跳过更干净）/ build-all
+        // builds the whole variant set — this command owns
+        // FFBUILD_SHARED/FFBUILD_DEBUG per variant (externally set
+        // knobs get overridden); the first variant takes the full
+        // pipeline to produce the deps prefix, later ones run only
+        // ffmpeg→package (the extras .ok markers would no-op a
+        // re-run anyway, but skipping outright is cleaner)
+        "build-all" => (|| -> Result<(), String> {
+            for (i, (shared, debug)) in [(false, false), (true, false), (false, true)]
+                .iter()
+                .enumerate()
+            {
+                // SAFETY：单线程驱动，子进程尚未派生，改环境无并发读写
+                // SAFETY: single-threaded driver, no children spawned
+                // yet — env writes are race-free
+                unsafe {
+                    if *shared {
+                        std::env::set_var("FFBUILD_SHARED", "1")
+                    } else {
+                        std::env::remove_var("FFBUILD_SHARED")
+                    }
+                    if *debug {
+                        std::env::set_var("FFBUILD_DEBUG", "1")
+                    } else {
+                        std::env::remove_var("FFBUILD_DEBUG")
+                    }
+                }
+                log::log(&format!(
+                    "=== variant {i}: shared={shared} debug={debug} / 变体 {i} ==="
+                ));
+                if i == 0 {
+                    (p.build)()?;
+                } else {
+                    (p.ffmpeg)()?;
+                    (p.package)()?;
+                }
+            }
+            Ok(())
+        })(),
         "packages" => (p.packages)(),
         "extras" => (p.extras)(),
         "ffmpeg" => (p.ffmpeg)(),

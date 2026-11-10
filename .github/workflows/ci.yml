@@ -173,8 +173,20 @@ jobs:
         id: up
         run: |
           set -euo pipefail
-          sha="$(git ls-remote https://github.com/FFmpeg/FFmpeg.git refs/heads/master | cut -f1)"
-          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve FFmpeg master (got '$sha')"; exit 1; }
+          # 仓源顺序与 sources/base.yaml 的 ffmpeg: 键一致——官方
+          # git:// 优先，github 兜底 / same repo order as the `ffmpeg:`
+          # key in sources/base.yaml — official git:// first, github
+          # as fallback
+          sha=""
+          for repo in git://git.ffmpeg.org/ffmpeg.git https://github.com/FFmpeg/FFmpeg.git; do
+            out="$(git ls-remote "$repo" refs/heads/master 2>/dev/null | cut -f1 || true)"
+            if [[ "$out" =~ ^[0-9a-f]{40}$ ]]; then
+              sha="$out"
+              echo "resolved via $repo"
+              break
+            fi
+          done
+          [[ -n "$sha" ]] || { echo "::error::could not resolve FFmpeg master on any repo"; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "Building FFmpeg commit $sha"
 
@@ -356,7 +368,7 @@ jobs:
           FFBUILD_CCACHE: ${{ matrix.platform == 'windows-x86_64' && '1' || '' }}
           CCACHE_DIR: ${{ runner.temp }}\ffmpeg-ccache
           CCACHE_MAXSIZE: 2G
-        run: ./driver/FFmpeg-Builds-Full.exe build
+        run: ./driver/FFmpeg-Builds-Full.exe build-all
 
       # Publish the deps overlay (extras libs) even when the run died; the
       # next run restores it before compiling.
@@ -492,9 +504,11 @@ jobs:
             GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
             GITHUB_ACTIONS="$GITHUB_ACTIONS" \
             FFMPEG_SHA="$FFMPEG_SHA" \
+            FFMPEG_REF="${FFMPEG_REF:-}" FFMPEG_REPO="${FFMPEG_REPO:-}" \
+            FFBUILD_SHARED="${FFBUILD_SHARED:-}" FFBUILD_DEBUG="${FFBUILD_DEBUG:-}" \
             FFBUILD_CCACHE="$FFBUILD_CCACHE" CCACHE_DIR="$CCACHE_DIR" \
             CCACHE_MAXSIZE="$CCACHE_MAXSIZE" \
-            ./driver/FFmpeg-Builds-Full build
+            ./driver/FFmpeg-Builds-Full build-all
 
       - name: Publish deps (Linux)
         if: matrix.kind == 'linux' && always()
@@ -544,7 +558,7 @@ jobs:
           FFBUILD_CCACHE: "1"
           CCACHE_DIR: ${{ runner.temp }}/ffmpeg-ccache
           CCACHE_MAXSIZE: 2G
-        run: ./driver/FFmpeg-Builds-Full build
+        run: ./driver/FFmpeg-Builds-Full build-all
 
       # Publish the deps workspace snapshot even when the run died; the
       # next run restores it before compiling.

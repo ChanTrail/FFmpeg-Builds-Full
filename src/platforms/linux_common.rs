@@ -488,12 +488,14 @@ pub fn ffmpeg() -> Result<(), String> {
         format!("--nm={}", e.nm),
         format!("--strip={}", e.strip),
     ]);
-    // glibc 不能整体 -static（getpwnam/iconv/NSS 全靠 dlopen）——运行时
-    // 用 -static-libgcc/-static-libstdc++ 兜 C++ 依赖，其余靠 extras 全
-    // 静态归档 + ldd 白名单兜底 / glibc cannot be fully -static (getpwnam,
-    // iconv and NSS all dlopen) — the C++ runtime rides
-    // -static-libgcc/-static-libstdc++, the rest is covered by the extras'
-    // static archives plus the ldd allowlist at package time
+    // 整个二进制 -static 全静态（旧顾虑——getpwnam/iconv/NSS 全靠
+    // dlopen——已不成立：iconv 是自编 libiconv，getaddrinfo 有内置
+    // files/dns，dlopen 在 glibc≥2.34 的静态二进制里合法）；C++ 运行
+    // 时的兜底仍是 -lstdc++ 尾巴（见下）/ the whole binary goes
+    // -static (the old objection — getpwnam/iconv/NSS dlopening — no
+    // longer applies: iconv is our own libiconv, getaddrinfo has
+    // built-in files/dns, and dlopen is legal in static binaries on
+    // glibc≥2.34); the C++ runtime still rides the -lstdc++ tail below
     let gomp = e.gomp.read().unwrap().clone();
     args.extend([
         "--extra-cflags=-DLIBTWOLAME_STATIC".into(),
@@ -505,7 +507,38 @@ pub fn ffmpeg() -> Result<(), String> {
         // archiving both into one link is a guaranteed multiple
         // definition; windows dedupes by renaming in fixup, here GNU
         // ld's tolerant switch is the umbrella
-        "--extra-ldflags=-static-libgcc -static-libstdc++ -Wl,--allow-multiple-definition".into(),
+        // -static 全静态：连 glibc 家族也打进二进制（-static-libgcc/
+        // -static-libstdc++ 是 -static 的子集，删掉）。前缀库全是 .a，
+        // 剩余 -l 只剩 libc/libm/libpthread/libdl/librt/libresolv/
+        // libatomic/libgcc——glibc dev 与 gcc 都带 .a。运行时行为差异：
+        // getaddrinfo 回落内置 files/dns NSS（正常 DNS 不受影响，mDNS
+        // 这类插件式解析器失效）；dlopen 在 glibc≥2.34 的静态二进制里
+        // 照常工作（vaapi/vdpau/nvenc/opencl/vulkan 驱动按需载入不受
+        // 影响）；iconv 是自编 libiconv 不走 gconv——三大静态化雷区都
+        // 不涉及 / -static all the way: even the glibc family goes into
+        // the binary (-static-libgcc/-static-libstdc++ are subsets of
+        // -static, dropped). Every prefix lib is a .a already; the only
+        // -l's left are libc/libm/libpthread/libdl/librt/libresolv/
+        // libatomic/libgcc — all shipped as .a by libc dev + gcc.
+        // Runtime deltas: getaddrinfo falls back to the built-in
+        // files/dns NSS (normal DNS unaffected, plugin resolvers like
+        // mDNS won't load); dlopen keeps working in static binaries on
+        // glibc≥2.34 (vaapi/vdpau/nvenc/opencl/vulkan driver loading is
+        // untouched); iconv is our own libiconv, not gconv — the three
+        // classic static-linking pitfalls are all non-issues
+        {
+            // shared 模式 -static 与 --enable-shared 互斥（.so 无法
+            // -static）——只摘全 -static，保留 gcc/C++ 运行时静态化 /
+            // -static and --enable-shared are mutually exclusive
+            // (shared objects can't be -static) — drop only the blanket
+            // -static and keep the gcc/C++ runtimes static
+            if sys::shared() {
+                "--extra-ldflags=-static-libgcc -static-libstdc++ -Wl,--allow-multiple-definition"
+            } else {
+                "--extra-ldflags=-static -Wl,--allow-multiple-definition"
+            }
+        }
+        .into(),
         // -lstdc++ 放 extra-libs 尾部：check_lib 型链测（openh264 除外
         // 全走 .pc）不查 .pc，C++ 归档的 operator delete/vtable 引用只有
         // 全局尾巴能兜底——openal/裸 -l 检查全靠它（实证：libjxl 修复后
@@ -517,8 +550,39 @@ pub fn ffmpeg() -> Result<(), String> {
         // it entirely (empirical: once libjxl stopped aborting configure,
         // the -lopenal check surfaced missing its C++ runtime)
         format!("--extra-libs={gomp} -lm -lpthread -lz -lstdc++"),
-        "--disable-stripping".into(),
     ]);
+    // FFBUILD_DEBUG 非空 = 真·调试构建：--enable-debug=3 全开调试
+    // 信息、--disable-optimizations 关掉全部优化、--disable-stripping
+    // 保留符号表——替换掉头部参数里的 --disable-debug；默认发布态无
+    // 这些旗标，install 自动 strip / a non-empty FFBUILD_DEBUG means
+    // a real debug build: --enable-debug=3 for full debug info,
+    // --disable-optimizations to kill all optimizations, and
+    // --disable-stripping to keep the symbol table — replacing the
+    // --disable-debug in the head args; the release default carries
+    // none of them and install strips automatically
+    if sys::debug() {
+        args.retain(|a| a != "--disable-debug");
+        args.extend([
+            "--enable-debug=3".into(),
+            "--disable-optimizations".into(),
+            "--disable-stripping".into(),
+        ]);
+    }
+    // FFBUILD_SHARED：--enable-rpath 把 install 树的 libdir 烙进
+    // 程序（usrlocal/bin 即装即用）；package 再把包内副本重打成
+    // $ORIGIN（flat bin/ 布局见 package）/ FFBUILD_SHARED:
+    // --enable-rpath bakes the install tree's libdir into the programs
+    // (usrlocal/bin works in place); package() then rewrites the
+    // shipped copies to $ORIGIN for the flat bin/ layout
+    if sys::shared() {
+        args.extend([
+            "--enable-shared".into(),
+            "--disable-static".into(),
+            "--enable-rpath".into(),
+        ]);
+    } else {
+        args.push("--disable-shared".into());
+    }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let dropped = e.work.join("dropped-libs.txt");
     crate::ffmpeg::configure(
@@ -552,7 +616,17 @@ pub fn package() -> Result<(), String> {
         }
     }
     let platform = e.plat();
-    let name = format!("ffmpeg-{hash}-{platform}");
+    // 变体后缀：shared/debug 产物与静态版同名互踩——同一驱动目录下
+    // 两种形态并存，名字必须可分辨（顺序固定 -shared-debug）/
+    // variant suffixes: shared/debug artifacts would shadow the
+    // static one by name — both shapes can coexist under one driver
+    // dir, so names must discriminate (fixed order: -shared-debug)
+    let variant = format!(
+        "{}{}",
+        if sys::shared() { "-shared" } else { "" },
+        if sys::debug() { "-debug" } else { "" },
+    );
+    let name = format!("ffmpeg-{hash}-{platform}{variant}");
     let pkgroot = e.work.join("pkg");
     let pkg = pkgroot.join(&name);
     fsx::rm_rf(&pkgroot);
@@ -565,12 +639,53 @@ pub fn package() -> Result<(), String> {
             fsx::install(&src, &pkg.join(format!("bin/{exe}")))?;
         }
     }
-    for f in fsx::walk(&pkg.join("bin")) {
-        let _ = sys::run(
-            &e.strip,
-            &["--strip-unneeded", &f.to_string_lossy()],
-            &e.work,
-        );
+    // shared 构建：lib*.so.N 真文件平收进 bin/（前缀里只有 ffmpeg
+    // 自己的 .so——依赖全是 .a）；收完给整层打 $ORIGIN rpath：
+    // exe 与互引的 .so 一律同目录解析，包拎到任何路径即跑 /
+    // shared build: collect the real lib*.so.N files flat into bin/
+    // (the prefix only has ffmpeg's own .so — deps are all .a), then
+    // stamp $ORIGIN on the whole bin layer: exes and their mutual .so
+    // references all resolve sibling-wise, so the package runs from
+    // any path
+    if sys::shared()
+        && let Ok(rd) = std::fs::read_dir(usrlocal.join("lib"))
+    {
+        for ent in rd.flatten() {
+            let p = ent.path();
+            let n = ent.file_name().to_string_lossy().to_string();
+            // 只收真实文件——.so/.so.M 符号链接让 fs::copy 复制出
+            // 重复实体 / real files only — the .so/.so.M symlinks would
+            // just make fs::copy emit duplicate bodies
+            if n.contains(".so.")
+                && p.is_file()
+                && !p
+                    .symlink_metadata()
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false)
+            {
+                fsx::install(&p, &pkg.join(format!("bin/{n}")))?;
+            }
+        }
+        for f in fsx::walk(&pkg.join("bin")) {
+            sys::run(
+                "patchelf",
+                &["--set-rpath", "$ORIGIN", &f.to_string_lossy()],
+                &e.work,
+            )?;
+        }
+    }
+    // 打包剥符号——FFBUILD_DEBUG 下跳过（configure 那道已把
+    // --disable-stripping 传给 install，这层再剥就白留了）/
+    // package-time strip — skipped under FFBUILD_DEBUG (the configure
+    // flag already kept symbols at install; this pass would undo it)
+    if !sys::debug() {
+        for f in fsx::walk(&pkg.join("bin")) {
+            let _ = sys::run(
+                &e.strip,
+                &["--strip-unneeded", &f.to_string_lossy()],
+                &e.work,
+            );
+        }
     }
     for (src, dst) in [
         (usrlocal.join("share/doc/ffmpeg"), "doc"),
@@ -603,14 +718,18 @@ pub fn package() -> Result<(), String> {
         fsx::install(&license, &pkg.join("LICENSE.txt"))?;
     }
 
-    // 运行时依赖白名单：只有 glibc 家族可动态出现。libmvec.so.1 被
-    // Ubuntu 的 libm.so 链接脚本无条件拖入（glibc 2.35 起的 GROUP），
-    // libgcc_s 是编译器运行时——两者随 glibc 走，和 libm 一样可移植
-    // runtime-dependency allowlist: only the glibc family may appear
-    // dynamically. libmvec.so.1 is dragged in unconditionally by Ubuntu's
-    // libm.so linker script (a GROUP() since glibc 2.35) and libgcc_s is
-    // the compiler runtime — both ship wherever glibc does, as portable
-    // as libm itself
+    // 运行时依赖白名单：默认全静态产物的 ldd 输出是 "not a dynamic
+    // executable"（首词 "not" 在白名单里天然放行）；shared 变体才真
+    // 有动态依赖——glibc 家族照旧放行 + 随包同行的 lib*.so.N（上方
+    // shipped 判断）。libmvec.so.1 被 Ubuntu 的 libm.so 链接脚本无条
+    // 件拖入（glibc 2.35 起的 GROUP），libgcc_s 是编译器运行时 /
+    // runtime-dependency allowlist: the default all-static binary's
+    // ldd says "not a dynamic executable" (the "not" token is already
+    // allowlisted); only the shared variant has real dynamic deps —
+    // the glibc family stays allowed plus sonames shipped in the
+    // package (the shipped check above). libmvec.so.1 is dragged in by
+    // Ubuntu's libm.so linker script (a GROUP() since glibc 2.35) and
+    // libgcc_s is the compiler runtime
     log::group_begin("Dynamic dependencies");
     let allowed = [
         "linux-vdso",
@@ -635,12 +754,19 @@ pub fn package() -> Result<(), String> {
         let out = sys::capture("ldd", &[&b.to_string_lossy()], &e.work).unwrap_or_default();
         for l in out.lines() {
             let dep = l.split_whitespace().next().unwrap_or("");
-            if !dep.is_empty() && !allowed.iter().any(|a| dep.starts_with(a)) {
-                bad.push(format!(
-                    "{}:{dep}",
-                    b.file_name().unwrap().to_string_lossy()
-                ));
+            if dep.is_empty() {
+                continue;
             }
+            // 随包同行的 soname（shared 模式的 lib*.so.N）合法 /
+            // a soname shipped beside the binary is fine (shared mode's
+            // lib*.so.N)
+            if allowed.iter().any(|a| dep.starts_with(a)) || pkg.join("bin").join(dep).exists() {
+                continue;
+            }
+            bad.push(format!(
+                "{}:{dep}",
+                b.file_name().unwrap().to_string_lossy()
+            ));
         }
     }
     log::group_end();

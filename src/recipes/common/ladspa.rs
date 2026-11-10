@@ -1,10 +1,9 @@
 //! ladspa 配方：LADSPA 插件 API 头文件——FFmpeg 的 ladspa filter 运行时
-//! dlopen 插件，编时只需要 ladspa.h 在场（sources/misc.yaml 各平台都有
-//! ladspa_sdk 包，但只有 macos-arm64 的 misc 分节启用了这个特性）
+//! dlopen 插件（posix 走 dlopen、windows 走 LoadLibrary 封装），编时
+//! 只需要 ladspa.h 在场——全平台适用
 //! ladspa recipe: the LADSPA plugin API header — FFmpeg's ladspa filter
-//! dlopens plugins at runtime, so ladspa.h is all the compile needs
-//! (sources/misc.yaml carries the ladspa_sdk tarball for every platform,
-//! but only macos-arm64's misc section enables the feature)
+//! dlopens plugins at runtime (dlopen on posix, the LoadLibrary wrapper
+//! on windows), so ladspa.h is all the compile needs — works everywhere
 
 use crate::extras::{Ctx, Recipe};
 use crate::fsx;
@@ -15,7 +14,7 @@ use crate::sys;
 pub fn recipe() -> Recipe {
     let mut x = r(
         "ladspa",
-        "mac",
+        "all",
         "file:include/ladspa.h",
         "--enable-ladspa",
         body,

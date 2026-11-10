@@ -348,6 +348,13 @@ lilv:
   git: https://github.com/lv2/lilv.git
   ref: 4b8f30055fa5cb4134a2eb45fc1555bc04289314
 
+# LADSPA 插件 API 头文件——配方只取 ladspa.h，运行时 dlopen 插件 /
+# LADSPA plugin API header — the recipe only lifts ladspa.h; plugins
+# are dlopened at runtime
+ladspa:
+  archive: https://www.ladspa.org/download/ladspa_sdk_1.17.tgz
+  sha256: 27d24f279e4b81bd17ecbdcc38e4c42991bb388826c0b200067ce0eb59d3da5b
+
 # ================= Linux 平台栈（linux 双架构同一批源；其他平台配方表
 #      不含这些键，源躺在这里也无人来取）/ Linux platform stack (both
 #      linux arches share these; other platforms' recipe tables never

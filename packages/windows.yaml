@@ -95,6 +95,13 @@ aribb24: {flags: --enable-libaribb24}
 zvbi: {flags: --enable-libzvbi}
 vapoursynth: {flags: --enable-vapoursynth}
 tesseract-ocr: {flags: --enable-libtesseract}
+# dlfcn-win32：FFmpeg 的 ladspa 检查要 ladspa.h + dlfcn.h 双头文件，
+# af_ladspa 运行时 dlopen 插件——此包给 mingw 提供 dlfcn.h + libdl.a
+# （dlopen → LoadLibrary 映射）/ dlfcn-win32: FFmpeg's ladspa check
+# wants ladspa.h + dlfcn.h together, and af_ladspa dlopens plugins at
+# runtime — this package gives mingw dlfcn.h + libdl.a (dlopen maps to
+# LoadLibrary)
+dlfcn:
 glib2:
 shaderc:
 spirv-tools:

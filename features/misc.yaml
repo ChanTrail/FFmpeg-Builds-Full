@@ -25,4 +25,4 @@ libmfx: disable          # 已被 libvpl 取代 / superseded by libvpl
 libopenvino: disable
 libtensorflow: disable
 libtorch: disable
-opencv: disable
+libopencv: disable

@@ -32,27 +32,69 @@ pub struct Info {
 /// 注意 / note: 不打任何补丁（patches 环节按新方针整体移除）— clean
 /// upstream sources only, per the rewrite policy.
 pub fn fetch(dest: &Path) -> Result<Info, String> {
-    let repo = std::env::var("FFMPEG_REPO")
-        .unwrap_or_else(|_| "https://github.com/FFmpeg/FFmpeg.git".into());
-    let refname = std::env::var("FFMPEG_REF").unwrap_or_else(|_| "master".into());
-    fsx::rm_rf(dest);
-    // git_run：GIT_NET 传输停滞超时 + 维护任务关闭 + 重试（半成品
-    // dest 重试前清掉）/ git_run carries GIT_NET's stall timeouts and
-    // maintenance off plus retries — the partial dest is wiped between
-    // attempts
-    crate::net::git_run(
-        &[
-            "clone",
-            "-q",
-            "--filter=blob:none",
-            "--branch",
-            &refname,
-            &repo,
-            &dest.to_string_lossy(),
-        ],
-        &sys::env().work,
-        Some(dest),
-    )?;
+    // 仓源唯一事实源是 sources/base.yaml 的 ffmpeg: 键——git: 主仓
+    // + mirrors: 顺序兜底；FFMPEG_REPO 显式覆盖则单仓无回退 /
+    // the manifest's ffmpeg: key (sources/base.yaml) is the single
+    // source of truth — git: is the primary, mirrors: the ordered
+    // fallbacks; an explicit FFMPEG_REPO overrides into a single repo
+    let spec = crate::manifest::sources::spec("ffmpeg")?;
+    let repos: Vec<String> = match std::env::var("FFMPEG_REPO").ok().filter(|v| !v.is_empty()) {
+        Some(r) => vec![r],
+        None => spec
+            .git
+            .iter()
+            .cloned()
+            .chain(spec.mirrors.iter().cloned())
+            .collect(),
+    };
+    if repos.is_empty() {
+        return Err("sources: ffmpeg entry has no git: URL".into());
+    }
+    let refname = std::env::var("FFMPEG_REF")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| spec.ref_.clone())
+        .unwrap_or_else(|| "master".into());
+    // git_run：GIT_NET 传输停滞超时 + 维护任务关闭 + 5 次递增退避
+    // 重试；每仓源跑满内部重试才换下一个，半成品 dest 每次克隆前
+    // 清掉 / git_run carries GIT_NET's stall timeouts and maintenance
+    // off plus 5 rising-backoff retries; each repo exhausts its retries
+    // before the next mirror is tried, and the partial dest is wiped
+    // before every clone
+    let mut last_err = String::new();
+    let mut cloned = false;
+    for (i, repo) in repos.iter().enumerate() {
+        fsx::rm_rf(dest);
+        match crate::net::git_run(
+            &[
+                "clone",
+                "-q",
+                "--filter=blob:none",
+                "--branch",
+                &refname,
+                repo.as_str(),
+                &dest.to_string_lossy(),
+            ],
+            &sys::env().work,
+            Some(dest),
+        ) {
+            Ok(()) => {
+                cloned = true;
+                break;
+            }
+            Err(e) => {
+                last_err = e;
+                if i + 1 < repos.len() {
+                    eprintln!(
+                        "[fetch] clone from {repo} failed; trying the next repo / 克隆 {repo} 失败，换下一个仓源"
+                    );
+                }
+            }
+        }
+    }
+    if !cloned {
+        return Err(format!("clone failed from every repo: {last_err}"));
+    }
     // FFMPEG_SHA 钉住精确 commit：一轮的五个平台即使上游在跑期间前进
     // 也构建同一份源码 / pin the exact commit so all five platforms of a
     // run build the same source even if upstream moves mid-run

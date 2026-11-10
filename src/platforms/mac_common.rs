@@ -385,10 +385,51 @@ pub fn ffmpeg() -> Result<(), String> {
         // link. -no_compact_unwind falls back to __eh_frame (DWARF)
         // unwinding: no functional loss and the binary even saves
         // one unwind table
-        "--extra-ldflags=-Wl,-no_compact_unwind".into(),
+        {
+            // shared 模式加 @loader_path rpath：dylib 平放 bin/ 旁位
+            // 解析（install_name_dir=@rpath 见下）/ shared mode adds an
+            // @loader_path rpath: dylibs sit flat in bin/ and resolve
+            // sibling-wise (install_name_dir=@rpath below)
+            if sys::shared() {
+                "--extra-ldflags=-Wl,-no_compact_unwind -Wl,-rpath,@loader_path"
+            } else {
+                "--extra-ldflags=-Wl,-no_compact_unwind"
+            }
+        }
+        .into(),
         format!("--extra-libs={} -lm -liconv -lz", e.cxxrt),
-        "--disable-stripping".into(),
     ]);
+    // FFBUILD_DEBUG 非空 = 真·调试构建：--enable-debug=3 全开调试
+    // 信息、--disable-optimizations 关优化、--disable-stripping 留符
+    // 号表——替换头部参数里的 --disable-debug；默认发布态无这些旗标，
+    // install 自动 strip（package 的 strip -x 循环在 debug 下同跳）
+    // / a non-empty FFBUILD_DEBUG means a real debug build:
+    // --enable-debug=3, --disable-optimizations, --disable-stripping —
+    // replacing --disable-debug in the head args; the release default
+    // carries none and install strips (the package strip -x loop is
+    // skipped under debug too)
+    if sys::debug() {
+        args.retain(|a| a != "--disable-debug");
+        args.extend([
+            "--enable-debug=3".into(),
+            "--disable-optimizations".into(),
+            "--disable-stripping".into(),
+        ]);
+    }
+    // FFBUILD_SHARED：--install-name-dir=@rpath 让 dylib 自带
+    // @rpath ID（配上面的 @loader_path rpath，包内平放解析零修补）/
+    // FFBUILD_SHARED: --install-name-dir=@rpath gives every dylib an
+    // @rpath ID (paired with the @loader_path rpath above — flat bin/
+    // resolution needs no post-build surgery)
+    if sys::shared() {
+        args.extend([
+            "--enable-shared".into(),
+            "--disable-static".into(),
+            "--install-name-dir=@rpath".into(),
+        ]);
+    } else {
+        args.push("--disable-shared".into());
+    }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let dropped = e.work.join("dropped-libs.txt");
     crate::ffmpeg::configure(
@@ -423,7 +464,17 @@ pub fn package() -> Result<(), String> {
         }
     }
     let platform = e.plat();
-    let name = format!("ffmpeg-{hash}-{platform}");
+    // 变体后缀：shared/debug 产物与静态版同名互踩——同一驱动目录下
+    // 两种形态并存，名字必须可分辨（顺序固定 -shared-debug）/
+    // variant suffixes: shared/debug artifacts would shadow the
+    // static one by name — both shapes can coexist under one driver
+    // dir, so names must discriminate (fixed order: -shared-debug)
+    let variant = format!(
+        "{}{}",
+        if sys::shared() { "-shared" } else { "" },
+        if sys::debug() { "-debug" } else { "" },
+    );
+    let name = format!("ffmpeg-{hash}-{platform}{variant}");
     let pkgroot = e.work.join("pkg");
     let pkg = pkgroot.join(&name);
     fsx::rm_rf(&pkgroot);
@@ -436,8 +487,37 @@ pub fn package() -> Result<(), String> {
             fsx::install(&src, &pkg.join(format!("bin/{exe}")))?;
         }
     }
-    for f in fsx::walk(&pkg.join("bin")) {
-        let _ = sys::run(&e.strip, &["-x", &f.to_string_lossy()], &e.work);
+    // shared 构建：lib*.*.dylib 真文件平收进 bin/（ID 已是 @rpath，
+    // exe 带 @loader_path rpath，无需 install_name_tool 修补）/
+    // shared build: collect the real lib*.*.dylib files flat into bin/
+    // (IDs are already @rpath and the exes carry an @loader_path
+    // rpath — no install_name_tool surgery needed)
+    if sys::shared()
+        && let Ok(rd) = std::fs::read_dir(usrlocal.join("lib"))
+    {
+        for ent in rd.flatten() {
+            let p = ent.path();
+            let n = ent.file_name().to_string_lossy().to_string();
+            if n.ends_with(".dylib")
+                && n.trim_end_matches(".dylib").contains('.')
+                && p.is_file()
+                && !p
+                    .symlink_metadata()
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false)
+            {
+                fsx::install(&p, &pkg.join(format!("bin/{n}")))?;
+            }
+        }
+    }
+    // 打包剥符号——FFBUILD_DEBUG 下跳过（configure 那道已把
+    // --disable-stripping 传给 install）/ package-time strip —
+    // skipped under FFBUILD_DEBUG (the configure flag already kept
+    // symbols at install)
+    if !sys::debug() {
+        for f in fsx::walk(&pkg.join("bin")) {
+            let _ = sys::run(&e.strip, &["-x", &f.to_string_lossy()], &e.work);
+        }
     }
     let docs = usrlocal.join("share/doc/ffmpeg");
     if docs.is_dir() {
@@ -491,7 +571,16 @@ pub fn package() -> Result<(), String> {
             if dep.is_empty() {
                 continue;
             }
-            if !(dep.starts_with("/usr/lib/") || dep.starts_with("/System/Library/")) {
+            // @rpath 依赖必须随包同行（shared 模式的 lib*.dylib）；OS
+            // 自带 /usr/lib、/System/Library 照旧放行 / an @rpath dep
+            // must be shipped beside the binary (shared mode's
+            // lib*.dylib); OS-provided /usr/lib and /System/Library
+            // stay allowed as before
+            let shipped = dep
+                .strip_prefix("@rpath/")
+                .map(|n| pkg.join("bin").join(n).exists())
+                .unwrap_or(false);
+            if !(dep.starts_with("/usr/lib/") || dep.starts_with("/System/Library/") || shipped) {
                 bad.push(format!(
                     "{}:{dep}",
                     b.file_name().unwrap().to_string_lossy()

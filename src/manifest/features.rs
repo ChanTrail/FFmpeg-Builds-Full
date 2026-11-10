@@ -133,6 +133,10 @@ pub const FEATURES: &[Feature] = &[
     f("libfribidi", "fribidi"),
     f("libfontconfig", "fontconfig"),
     f("lcms2", "lcms2"),
+    // cairo 是独立 FFmpeg 特性：drawvg 滤镜挂在它而非 librsvg 上 /
+    // cairo is its own FFmpeg feature: the drawvg filter gates on it,
+    // not on librsvg
+    f("cairo", "cairo"),
     f("librsvg", "librsvg-2.0"),
     f("sdl2", "sdl2"),
     f("libvidstab", "vidstab"),
@@ -194,7 +198,7 @@ pub const FEATURES: &[Feature] = &[
     f("libglslang", "always"),
     f("libtensorflow", "always"),
     f("libtorch", "always"),
-    f("opencv", "opencv"),
+    f("libopencv", "opencv4"),
     // ---- autodetect 族：--disable-autodetect 下必须显式点名 ----
     // autodetect family: must be named explicitly under --disable-autodetect
     f("d3d11va", "always"),

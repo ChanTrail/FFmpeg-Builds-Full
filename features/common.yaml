@@ -86,6 +86,12 @@ libharfbuzz: enable
 libfribidi: enable
 libfontconfig: enable
 lcms2: enable
+# cairo 库本体早已随 librsvg/pango 依赖链进前缀；此键补发 --enable-cairo
+# 以解锁 drawvg 滤镜（drawvg_filter_deps="cairo"）/
+# cairo itself already reaches the prefix via the librsvg/pango dep chain;
+# this key emits --enable-cairo to unlock the drawvg filter
+# (drawvg_filter_deps="cairo")
+cairo: enable
 librsvg: enable
 sdl2: enable
 libzimg: enable
@@ -138,6 +144,7 @@ gnutls:
 libsnappy: enable
 whisper: enable
 lv2: enable
+ladspa: enable               # LADSPA 插件宿主（仅头文件，运行时 dlopen/LoadLibrary 插件）/ LADSPA plugin host (header only; plugins dlopened at runtime)
 avisynth: enable
 
 # ---- 硬件加速 / hardware acceleration ----

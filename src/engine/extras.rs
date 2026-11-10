@@ -178,7 +178,21 @@ pub fn recipe_sum(r: &Recipe) -> Result<String, String> {
     let spec = crate::sources::spec(r.name)
         .map(|s| format!("{s:?}"))
         .unwrap_or_default();
-    sys::sha256_data(format!("{}{tc}{spec}", r.src).as_bytes())
+    // :pic 盐（仅 linux-x86_64）：x86_64 的 -fPIC 真实改变目标代码
+    // （GOT 间接寻址），引入前的旧快照 .a 链不进 .so——混盐逼其重建
+    // 一轮。aarch64 寻址天生位置无关（ADRP），旧 .a 本就可链 .so；
+    // PE 无 PIC 概念——两者无需盐，快照平滑续用 / the :pic salt
+    // (linux-x86_64 only): -fPIC genuinely changes x86_64 codegen
+    // (GOT indirection), so pre-PIC snapshot .a files can't link into
+    // .so — the salt forces one rebuild. aarch64 addressing is
+    // position-independent by design (ADRP) and PE has no PIC concept
+    // — both ride their existing snapshots without a salt
+    let mode = if sys::env().os == sys::Os::Linux && sys::env().arch == sys::Arch::X86_64 {
+        ":pic"
+    } else {
+        ""
+    };
+    sys::sha256_data(format!("{}{tc}{spec}{mode}", r.src).as_bytes())
 }
 
 /// extras_run：主循环 / main loop
@@ -213,6 +227,23 @@ pub fn run_all() -> Result<(), String> {
                 format!("{}/share/aclocal:{aclocal}", e.prefix)
             },
         );
+        // 配方内部 cargo 拉取（rav1e/librsvg 的 Rust 依赖）不经我们的
+        // git 设施——cargo 自带网络旋钮喂满：10 次重试、1KB/s 停流判
+        // 死、关 HTTP/2 多路复用（单流停滞不再拖死整批并发）。用户
+        // 自设值不覆盖 / cargo fetches inside recipes (rav1e/librsvg
+        // Rust deps) bypass our git plumbing — feed cargo's own
+        // network knobs in full: 10 retries, stall-kill at 1KB/s,
+        // HTTP/2 multiplexing off (one stalled stream no longer sinks
+        // the whole batch). An operator-set value is never clobbered
+        for (k, v) in [
+            ("CARGO_NET_RETRY", "10"),
+            ("CARGO_HTTP_MULTIPLEXING", "false"),
+            ("CARGO_HTTP_LOW_SPEED_LIMIT", "1024"),
+        ] {
+            if std::env::var(k).is_err() {
+                std::env::set_var(k, v);
+            }
+        }
         if e.os != sys::Os::Windows {
             // 前缀不在编译器默认搜索路径上——跨配方探测（nettle 找
             // -lgmp、libpng 找 zlib.h 这类不经 pkg-config 的原始检查）
@@ -233,6 +264,22 @@ pub fn run_all() -> Result<(), String> {
             let cur = std::env::var("LDFLAGS").unwrap_or_default();
             if !cur.contains(&lib) {
                 std::env::set_var("LDFLAGS", format!("{cur} {lib}").trim());
+            }
+            // 依赖一律 PIC：x86_64 上 PIC 的寄存器代价≈0（aarch64 的
+            // ADRP 寻址天生位置无关，-fPIC 是 no-op），换来的是同一份
+            // deps 快照静态/共享两种产物通吃——.a 链进 .so 的合法性
+            // 不依赖构建模式，共享构建才不用另起一条 deps 通道 /
+            // unconditionally PIC: the register tax is ~zero on
+            // x86_64 (aarch64's ADRP addressing is position-independent
+            // by design, -fPIC a no-op there) — and in return one deps
+            // snapshot serves both static and shared products: .a-into-
+            // .so legality no longer depends on the build mode, so a
+            // shared build needs no second deps channel
+            for var in ["CFLAGS", "CXXFLAGS"] {
+                let cur = std::env::var(var).unwrap_or_default();
+                if !cur.contains("-fPIC") {
+                    std::env::set_var(var, format!("{cur} -fPIC").trim());
+                }
             }
         }
     }

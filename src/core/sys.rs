@@ -228,6 +228,39 @@ pub fn ccache(tool: &str) -> String {
     }
 }
 
+/// FFBUILD_SHARED 非空 = 共享构建：ffmpeg 走 --enable-shared
+/// --disable-static，产物形态变成 可执行文件 + 共享库（共享库在包内
+/// 平放 bin/ 旁位解析——windows PE 自动搜 exe 目录、mac @loader_path
+/// rpath、linux patchelf $ORIGIN）；ELF .so 要求依赖归档是 PIC——
+/// extras 的 CFLAGS 通道在 linux/mac 一律注入 -fPIC（代价≈0，静态
+/// 产物通吃，recipe_sum 的 :pic 盐逼旧非 PIC 快照重建一轮）/ a
+/// non-empty FFBUILD_SHARED selects a shared build: ffmpeg takes
+/// --enable-shared --disable-static and the artifact becomes binaries
+/// plus shared libs (libs land flat in bin/ beside the exes — Windows
+/// PE searches the exe dir natively, macOS resolves @loader_path
+/// rpaths, Linux gets a patchelf'd $ORIGIN); ELF .so files require PIC
+/// dep archives — the extras CFLAGS channel injects -fPIC
+/// unconditionally on linux/mac (~free, static products fine with it
+/// too, and recipe_sum's :pic salt forces one rebuild of pre-PIC
+/// snapshots)
+pub fn shared() -> bool {
+    std::env::var("FFBUILD_SHARED")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
+/// FFBUILD_DEBUG 非空 = 真·调试构建：ffmpeg 走 --enable-debug=3
+/// --disable-optimizations --disable-stripping，产物 -O0 全符号
+/// （package 的剥符号循环同步跳过）/ a non-empty FFBUILD_DEBUG selects
+/// a real debug build: ffmpeg takes --enable-debug=3
+/// --disable-optimizations --disable-stripping for -O0 + full symbols
+/// (the package-time strip loop is skipped in lockstep)
+pub fn debug() -> bool {
+    std::env::var("FFBUILD_DEBUG")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
 /// 系统 pkg-config 的编译期默认搜索路径——读 `pkg-config --variable
 /// pc_path`，跨发行版/架构都正确（自动覆盖 multiarch 目录）。进程级
 /// 缓存一次探测；查不到退化为常见兜底 / the system pkg-config

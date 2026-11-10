@@ -7,11 +7,6 @@
 # here: ① platform-exclusive sources (recipe targets="mac") and
 # ② overrides that differ from the shared value.
 
-# ---- 平台独占 / platform-exclusive ----
-ladspa:                    # ladspa 配方仅 mac（features/macos-arm64.yaml 对应）/ mac-only recipe (matches features/macos-arm64.yaml)
-  archive: https://www.ladspa.org/download/ladspa_sdk_1.17.tgz
-  sha256: 27d24f279e4b81bd17ecbdcc38e4c42991bb388826c0b200067ce0eb59d3da5b
-
 # ---- 覆盖 / overrides ----
 zlib:                      # base.yaml 未钉版；mac 钉 v1.3.1 / unpinned in base.yaml; pinned to v1.3.1 on mac
   git: https://github.com/madler/zlib.git

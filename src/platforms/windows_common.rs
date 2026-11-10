@@ -593,8 +593,32 @@ pub fn ffmpeg() -> Result<(), String> {
             "--extra-libs={}{} {} -lws2_32 -liconv -lz",
             e.cxxrt, hwytail, gomp
         ),
-        "--disable-stripping".into(),
     ]);
+    // FFBUILD_DEBUG 非空 = 真·调试构建：--enable-debug=3 全开调试
+    // 信息、--disable-optimizations 关优化、--disable-stripping 留符
+    // 号表——替换头部参数里的 --disable-debug；默认发布态无这些旗标，
+    // install 自动 strip / a non-empty FFBUILD_DEBUG means a real
+    // debug build: --enable-debug=3, --disable-optimizations,
+    // --disable-stripping — replacing --disable-debug in the head
+    // args; the release default carries none and install strips
+    if sys::debug() {
+        args.retain(|a| a != "--disable-debug");
+        args.extend([
+            "--enable-debug=3".into(),
+            "--disable-optimizations".into(),
+            "--disable-stripping".into(),
+        ]);
+    }
+    // FFBUILD_SHARED：共享构建出 av*.dll + 导入库，PE 无 PIC 概念、
+    // -static 旗标（gcc/mingw 运行时静态化）照旧——产物形态见 package
+    // / FFBUILD_SHARED: shared build produces av*.dll + import libs;
+    // PE has no PIC concept and the -static flag (static gcc/mingw
+    // runtimes) stays — the artifact layout lives in package()
+    if sys::shared() {
+        args.extend(["--enable-shared".into(), "--disable-static".into()]);
+    } else {
+        args.push("--disable-shared".into());
+    }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let dropped = e.work.join("dropped-libs.txt");
     crate::ffmpeg::configure(
@@ -630,7 +654,17 @@ pub fn package() -> Result<(), String> {
         }
     }
     let platform = e.plat();
-    let name = format!("ffmpeg-{hash}-{platform}");
+    // 变体后缀：shared/debug 产物与静态版同名互踩——同一驱动目录下
+    // 两种形态并存，名字必须可分辨（顺序固定 -shared-debug）/
+    // variant suffixes: shared/debug artifacts would shadow the
+    // static one by name — both shapes can coexist under one driver
+    // dir, so names must discriminate (fixed order: -shared-debug)
+    let variant = format!(
+        "{}{}",
+        if sys::shared() { "-shared" } else { "" },
+        if sys::debug() { "-debug" } else { "" },
+    );
+    let name = format!("ffmpeg-{hash}-{platform}{variant}");
     let pkgroot = e.work.join("pkg");
     let pkg = pkgroot.join(&name);
     fsx::rm_rf(&pkgroot);
@@ -645,12 +679,32 @@ pub fn package() -> Result<(), String> {
             fsx::install(&src, &pkg.join(format!("bin/{exe}.exe")))?;
         }
     }
-    for f in fsx::walk(&pkg.join("bin")) {
-        let _ = sys::run(
-            &e.strip,
-            &["--strip-unneeded", &f.to_string_lossy()],
-            &e.work,
-        );
+    // shared 构建：av*.dll 随 exe 同在 bindir——平收进包（PE 从 exe
+    // 目录解析 DLL，零额外配置）/ shared build: the av*.dll install
+    // next to the exes in bindir — collect them flat (PE resolves DLLs
+    // from the exe dir with zero extra plumbing)
+    if sys::shared()
+        && let Ok(rd) = std::fs::read_dir(usrlocal.join("bin"))
+    {
+        for ent in rd.flatten() {
+            let n = ent.file_name().to_string_lossy().to_string();
+            if n.to_ascii_lowercase().ends_with(".dll") && ent.path().is_file() {
+                fsx::install(&ent.path(), &pkg.join(format!("bin/{n}")))?;
+            }
+        }
+    }
+    // 打包剥符号——FFBUILD_DEBUG 下跳过（configure 那道已把
+    // --disable-stripping 传给 install）/ package-time strip —
+    // skipped under FFBUILD_DEBUG (the configure flag already kept
+    // symbols at install)
+    if !sys::debug() {
+        for f in fsx::walk(&pkg.join("bin")) {
+            let _ = sys::run(
+                &e.strip,
+                &["--strip-unneeded", &f.to_string_lossy()],
+                &e.work,
+            );
+        }
     }
     let docs = usrlocal.join("share/doc/ffmpeg");
     if docs.is_dir() {
@@ -703,7 +757,11 @@ pub fn package() -> Result<(), String> {
                 if let Some(dll) = l.strip_prefix("DLL Name:") {
                     let dll = dll.trim();
                     log::log(&format!("  {dll}"));
-                    if prefixbin.join(dll).exists() {
+                    if pkg.join("bin").join(dll).exists() {
+                        // 随包同行的 DLL（shared 模式的 av*.dll）合法 /
+                        // a DLL shipped beside the exe is fine (shared
+                        // mode's av*.dll)
+                    } else if prefixbin.join(dll).exists() {
                         bad.push(format!(
                             "{}:{dll}",
                             exe.file_name().unwrap().to_string_lossy()

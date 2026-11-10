@@ -90,8 +90,20 @@ jobs:
         id: up
         run: |
           set -euo pipefail
-          sha="$(git ls-remote https://github.com/FFmpeg/FFmpeg.git refs/heads/master | cut -f1)"
-          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve FFmpeg master (got '$sha')"; exit 1; }
+          # 仓源顺序与 sources/base.yaml 的 ffmpeg: 键一致——官方
+          # git:// 优先，github 兜底（9418 被墙时回落）/ same repo
+          # order as the `ffmpeg:` key in sources/base.yaml — official
+          # git:// first, github as fallback when 9418 is blocked
+          sha=""
+          for repo in git://git.ffmpeg.org/ffmpeg.git https://github.com/FFmpeg/FFmpeg.git; do
+            out="$(git ls-remote "$repo" refs/heads/master 2>/dev/null | cut -f1 || true)"
+            if [[ "$out" =~ ^[0-9a-f]{40}$ ]]; then
+              sha="$out"
+              echo "resolved via $repo"
+              break
+            fi
+          done
+          [[ -n "$sha" ]] || { echo "::error::could not resolve FFmpeg master on any repo"; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "hash=${sha:0:10}" >> "$GITHUB_OUTPUT"
           echo "Building FFmpeg commit $sha"
@@ -361,7 +373,7 @@ jobs:
           FFBUILD_CCACHE: ${{ matrix.platform == 'windows-x86_64' && '1' || '' }}
           CCACHE_DIR: ${{ runner.temp }}\ffmpeg-ccache
           CCACHE_MAXSIZE: 2G
-        run: ./driver/FFmpeg-Builds-Full.exe build
+        run: ./driver/FFmpeg-Builds-Full.exe build-all
 
       # Publish the deps overlay (extras libs) even when the build died; the
       # next run restores it before compiling.
@@ -487,9 +499,12 @@ jobs:
             GITHUB_SHA="$GITHUB_SHA" \
             GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
             GITHUB_ACTIONS="$GITHUB_ACTIONS" \
+            FFMPEG_SHA="$FFMPEG_SHA" \
+            FFMPEG_REF="${FFMPEG_REF:-}" FFMPEG_REPO="${FFMPEG_REPO:-}" \
+            FFBUILD_SHARED="${FFBUILD_SHARED:-}" FFBUILD_DEBUG="${FFBUILD_DEBUG:-}" \
             FFBUILD_CCACHE="$FFBUILD_CCACHE" CCACHE_DIR="$CCACHE_DIR" \
             CCACHE_MAXSIZE="$CCACHE_MAXSIZE" \
-            ./driver/FFmpeg-Builds-Full build
+            ./driver/FFmpeg-Builds-Full build-all
 
       - name: Publish deps (Linux)
         if: matrix.kind == 'linux' && always()
@@ -539,7 +554,7 @@ jobs:
           FFBUILD_CCACHE: "1"
           CCACHE_DIR: ${{ runner.temp }}/ffmpeg-ccache
           CCACHE_MAXSIZE: 2G
-        run: ./driver/FFmpeg-Builds-Full build
+        run: ./driver/FFmpeg-Builds-Full build-all
 
       # Publish the deps workspace snapshot even when the build died; the
       # next run restores it before compiling.
@@ -728,9 +743,18 @@ jobs:
           set -euo pipefail
           chmod +x driver/* 2>/dev/null || true
           bins=(pkg/*/bin)
-          [[ ${#bins[@]} -eq 1 ]] || { echo "::error::expected exactly one package, found: ${bins[*]}"; exit 1; }
+          # build-all 一腿产三个变体（静态/shared/debug）——逐个冒烟，
+          # shared 变体的旁位解析（$ORIGIN/@loader_path/exe 目录）在
+          # 此顺带实证 / build-all emits three variants per leg
+          # (static/shared/debug) — smoke each one; the shared
+          # variant's sibling resolution ($ORIGIN/@loader_path/exe dir)
+          # gets proven here in passing
+          [[ ${#bins[@]} -eq 3 ]] || { echo "::error::expected exactly three packages, found: ${bins[*]}"; exit 1; }
           exe="$(find driver -name 'FFmpeg-Builds-Full*' -type f | head -n1)"
-          "$exe" smoke "${bins[0]}"
+          for b in "${bins[@]}"; do
+            echo "=== smoke $b ==="
+            "$exe" smoke "$b"
+          done
 
       # Only builds that passed verification are published; the release job
       # picks up `ffmpeg-*` artifacts and nothing else.
@@ -790,7 +814,13 @@ jobs:
         run: |
           set -euo pipefail
           git init -q ffmpeg-src
-          git -C ffmpeg-src fetch -q --depth 1 https://github.com/FFmpeg/FFmpeg.git "$FFMPEG_COMMIT"
+          # 仓源顺序同上——官方 git:// 优先，github 兜底 / same repo
+          # order as above — official git:// first, github as fallback
+          fetched=""
+          for repo in git://git.ffmpeg.org/ffmpeg.git https://github.com/FFmpeg/FFmpeg.git; do
+            git -C ffmpeg-src fetch -q --depth 1 "$repo" "$FFMPEG_COMMIT" && { fetched=1; break; }
+          done
+          [[ -n "$fetched" ]] || { echo "::error::fetch $FFMPEG_COMMIT failed on all repos"; exit 1; }
           git -C ffmpeg-src -c advice.detachedHead=false checkout -q FETCH_HEAD
           echo "FFMPEG_SRC=$PWD/ffmpeg-src" >> "$GITHUB_ENV"
 
@@ -800,15 +830,18 @@ jobs:
           ls -lh artifacts/
 
           # Belt and braces: refuse to publish unless every platform is present,
-          # built from the pinned commit, with its checksum.
+          # built from the pinned commit, with its checksum — all three
+          # variants (static/shared/debug) per platform, 30 files total.
           files=()
           for p in windows-x86_64 windows-arm64 linux-x86_64 linux-arm64 macos-arm64; do
             ext="tar.xz"
             [[ "$p" == windows-* ]] && ext="7z"
-            base="artifacts/ffmpeg-$FFMPEG_HASH-$p"
-            for f in "$base.$ext" "$base.$ext.sha256"; do
-              [[ -f "$f" ]] || { echo "::error::missing $f"; exit 1; }
-              files+=("$f")
+            for v in "" "-shared" "-debug"; do
+              base="artifacts/ffmpeg-$FFMPEG_HASH-$p$v"
+              for f in "$base.$ext" "$base.$ext.sha256"; do
+                [[ -f "$f" ]] || { echo "::error::missing $f"; exit 1; }
+                files+=("$f")
+              done
             done
           done
           all=(artifacts/*)
@@ -850,12 +883,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir latest
-          re='^ffmpeg-[0-9a-f]{10}-(windows-x86_64|windows-arm64|linux-x86_64|linux-arm64|macos-arm64)\.(7z|tar\.xz)$'
+          # 三个变体（默认/-shared/-debug）都进 latest——URL 名即形态 /
+          # all three variants (default/-shared/-debug) land in latest —
+          # the URL spells out the shape
+          re='^ffmpeg-[0-9a-f]{10}-(windows-x86_64|windows-arm64|linux-x86_64|linux-arm64|macos-arm64)(-shared|-debug|-shared-debug)?\.(7z|tar\.xz)$'
           for f in artifacts/*.7z artifacts/*.tar.xz; do
             name="$(basename "$f")"
             [[ "$name" =~ $re ]] || { echo "::error::unexpected archive name $name"; exit 1; }
             p="${BASH_REMATCH[1]}"
-            new="ffmpeg-latest-$p.${BASH_REMATCH[2]}"
+            new="ffmpeg-latest-$p${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
             cp "$f" "latest/$new"
             # Same-named checksum file; it has to reference the new file name.
             (cd latest && sha256sum -- "$new" > "$new.sha256")

@@ -10,4 +10,3 @@ appkit: enable
 coreimage: enable
 metal: enable
 securetransport: enable    # Apple 系统 TLS：钥匙串/系统 CA / Apple system TLS: keychain + system CA store
-ladspa: enable             # ladspa 配方仅 mac（targets="mac"）/ the ladspa recipe is mac-only (targets="mac")
