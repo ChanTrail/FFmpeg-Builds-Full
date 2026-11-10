@@ -29,6 +29,10 @@
 - unzip
 - zstd
 - ccache
+# 冒烟诊断链末段要 gdb 抓崩溃回溯——缺了就只剩裸信号码 /
+# the smoke diagnostic chain's last tier needs gdb for crash
+# backtraces — without it only the bare signal code remains
+- gdb
 - git
 - curl
 - wget

@@ -547,7 +547,7 @@ fn run_gated(c: &mut Command, desc: &str) -> Result<i32, String> {
     let out = c.output().map_err(|e| format!("spawn {desc}: {e}"))?;
     let _ = tx.send(());
     let _ = watcher.join();
-    let code = out.status.code().unwrap_or(-1);
+    let code = exit_code(&out.status);
     let total = out.stdout.len() + out.stderr.len();
     if code == 0 && total < CI_GATE_SMALL {
         // 小体量：原样放出（stdout 在前、stderr 在后）/ small payload:
@@ -598,8 +598,29 @@ pub fn run(prog: &str, args: &[&str], dir: &Path) -> Result<i32, String> {
         return run_gated(&mut c, &desc);
     }
     c.status()
-        .map(|s| s.code().unwrap_or(-1))
+        .map(|s| exit_code(&s))
         .map_err(|e| format!("spawn {prog}: {e}"))
+}
+
+/// ExitStatus -> i32 归一：正常退出原码；Unix 信号死取 -signal
+/// （SIGSEGV -> -11、SIGILL -> -4——裸 -1 里信号号全丢，-11/-4 一眼
+/// 可分死因）；Windows 崩溃本就是 NTSTATUS 负码经 code() 原样透出 /
+/// ExitStatus -> i32 normalization: the raw code on clean exits;
+/// -signal on Unix signal death (SIGSEGV -> -11, SIGILL -> -4 — a bare
+/// -1 discards which signal, -11/-4 distinguish the cause at a glance);
+/// Windows crashes already surface as negative NTSTATUS via code()
+pub fn exit_code(s: &std::process::ExitStatus) -> i32 {
+    if let Some(c) = s.code() {
+        return c;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = s.signal() {
+            return -sig;
+        }
+    }
+    -1
 }
 
 /// 非零退出视为失败 / Fail on a non-zero exit status
@@ -653,7 +674,7 @@ pub fn capture_lax(prog: &str, args: &[&str], dir: &Path) -> Result<(String, i32
     let out = c.output().map_err(|e| format!("spawn {prog}: {e}"))?;
     Ok((
         String::from_utf8_lossy(&out.stdout).replace('\r', ""),
-        out.status.code().unwrap_or(-1),
+        exit_code(&out.status),
     ))
 }
 
@@ -835,7 +856,7 @@ pub fn run_tee(prog: &str, args: &[&str], dir: &Path, logfile: &Path) -> Result<
         let _ = h.join();
     }
     ch.wait()
-        .map(|s| s.code().unwrap_or(-1))
+        .map(|s| exit_code(&s))
         .map_err(|e| format!("wait {prog}: {e}"))
 }
 

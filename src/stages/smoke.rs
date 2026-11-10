@@ -482,7 +482,7 @@ fn diagnose_failed_encode(fm: &str, enc: &str, args: &[&str], bin: &Path, rc: i3
     let drc = sys::cmd(fm, args)
         .env("AOM_SIMD_CAPS_MASK", "0")
         .status()
-        .map(|s| s.code().unwrap_or(-1))
+        .map(|s| sys::exit_code(&s))
         .unwrap_or(1);
     println!("encode test: {enc} retried with AOM_SIMD_CAPS_MASK=0 -> exit {drc}");
     // 单线程诊断：enc_init 里按核数配 worker/线程资源——高核数

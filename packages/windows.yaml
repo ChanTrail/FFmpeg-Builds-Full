@@ -35,6 +35,10 @@ python-markupsafe:
 autotools:
 libtool:
 clang: {archs: x86_64}
+# 冒烟诊断链末段要 gdb 抓崩溃回溯——缺了就只剩裸 NTSTATUS 码 /
+# the smoke diagnostic chain's last tier needs gdb for crash
+# backtraces — without it only the bare NTSTATUS code remains
+gdb:
 
 # --- video codecs ---------------------------------------------------------------
 libx264: {flags: --enable-libx264}
