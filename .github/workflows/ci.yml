@@ -355,7 +355,12 @@ jobs:
       # symlink masquerade); the arm64 leg never gets the flag (the WoA
       # rdrand crash is on record)
       - name: Restore ccache (Windows)
-        if: matrix.kind == 'windows'
+        # 门槛同 FFBUILD_CCACHE——arm64 腿 ccache 不跑、目录不存在，
+        # 缓存步整段跳过（否则 post-job save 报 path-not-exist 警告）
+        # same gate as FFBUILD_CCACHE — the arm64 leg never runs ccache
+        # and the dir never exists; skip the step entirely (else the
+        # post-job save warns path-not-exist)
+        if: matrix.platform == 'windows-x86_64'
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}\ffmpeg-ccache

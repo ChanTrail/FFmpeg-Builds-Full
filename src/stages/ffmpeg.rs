@@ -189,12 +189,12 @@ fn fetch_inner(dest: &Path) -> Result<Info, String> {
 /// 把 --enable-<name> 记进 dropped-file、丢旗标再试——一次运行枚举出
 /// 所有开不了的库，各带 config.log 存档。configure 最终成功后只要有
 /// 一个变体的配置/编译作业：build-all 把各份 args 先算好（串行切
-/// env 期间逐个 plan），configure 随后并行、编译经 jobserver
-/// 令牌池化——各自的 build_dir/dropped/build_log 互不干扰
+/// env 期间逐个 plan），configure 随后并行、编译在变体间串行 -jN
+/// ——各自的 build_dir/dropped/build_log 互不干扰
 /// one variant's configure/compile job: build-all plans the arg
 /// sets up front (one by one while toggling the env knobs), the
-/// configures then run in parallel and compiles share the
-/// jobserver token pool — each job's build_dir/dropped/build_log is
+/// configures then run in parallel while compiles run serially at
+/// -jN across variants — each job's build_dir/dropped/build_log is
 /// its own
 pub struct ConfJob {
     /// 变体词（static/shared/debug/shared-debug）——日志标签与错误
@@ -538,61 +538,6 @@ pub fn configure_all(jobs: &[ConfJob]) -> Result<(), String> {
         r.map_err(|e| format!("{}: {e}", j.label))?;
     }
     Ok(())
-}
-
-/// makefile 内的路径形态：Windows 下给 MSYS make POSIX 形式，POSIX
-/// 直出 / the path spelling inside generated makefiles: POSIX form
-/// for MSYS make on Windows, verbatim elsewhere
-fn makefile_path(p: &Path, e: &sys::Env) -> String {
-    if e.os == sys::Os::Windows {
-        sys::win_to_posix(p, &e.msys2_root)
-    } else {
-        p.to_string_lossy().into_owned()
-    }
-}
-
-/// jobserver 池化编译一批变体：包一层聚合 makefile——每变体一个
-/// 目标，recipe 是 $(MAKE) -C 的子 make 调用，自动共享父进程的
-/// jobserver 令牌池：各变体的全部编译从同一个 -jN 预算里领令牌，
-/// 既不空转（单变体链接/install 尾段的串行空档被其它变体填满）
-/// 也不超订（不是天真的 N×-jN 齐发）/ pool a batch of variant
-/// compiles through the GNU jobserver: wrap them in an aggregate
-/// makefile — one target per variant whose recipe is a $(MAKE) -C
-/// sub-make, which automatically shares the parent's token pool: all
-/// variant compiles draw tokens from a single -jN budget, neither
-/// idling (one variant's link/install tail is backfilled by the
-/// others) nor oversubscribing (not a naive N×-jN blast)
-pub fn compile_all(jobs: &[ConfJob], log_file: &Path) -> Result<(), String> {
-    let e = sys::env();
-    if jobs.len() == 1 {
-        return compile(&jobs[0].build_dir, log_file);
-    }
-    let mk = e.work.join("ffbuild-all.mk");
-    let mut text = String::new();
-    let mut names = Vec::new();
-    for (i, j) in jobs.iter().enumerate() {
-        let name = format!("ffv{i}");
-        names.push(name.clone());
-        let dir = makefile_path(&j.build_dir, e);
-        // 单行目标 `name: ; recipe`——目标文件永不落盘，天然 phony /
-        // one-line target `name: ; recipe` — no such file ever lands,
-        // so it is naturally phony
-        text.push_str(&format!(
-            "{name}: ; $(MAKE) --no-print-directory -C '{dir}'\n"
-        ));
-    }
-    text.push_str(&format!("all: {}\n", names.join(" ")));
-    fsx::write(&mk, &text)?;
-    let mkp = makefile_path(&mk, e);
-    let nj = e.jobs.to_string();
-    match sys::run_tee("make", &["-f", &mkp, "-j", &nj, "all"], &e.work, log_file)? {
-        0 => Ok(()),
-        rc => {
-            // 同 compile 的失败尾部全量 / same verbatim tail on failure
-            println!("{}", sys::log_tail(log_file, 80));
-            Err(format!("make exited {rc}"))
-        }
-    }
 }
 
 /// 在 <build_dir> 编译 FFmpeg（tee 到 <log_file>）

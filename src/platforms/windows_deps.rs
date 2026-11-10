@@ -9,9 +9,10 @@
 //! re-derives every .pc/archive patch on pacman's fresh files each run.
 
 use crate::sys::{self, Env};
-use crate::{deps, fsx, log, pkgcfg, recipes};
-use std::collections::HashSet;
+use crate::{coff, deps, fsx, log, pkgcfg, recipes};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 /// deps 签名：包表 + 全部配方源码 + 引擎版本 + MSYSTEM + 修订号。
 /// 输入变了前缀就得重验 extras（恢复方清标记、配方按 .ok 哈希自选）。
@@ -214,118 +215,28 @@ pub fn restore() -> Result<(), String> {
 }
 
 /// 把 <lib.a> 里的符号 <old> 改名为 <new>：逐成员提取→nm 判定→objcopy
-/// 改名→ar r 原位替换→ranlib（<tools> 为解析好的工具链；CLANGARM64 的
-/// 整归档 objcopy 静默不干，必须逐成员）
-/// Rename symbol <old> to <new> inside <lib.a>: extract each member ->
-/// nm check -> objcopy rename -> `ar r` in place -> ranlib (<tools> is
-/// the resolved toolchain; whole-archive objcopy is a silent no-op on
-/// CLANGARM64, so member by member it is)
-fn redefine_sym(lib: &Path, old: &str, new: &str, tools: &Toolchain) -> bool {
-    let e = sys::env();
-    let mdir = e.work.join(format!("rsym-{}", std::process::id()));
-    fsx::rm_rf(&mdir);
-    if fsx::install_d(&mdir).is_err() {
-        return false;
-    }
-    // 绝不用 canonicalize：它返回 \\?\ verbatim 路径，ar 的 tempname
-    // 往目录拼 "/stXXXXXX" 后 verbatim 语义不规范化斜杠 → 文件名成非法
-    // 组件 → mkstemp EINVAL（"could not create temporary file whilst
-    // writing archive"）。lib 本就是 prefix_win 下的绝对路径
-    // Never canonicalize: it yields a \\?\ verbatim path — ar's tempname
-    // appends "/stXXXXXX" to the dir, and verbatim paths never normalize
-    // the slash -> an illegal "lib/stXXXXXX" component -> mkstemp EINVAL
-    // ("could not create temporary file whilst writing archive"). lib is
-    // already absolute under prefix_win
-    let lib_s = lib.to_string_lossy().to_string();
-    let members = sys::capture(&tools.ar, &["t", &lib_s], &e.work).unwrap_or_default();
-    let mut hit = 0u32;
-    for m in members.lines() {
-        let m = m.trim();
-        if m.is_empty() {
-            continue;
-        }
-        // ar x 在 mdir 里解出成员文件（二进制安全——绝不用 ar p，它的
-        // stdout 过文本模式会 \n→\r\n 毁掉对象）
-        // ar x extracts the member inside mdir (binary-safe — never ar p,
-        // whose stdout goes through text mode and inflates \n to \r\n)
-        if sys::run(&tools.ar, &["x", &lib_s, m], &mdir).unwrap_or(1) != 0 {
-            continue;
-        }
-        let mp = mdir.join(m);
-        if !mp.is_file() {
-            continue;
-        }
-        // [TtWwDdBbRr] old$ 或 U old$：定义或引用了该符号 / defines or
-        // references the symbol
-        let hits = sys::capture(&tools.nm, &[&mp.to_string_lossy()], &mdir)
-            .unwrap_or_default()
-            .lines()
-            .any(|l| {
-                let f: Vec<&str> = l.split_whitespace().collect();
-                (f.len() >= 3
-                    && f[f.len() - 2].len() == 1
-                    && "TtWwDdBbRr".contains(f[f.len() - 2])
-                    && f[f.len() - 1] == old)
-                    || (f.len() == 2 && f[0] == "U" && f[1] == old)
-            });
-        if hits {
-            let ok = sys::run(
-                &tools.objcopy,
-                &[
-                    "--redefine-sym",
-                    &format!("{old}={new}"),
-                    &mp.to_string_lossy(),
-                ],
-                &mdir,
-            )
-            .unwrap_or(1)
-                == 0
-                && sys::run(&tools.ar, &["r", &lib_s, &mp.to_string_lossy()], &mdir).unwrap_or(1)
-                    == 0;
-            if ok {
-                hit += 1;
-            }
-        }
-        let _ = std::fs::remove_file(&mp);
-    }
-    fsx::rm_rf(&mdir);
-    if hit > 0 {
-        let _ = sys::run(&tools.ranlib, &[&lib_s], &e.work);
-        true
-    } else {
-        false
-    }
-}
-
-/// 批量版 redefine_sym：一趟扫过全成员——每成员一次 nm 收集本成员
-/// 命中了 pairs 里哪些符号（nm 行尾字段即符号名；定义 TtWwDdBbRr 或
-/// 引用 U 都算命中），命中成员单次 objcopy 携带全部
-/// --redefine-sym，改完 ar r 原位替换。对比逐符号版：rav1e∩rsvg 的
-/// ~300 共享符号 × ~4000 成员会变成百万级子进程（实证：postfix 冻结
-/// 数小时）；单趟版 ≈ 成员数 × 2-3 个子进程 / batch variant of
-/// redefine_sym: a single pass over all members — one nm per member
-/// collects which of `pairs` it hits (the nm line's last field is the
-/// symbol name; a defined TtWwDdBbRr or a U reference both count), one
-/// objcopy carrying every --redefine-sym per hit member, then `ar r`
-/// back in place. The per-symbol version costs ~300 shared syms ×
-/// ~4000 members ≈ millions of subprocesses for the rav1e∩rsvg pair
-/// (empirical: postfix froze for hours); this is ~members × 2-3
+/// 批量符号改名：归档级 `objcopy --redefine-syms` 优先（一趟
+/// 全成员改写，~3 spawn）；写回失败（归档含 import-object 成员——
+/// rustc staticlib 必带，objcopy 拒改）走逐成员兜底：纯 Rust 符号
+/// 表扫描定位命中成员（旧版每成员 ar x+nm 两个 spawn，librav1e.a
+/// ~4000 成员实证 ~150s；现在一次读档毫秒级）→ `ar x` 批量抽出 →
+/// 每命中成员一次 objcopy → `ar r` 批量回填。返回值=应用到的改名
+/// 对数（命中成员含哪些 old 由扫描已知，无需再 nm）。
+/// Batch variant of redefine_sym: archive-wide `objcopy
+/// --redefine-syms` first (one pass rewrites every member, ~3 spawns);
+/// when the wholesale write fails (archives carrying import-object
+/// members — rustc staticlibs always do — get refused by objcopy) a
+/// member-wise fallback runs: a pure-Rust symtab scan locates hit
+/// members (the old code spent an `ar x`+`nm` per member — ~150s on
+/// librav1e.a's ~4000 members; now one file read in ms) -> batched
+/// `ar x` -> one objcopy per hit -> batched `ar r`. Returns the count
+/// of applied pairs (which olds each hit member carried is already
+/// known from the scan — no nm needed).
 fn redefine_syms(lib: &Path, pairs: &[(String, String)], tools: &Toolchain) -> u32 {
     let e = sys::env();
     if pairs.is_empty() {
         return 0;
     }
-    // 归档级直改：objcopy 原生认识归档——`--redefine-syms <file>`
-    // 一趟把全部改名对应用到每个成员并整体重写新归档，全量只花 3
-    // 个 spawn。对比逐成员版：rav1e∩rsvg 在 MSYS2 上 ≈4000 成员 ×
-    // 2-3 spawn（每 spawn 百毫秒级）仍是分钟级冻结；写回失败再退回
-    // 逐成员慢路兜底 / archive-level rewrite: objcopy natively
-    // understands archives — `--redefine-syms <file>` applies every
-    // rename pair to each member and emits a whole new archive in ~3
-    // spawns total. The member-wise version still costs ≈4000
-    // members × 2-3 spawns at ~100ms+ per spawn under MSYS2
-    // (empirical: minutes); fall back to it only if the wholesale
-    // write fails
     let pf = e.work.join(format!("rsyms-{}.txt", std::process::id()));
     let body = pairs
         .iter()
@@ -358,94 +269,193 @@ fn redefine_syms(lib: &Path, pairs: &[(String, String)], tools: &Toolchain) -> u
     if fsx::install_d(&mdir).is_err() {
         return 0;
     }
-    // canonicalize 禁令同 redefine_sym / same canonicalize ban as
-    // redefine_sym
+    // canonicalize 禁令同前 / same canonicalize ban as above
     let lib_s = lib.to_string_lossy().to_string();
-    let members = sys::capture(&tools.ar, &["t", &lib_s], &e.work).unwrap_or_default();
-    let mut hit = 0u32;
-    for m in members.lines() {
-        let m = m.trim();
-        if m.is_empty() {
+    // 纯 Rust 命中扫描 / pure-Rust hit scan
+    let olds: HashSet<&str> = pairs.iter().map(|(o, _)| o.as_str()).collect();
+    let s = scan_lib(lib);
+    let mut hits: Vec<(String, HashSet<String>)> = Vec::new();
+    for m in &s.mems {
+        if m.off + m.len > s.data.len() {
             continue;
         }
-        // ar x 解成员（ar p 的文本模式 \n→\r\n 毁对象——同 redefine_sym
-        // 注释）/ ar x extracts the member (ar p's text mode wrecks
-        // objects with \r\n — same note as redefine_sym)
-        if sys::run(&tools.ar, &["x", &lib_s, m], &mdir).unwrap_or(1) != 0 {
+        let st = coff::symtab(&s.data[m.off..m.off + m.len]);
+        if st.imp_name.is_some() {
+            // import object——objcopy 够不着：引用扭向新名、定义滞留旧名，
+            // 事后校验点名 / objcopy can't reach it — references bend
+            // onto the new name while the definition stays; post-verify
+            // names the loss
             continue;
         }
+        let h: HashSet<String> = st
+            .all_defs
+            .iter()
+            .chain(st.undefs.iter())
+            .filter(|n| olds.contains(n.as_str()))
+            .cloned()
+            .collect();
+        if !h.is_empty() {
+            hits.push((m.name.clone(), h));
+        }
+    }
+    // `ar x` 对同名成员只解首份——按名去重后批量抽取 / `ar x` extracts
+    // only the first same-named member — dedupe names before the
+    // batched extract
+    let mut names: Vec<String> = hits.iter().map(|h| h.0.clone()).collect();
+    names.sort();
+    names.dedup();
+    for chunk in names.chunks(40) {
+        let mut a: Vec<String> = vec!["x".into(), lib_s.clone()];
+        a.extend(chunk.iter().cloned());
+        let refs: Vec<&str> = a.iter().map(String::as_str).collect();
+        let _ = sys::run(&tools.ar, &refs, &mdir);
+    }
+    // pairs 文件在 archive-wide 分支里已删——重新生成供逐成员
+    // --redefine-syms / the pairs file was removed in the archive-wide
+    // branch — regenerate it for per-member --redefine-syms
+    let _ = fsx::write(&pf, format!("{body}\n").as_str());
+    let mut applied: HashSet<String> = HashSet::new();
+    let mut readd: Vec<String> = Vec::new();
+    for (m, h) in &hits {
         let mp = mdir.join(m);
         if !mp.is_file() {
             continue;
         }
-        let nms = sys::capture(&tools.nm, &[&mp.to_string_lossy()], &mdir).unwrap_or_default();
-        let have: HashSet<&str> = nms
-            .lines()
-            .filter_map(|l| l.split_whitespace().last())
-            .collect();
-        let mut args: Vec<String> = Vec::new();
-        for (o, n) in pairs {
-            if have.contains(o.as_str()) {
-                args.push("--redefine-sym".to_string());
-                args.push(format!("{o}={n}"));
-            }
-        }
-        // objcopy 语法要求 in-file 操作数（单文件即原地改）——漏传只会让
-        // objcopy 打印 usage / objcopy syntax demands an in-file operand
-        // (single file = in-place); omitting it makes objcopy dump usage
-        if !args.is_empty() {
-            args.push(mp.to_string_lossy().to_string());
-        }
-        if !args.is_empty()
-            && sys::run(
-                &tools.objcopy,
-                &args.iter().map(String::as_str).collect::<Vec<_>>(),
-                &mdir,
-            )
-            .unwrap_or(1)
-                == 0
-            && sys::run(&tools.ar, &["r", &lib_s, &mp.to_string_lossy()], &mdir).unwrap_or(1) == 0
+        if sys::run(
+            &tools.objcopy,
+            &[
+                "--redefine-syms",
+                &pf.to_string_lossy(),
+                &mp.to_string_lossy(),
+            ],
+            &mdir,
+        )
+        .unwrap_or(1)
+            == 0
         {
-            hit += args.len() as u32 / 2;
+            applied.extend(h.iter().cloned());
+            readd.push(m.clone());
         }
-        let _ = std::fs::remove_file(&mp);
     }
+    for chunk in readd.chunks(40) {
+        let mut a: Vec<String> = vec!["r".into(), lib_s.clone()];
+        a.extend(chunk.iter().cloned());
+        let refs: Vec<&str> = a.iter().map(String::as_str).collect();
+        let _ = sys::run(&tools.ar, &refs, &mdir);
+    }
+    let _ = std::fs::remove_file(&pf);
     fsx::rm_rf(&mdir);
-    if hit > 0 {
+    if !readd.is_empty() {
         let _ = sys::run(&tools.ranlib, &[&lib_s], &e.work);
     }
-    hit
+    applied.len() as u32
 }
 
-/// 工具链名集合（nm/ar/ranlib/objcopy 经 PATH 解析）/ the resolved
-/// toolchain names used by the archive surgeries
+/// 工具链名集合（ar/ranlib/objcopy 经 PATH 解析；nm 已被纯 Rust 符号
+/// 表扫描全面替代）/ the resolved toolchain names used by the archive
+/// surgeries (nm is fully replaced by the pure-Rust symtab scan)
 struct Toolchain {
-    nm: String,
     ar: String,
     ranlib: String,
     objcopy: String,
 }
 
-/// 解析工具链：nm 缺席回退 llvm-nm；objcopy 依次试 env/llvm/objcopy
-/// Resolve the tools: nm falls back to llvm-nm; objcopy tries env, llvm-,
-/// plain in that order
+/// 解析工具链：objcopy 依次试 env/llvm/objcopy / Resolve the tools:
+/// objcopy tries env, llvm-, plain in that order
 fn tools(e: &Env) -> Toolchain {
-    let nm = if sys::which(&e.nm).is_some() {
-        e.nm.clone()
-    } else {
-        "llvm-nm".to_string()
-    };
     let objcopy = ["llvm-objcopy", "objcopy"]
         .iter()
         .find(|c| sys::which(c).is_some())
         .map(|s| s.to_string())
         .unwrap_or_else(|| e.objdump.clone());
     Toolchain {
-        nm,
         ar: e.ar.clone(),
         ranlib: e.ranlib.clone(),
         objcopy,
     }
+}
+
+/// 一次读档、纯 Rust 成员+符号面扫描——替代每归档一次的 `nm` spawn
+/// （MSYS2 下每 spawn ~200ms，~300 归档就是分钟级）。读不到/非归档
+/// 返回全空集，与旧 nm 失败语义一致（交集空即该相位自然跳过）。
+/// Single-read pure-Rust member + symbol scan — replaces the per-archive
+/// `nm` spawn (~200ms each on MSYS2, so ~300 archives were minute-scale).
+/// Unreadable/non-archive input yields all-empty sets, matching the old
+/// failed-nm semantics (empty intersections make the phase a no-op).
+struct LibScan {
+    /// 归档字节——成员切片就地取 / archive bytes — members slice in place
+    data: Vec<u8>,
+    /// 成员表（名、数据偏移、长度）/ member table (name, offset, len)
+    mems: Vec<coff::Member>,
+    /// 宽松定义集（nm 全字母行语义：节符号/静态/I 型尽收）/ loose
+    /// defined set (every nm type-letter: section syms, statics, I)
+    all_defs: HashSet<String>,
+    /// external 定义集（nm TDBRCSWV 白名单语义）/ external defs only
+    /// (the nm TDBRCSWV whitelist semantics)
+    ext_defs: HashSet<String>,
+    /// 全部未定义引用名 / every undefined reference name
+    undefs: HashSet<String>,
+    /// `__imp_*` 未定义引用（裸名，去前缀）/ undefined `__imp_*` refs
+    /// (bare names, prefix stripped)
+    need_imps: HashSet<String>,
+    /// `__imp_*` 有定义的归档侧导入名（普通对象 def + import-object
+    /// 声明；裸名）——非空即该册是导入库性质 / `__imp_*` names this
+    /// archive DEFINES (regular-object defs + import-object decls; bare
+    /// names) — non-empty marks the archive as an import lib
+    imp_defs: HashSet<String>,
+    /// 一切 `__imp_*` 出现（引用∪定义∪import 声明；裸名）——"裸名是否有
+    /// __imp_ 伴生"哨兵用 / every `__imp_*` occurrence (refs ∪ defs ∪
+    /// import decls; bare names) — feeds the "bare name has an __imp_
+    /// companion" sentinel
+    imp_mentions: HashSet<String>,
+}
+
+fn scan_lib(p: &Path) -> LibScan {
+    let mut s = LibScan {
+        data: std::fs::read(p).unwrap_or_default(),
+        mems: Vec::new(),
+        all_defs: HashSet::new(),
+        ext_defs: HashSet::new(),
+        undefs: HashSet::new(),
+        need_imps: HashSet::new(),
+        imp_defs: HashSet::new(),
+        imp_mentions: HashSet::new(),
+    };
+    s.mems = coff::members(&s.data);
+    for i in 0..s.mems.len() {
+        let (off, len) = (s.mems[i].off, s.mems[i].len);
+        if off + len > s.data.len() {
+            continue;
+        }
+        let st = coff::symtab(&s.data[off..off + len]);
+        for u in &st.undefs {
+            s.undefs.insert(u.clone());
+            if let Some(n) = u.strip_prefix("__imp_") {
+                s.need_imps.insert(n.to_string());
+                s.imp_mentions.insert(n.to_string());
+            }
+        }
+        for d in &st.all_defs {
+            if let Some(n) = d.strip_prefix("__imp_") {
+                s.imp_defs.insert(n.to_string());
+                s.imp_mentions.insert(n.to_string());
+            }
+            s.all_defs.insert(d.clone());
+        }
+        s.ext_defs.extend(st.ext_defs.iter().cloned());
+        // import-object 成员：声明的导入名既算该册的定义面（裸名 + 链接器
+        // 合成的 __imp_ 名），也是 implib 标记与伴生哨兵的输入
+        // import-object member: its declared name joins this archive's
+        // defined surface (bare name + the linker-synthesized __imp_
+        // name) and feeds both the implib mark and the companion sentinel
+        if let Some(n) = &st.imp_name {
+            s.imp_defs.insert(n.clone());
+            s.imp_mentions.insert(n.clone());
+            s.all_defs.insert(n.clone());
+            s.all_defs.insert(format!("__imp_{n}"));
+        }
+    }
+    s
 }
 
 /// 清旧 shim → pc 私有依赖/静态 cflag/系统库 →
@@ -470,8 +480,16 @@ pub fn fixup() -> Result<(), String> {
     // pristine
     for la in fsx::walk(&libdir) {
         if la.extension().map(|x| x == "a").unwrap_or(false) {
-            let m = crate::ar::members(&la, &e.work);
-            if m.iter().any(|x| x == "shim.o" || x == "ffshim.o") {
+            // 纯 Rust 成员表替代 `ar t` spawn / pure-Rust member table
+            // replaces the `ar t` spawn
+            let has_shim = std::fs::read(&la)
+                .map(|d| {
+                    coff::members(&d)
+                        .iter()
+                        .any(|m| m.name == "shim.o" || m.name == "ffshim.o")
+                })
+                .unwrap_or(false);
+            if has_shim {
                 for s in ["shim.o", "ffshim.o"] {
                     let _ = sys::run(&t.ar, &["d", &la.to_string_lossy(), s], &e.work);
                 }
@@ -879,23 +897,17 @@ pub fn fixup() -> Result<(), String> {
     let zmq_a = libdir.join("libzmq.a");
     if zmq_a.is_file() && sys::which(&t.objcopy).is_some() {
         // 幂等闸：objcopy/ranlib 无条件重写归档（mtime bump 会让 deps
-        // 差集每轮报脏）——先看 nm 里还有没有未改的 sha1_* 定义，改名
-        // 过的归档整段跳过 / idempotence gate: objcopy/ranlib rewrite
-        // the archive unconditionally (the mtime bump would dirty the
-        // deps delta every run) — only run while nm still shows an
-        // un-renamed sha1_* definition; an already-renamed archive
-        // skips the whole block
-        let needs = sys::capture(&t.nm, &[&zmq_a.to_string_lossy()], &e.work)
-            .unwrap_or_default()
-            .lines()
-            .any(|l| {
-                let f: Vec<&str> = l.split_whitespace().collect();
-                f.len() >= 3
-                    && f[f.len() - 2].len() == 1
-                    && "TtDdRrBb".contains(f[f.len() - 2])
-                    && ["sha1_init", "sha1_pad", "sha1_loop", "sha1_result"]
-                        .contains(&f[f.len() - 1])
-            });
+        // 差集每轮报脏）——先看符号面里还有没有未改的 sha1_* 定义，改名
+        // 过的归档整段跳过（纯 Rust 扫描替代 nm）/ idempotence gate:
+        // objcopy/ranlib rewrite the archive unconditionally (the
+        // mtime bump would dirty the deps delta every run) — only run
+        // while the symbol surface still shows an un-renamed sha1_*
+        // definition; an already-renamed archive skips the whole block
+        // (pure-Rust scan replaces nm)
+        let needs = scan_lib(&zmq_a)
+            .all_defs
+            .iter()
+            .any(|s| ["sha1_init", "sha1_pad", "sha1_loop", "sha1_result"].contains(&s.as_str()));
         if needs {
             for s in ["sha1_init", "sha1_pad", "sha1_loop", "sha1_result"] {
                 let _ = sys::run(
@@ -922,85 +934,36 @@ pub fn fixup() -> Result<(), String> {
     // a whole archive as an import lib (never injected).
     {
         log::log("scanning archives for unresolved __imp_* references");
+        let ts = Instant::now();
         let ars: Vec<PathBuf> = fsx::walk(&libdir)
             .into_iter()
             .filter(|p| p.extension().map(|x| x == "a").unwrap_or(false))
             .collect();
-        // nm 扫描（多线程）→ need/def/implib 三集合 / parallel nm scan ->
-        // the need/def/implib sets
-        let chunks: Vec<Vec<PathBuf>> = {
-            let n = e.jobs.max(1);
-            let mut c: Vec<Vec<PathBuf>> = vec![Vec::new(); n];
-            for (i, a) in ars.iter().enumerate() {
-                c[i % n].push(a.clone());
-            }
-            c
-        };
-        // 每个归档线程的产物：(need 列表, (归档,符号) 定义对, 导入库集合,
-        // 导入库拥有的 __imp_ 裸名集合)
-        // per-archive thread yield: (needs, (archive,sym) def pairs,
-        // import-lib set, plain names the import libs own)
-        type ScanOut = (
-            Vec<String>,
-            Vec<(String, String)>,
-            HashSet<String>,
-            HashSet<String>,
-        );
-        let results: Vec<ScanOut> = std::thread::scope(|sc| {
-            let handles: Vec<_> = chunks
-                .into_iter()
-                .map(|chunk| {
-                    let nmt = t.nm.clone();
-                    sc.spawn(move || {
-                        let mut need = Vec::new();
-                        let mut defs = Vec::new();
-                        let mut implib = HashSet::new();
-                        let mut implib_syms = HashSet::new();
-                        for la in chunk {
-                            let a = la.file_name().unwrap().to_string_lossy().to_string();
-                            // current_dir 必须是目录——&la 是归档文件，
-                            // spawn 会 ENOTDIR 被 unwrap_or_default 静默
-                            // 吞掉（整个扫描空转，从不注入）
-                            // current_dir must be a directory — &la is
-                            // the archive FILE; the spawn fails ENOTDIR
-                            // and unwrap_or_default swallows it silently
-                            // (the whole scan goes dead, never injects)
-                            let out = sys::capture(&nmt, &[&la.to_string_lossy()], &e.work)
-                                .unwrap_or_default();
-                            for l in out.lines() {
-                                let f: Vec<&str> = l.split_whitespace().collect();
-                                if f.len() == 2 && f[0] == "U" && f[1].starts_with("__imp_") {
-                                    need.push(f[1][6..].to_string());
-                                } else if f.len() >= 3 && f[2].starts_with("__imp_") {
-                                    implib.insert(a.clone());
-                                    implib_syms.insert(f[2][6..].to_string());
-                                } else if f.len() >= 3
-                                    && f[1].len() == 1
-                                    && f[1].chars().next().unwrap().is_ascii_alphabetic()
-                                {
-                                    defs.push((a.clone(), f[2].to_string()));
-                                }
-                            }
-                        }
-                        (need, defs, implib, implib_syms)
-                    })
-                })
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
-        });
+        // 纯 Rust 符号扫描（零 spawn；旧版 ~300 归档 × nm spawn ≈ 分钟级）
+        // → need/def/implib 三集合 / pure-Rust symbol scan (zero spawns;
+        // the old version paid ~300 nm spawns ≈ minutes) -> the
+        // need/def/implib sets
         let mut need: HashSet<String> = HashSet::new();
         let mut implib: HashSet<String> = HashSet::new();
         let mut implib_syms: HashSet<String> = HashSet::new();
-        let mut prov: std::collections::HashMap<String, HashSet<String>> =
-            std::collections::HashMap::new();
-        for (n, d, i, is) in results {
-            need.extend(n);
-            implib.extend(i);
-            implib_syms.extend(is);
-            for (a, s) in d {
-                prov.entry(a).or_default().insert(s);
+        let mut prov: HashMap<String, HashSet<String>> = HashMap::new();
+        for la in &ars {
+            let a = la.file_name().unwrap().to_string_lossy().to_string();
+            let s = scan_lib(la);
+            need.extend(s.need_imps.iter().cloned());
+            implib_syms.extend(s.imp_defs.iter().cloned());
+            if !s.imp_defs.is_empty() {
+                implib.insert(a.clone());
             }
+            prov.entry(a)
+                .or_default()
+                .extend(s.all_defs.iter().cloned());
         }
+        log::log(&format!(
+            "__imp_ scan: {} archive(s), {} ms",
+            ars.len(),
+            ts.elapsed().as_millis()
+        ));
         // 归约：拥有所需裸符号的归档成为提供者（导入库除外；导入库拥有
         // 的需求仍 shim——-static 下它不被拉入）/ reduction: an archive
         // owning a needed plain sym becomes the provider (except import
@@ -1045,17 +1008,29 @@ pub fn fixup() -> Result<(), String> {
                     == 0
             };
             let one = |s: &str| format!("extern char {s}[];\nvoid *__imp_{s} = (void*){s};\n");
-            // 逐符号预检再编合集：单个编不过的名字不能让整归档的 shim
-            // 陪葬 / preflight per-symbol then compile the survivors
-            // together: one uncompilable name must not take the whole
-            // archive's shims down with it
+            // 先整卷编译：全过就省掉逐符号 spawn（MSYS2 每 spawn
+            // ~200ms）；编不过再逐符号隔离坏名字——单个编不过的名字
+            // 不能让整归档的 shim 陪葬 / compile the whole union
+            // first: an all-pass saves the per-symbol spawns (~200ms
+            // each under MSYS2); on failure bisect per-symbol so one
+            // uncompilable name can't take the whole archive's shims
+            // down with it
             let mut ok: Vec<String> = Vec::new();
             let mut dropped: Vec<String> = Vec::new();
-            for s in &wants {
-                if compile_shim(&one(s)) {
-                    ok.push(s.clone());
-                } else {
-                    dropped.push(s.clone());
+            // union 全过时 shimo 已是目标产物，后面不用再编 / when the
+            // union passes wholesale, shimo is already the final
+            // artifact — no recompile needed later
+            let mut shim_compiled = false;
+            if compile_shim(&wants.iter().map(|s| one(s)).collect::<String>()) {
+                ok = wants.clone();
+                shim_compiled = true;
+            } else {
+                for s in &wants {
+                    if compile_shim(&one(s)) {
+                        ok.push(s.clone());
+                    } else {
+                        dropped.push(s.clone());
+                    }
                 }
             }
             if !dropped.is_empty() {
@@ -1067,7 +1042,7 @@ pub fn fixup() -> Result<(), String> {
             }
             let prov_a = libdir.join(a);
             if !ok.is_empty()
-                && compile_shim(&ok.iter().map(|s| one(s)).collect::<String>())
+                && (shim_compiled || compile_shim(&ok.iter().map(|s| one(s)).collect::<String>()))
                 && sys::run(
                     &t.ar,
                     &["rcs", &prov_a.to_string_lossy(), &shimo.to_string_lossy()],
@@ -1160,29 +1135,22 @@ pub fn fixup() -> Result<(), String> {
     let rsv = libdir.join("librsvg-2.a");
     let rav = libdir.join("librav1e.a");
     if rsv.is_file() {
-        let count = |p: &Path, kind: &str| -> usize {
-            sys::capture(&t.nm, &[&p.to_string_lossy()], &e.work)
-                .unwrap_or_default()
-                .lines()
-                .filter(|l| {
-                    let f: Vec<&str> = l.split_whitespace().collect();
-                    match kind {
-                        "def" => {
-                            f.len() >= 3
-                                && f[f.len() - 2].len() == 1
-                                && "TtWw".contains(f[f.len() - 2])
-                                && f[f.len() - 1] == "rust_eh_personality"
-                        }
-                        _ => f.len() == 2 && f[0] == "U" && f[1] == "rust_eh_personality",
-                    }
-                })
-                .count()
-        };
-        let ravd = if rav.is_file() { count(&rav, "def") } else { 0 };
-        let rsvd = count(&rsv, "def");
-        let rsvu = count(&rsv, "undef");
+        // 纯 Rust 符号扫描替代逐册 nm / pure-Rust scans replace
+        // per-archive nm
+        let (rs, rv) = (scan_lib(&rsv), scan_lib(&rav));
+        let ravd = usize::from(rv.ext_defs.contains("rust_eh_personality"));
+        let rsvd = usize::from(rs.ext_defs.contains("rust_eh_personality"));
+        let rsvu = usize::from(rs.undefs.contains("rust_eh_personality"));
         if ravd > 0 && rsvd > 0 {
-            if redefine_sym(&rav, "rust_eh_personality", "rav1e_rust_eh_personality", &t) {
+            if redefine_syms(
+                &rav,
+                &[(
+                    "rust_eh_personality".into(),
+                    "rav1e_rust_eh_personality".into(),
+                )],
+                &t,
+            ) > 0
+            {
                 log::log("renamed rust_eh_personality in librav1e.a (librsvg keeps its own)");
             } else {
                 log::warn(
@@ -1229,37 +1197,26 @@ pub fn fixup() -> Result<(), String> {
     let b2a = libdir.join("libb2.a");
     let soda = libdir.join("libsodium.a");
     if b2a.is_file() && soda.is_file() {
-        let defined = |p: &Path| -> HashSet<String> {
-            sys::capture(
-                &t.nm,
-                &["--defined-only", "-g", &p.to_string_lossy()],
-                &e.work,
-            )
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|l| {
-                let f: Vec<&str> = l.split_whitespace().collect();
-                if f.len() >= 3 {
-                    Some(f[2].to_string())
-                } else {
-                    None
-                }
-            })
-            .collect()
-        };
-        let shared: Vec<String> = defined(&b2a)
-            .intersection(&defined(&soda))
-            .cloned()
-            .collect();
-        let mut rc = 0u32;
-        for s in shared {
-            if redefine_sym(&soda, &s, &format!("sodium_{s}"), &t) {
-                rc += 1;
-            } else {
+        let (sb, ss) = (scan_lib(&b2a), scan_lib(&soda));
+        // 哨兵同 dedup_pairs：目标名已存在就跳过并告警 / same sentinel
+        // as dedup_pairs: skip+warn when the target name already lives
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for s in sb.ext_defs.intersection(&ss.ext_defs) {
+            let tgt = format!("sodium_{s}");
+            if sb.ext_defs.contains(&tgt) || ss.ext_defs.contains(&tgt) {
                 log::warn(&format!(
-                    "could not rename '{s}' in libsodium.a — final link may collide"
+                    "dedup: skip '{s}' in libsodium.a — target '{tgt}' already defined"
                 ));
+                continue;
             }
+            pairs.push((s.clone(), tgt));
+        }
+        let rc = redefine_syms(&soda, &pairs, &t);
+        if rc < pairs.len() as u32 {
+            log::warn(&format!(
+                "dedup: only {rc}/{} shared symbols renamed in libsodium.a — final link may collide",
+                pairs.len()
+            ));
         }
         if rc > 0 {
             log::log(&format!(
@@ -1294,70 +1251,52 @@ pub fn fixup() -> Result<(), String> {
         if !(pa.is_file() && pb.is_file()) {
             continue;
         }
-        let defined = |p: &Path| -> HashSet<String> {
-            // 类型白名单：{T,D,B,R,C,S,W,V}。A=absolute、N=debug、
-            // I=导入描述符排除——I 型（__imp_*）是链接器合成名、定义
-            // 在 import-object 成员里，改名必然只动引用侧（实证）；其
-            // 撞名由上面的逐字节成员删重相位收 / type whitelist
-            // {T,D,B,R,C,S,W,V}: A=absolute, N=debug and I=import
-            // descriptor stay out — I-typed __imp_* are linker-
-            // synthesized names defined inside import-object members,
-            // so a rename can only ever bend the reference side
-            // (empirical); their collisions are collected by the
-            // byte-identical member-dedup phase above
-            sys::capture(
-                &t.nm,
-                &["--defined-only", "-g", &p.to_string_lossy()],
-                &e.work,
-            )
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|l| {
-                let f: Vec<&str> = l.split_whitespace().collect();
-                if f.len() >= 2
-                    && f[f.len() - 2].len() == 1
-                    && f[f.len() - 2]
-                        .chars()
-                        .next()
-                        .is_some_and(|c| "TDBRCSWV".contains(c))
-                {
-                    Some(f[f.len() - 1].to_string())
-                } else {
-                    None
-                }
-            })
-            .collect()
-        };
-        let (da, db) = (defined(&pa), defined(&pb));
+        let tp = Instant::now();
+        // 两册一次读档——defined/imps/逐字节去重三用（旧版每册 3 次 nm
+        // + 逐成员 ar p 对比）/ one read per archive feeds the
+        // defined/imps/byte-dedup consumers (the old version spent 3 nm
+        // runs + per-member `ar p` compares per archive)
+        let (sa, sb) = (scan_lib(&pa), scan_lib(&pb));
+        // 定义集取 external（nm TDBRCSWV 白名单语义：absolute/debug/
+        // 导入描述符不进）/ defined sets use externals only (the nm
+        // TDBRCSWV whitelist semantics: absolute/debug/import
+        // descriptors stay out)
+        let (da, db) = (sa.ext_defs.clone(), sb.ext_defs.clone());
         // 第一相位：删掉 b 册里与 a 册逐字节相同的同名成员。rustc 归档
         // 都 vendor 同一套 dlltool 导入桩（api-ms-win-*.dlls*.o）——
         // `__imp_X` 是链接器合成名、不进字节表（byte rename 无处下
         // 手），import-object 成员 objcopy 也够不着；桩在两册逐字节
         // 相同，删 b 留 a，b 的引用经 a 的同名桩/系统 import lib 正常
         // 解析（实证：x86_64 三组 __imp_ 多重定义、两腿 rav1e 因
-        // WaitOnAddress_rsvgshr 丢定义被 configure 判掉）/ phase one:
-        // delete b members byte-identical to same-named a members.
-        // Rust archives all vendor identical dlltool import stubs
-        // (api-ms-win-*.dlls*.o) — `__imp_X` is a linker-synthesized
-        // name absent from the byte table (nothing for a byte rename
-        // to grab) and objcopy cannot reach import-object members; the
-        // stubs are byte-identical across archives, so deleting b's
-        // copies lets its references resolve through a's same-named
-        // stub or the system import lib (empirical: three __imp_
-        // duplicate groups on x86_64, and both legs dropped rav1e
-        // when WaitOnAddress_rsvgshr lost its definition)
+        // WaitOnAddress_rsvgshr 丢定义被 configure 判掉）。a 册按名取
+        // 首份成员（`ar p`/`ar d` 对同名成员都只认首份，语义对齐）
+        // / phase one: delete b members byte-identical to same-named
+        // a members. Rust archives all vendor identical dlltool import
+        // stubs (api-ms-win-*.dlls*.o) — `__imp_X` is a linker-
+        // synthesized name absent from the byte table (nothing for a
+        // byte rename to grab) and objcopy cannot reach import-object
+        // members; the stubs are byte-identical across archives, so
+        // deleting b's copies lets its references resolve through a's
+        // same-named stub or the system import lib (empirical: three
+        // __imp_ duplicate groups on x86_64, and both legs dropped
+        // rav1e when WaitOnAddress_rsvgshr lost its definition). a's
+        // side keeps the FIRST same-named member (`ar p`/`ar d` see
+        // only the first too — same semantics)
         {
-            let ma: HashSet<String> = crate::ar::members(&pa, &e.work).into_iter().collect();
+            let mut ma: HashMap<&str, (usize, usize)> = HashMap::new();
+            for m in &sa.mems {
+                ma.entry(m.name.as_str()).or_insert((m.off, m.len));
+            }
             let mut dropped = 0u32;
-            for m in crate::ar::members(&pb, &e.work) {
-                if !ma.contains(&m) {
+            for m in &sb.mems {
+                let Some(&(ao, al)) = ma.get(m.name.as_str()) else {
                     continue;
-                }
-                if let (Ok(ba), Ok(bb)) = (
-                    crate::ar::member_data(&pa, &m, &e.work),
-                    crate::ar::member_data(&pb, &m, &e.work),
-                ) && ba == bb
-                    && sys::run(&t.ar, &["d", &pb.to_string_lossy(), &m], &e.work).is_ok()
+                };
+                if al == m.len
+                    && ao + al <= sa.data.len()
+                    && m.off + m.len <= sb.data.len()
+                    && sa.data[ao..ao + al] == sb.data[m.off..m.off + m.len]
+                    && sys::run(&t.ar, &["d", &pb.to_string_lossy(), &m.name], &e.work).is_ok()
                 {
                     dropped += 1;
                 }
@@ -1378,15 +1317,7 @@ pub fn fixup() -> Result<(), String> {
         // — objcopy can't edit it, so renaming bends references onto
         // the new name while the definition stays behind (empirical:
         // WaitOnAddress_rsvgshr lost its home). Skip the name entirely
-        let imps = |p: &Path| -> HashSet<String> {
-            sys::capture(&t.nm, &["-g", &p.to_string_lossy()], &e.work)
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|l| l.split_whitespace().last())
-                .filter_map(|n| n.strip_prefix("__imp_").map(str::to_string))
-                .collect()
-        };
-        let (ia, ib) = (imps(&pa), imps(&pb));
+        let (ia, ib) = (&sa.imp_mentions, &sb.imp_mentions);
         let shared: Vec<String> = da.intersection(&db).cloned().collect();
         let mut pairs: Vec<(String, String)> = Vec::new();
         for s in &shared {
@@ -1413,12 +1344,14 @@ pub fn fixup() -> Result<(), String> {
         let rc = redefine_syms(&pb, &pairs, &t);
         // 事后校验：改名产物必须真在 b 册里有定义——objcopy 够不着某
         // 成员时引用扭向新名而定义滞留旧名，静默产生 undefined。逐名
-        // 核一遍定义集，丢定义的点名告警 / post-verify: every renamed
-        // name must still be defined inside b — when objcopy can't
-        // reach a member the references bend onto the new name while
-        // the definition stays behind, silently producing undefined.
-        // Re-scan the defined set and name any that lost their home
-        let after = defined(&pb);
+        // 核一遍定义集，丢定义的点名告警（归档已被改写——重新读档扫描）
+        // / post-verify: every renamed name must still be defined
+        // inside b — when objcopy can't reach a member the references
+        // bend onto the new name while the definition stays behind,
+        // silently producing undefined. Re-scan the defined set and
+        // name any that lost their home (the archive was rewritten —
+        // rescan from disk)
+        let after = scan_lib(&pb).ext_defs;
         let lost: Vec<&String> = pairs
             .iter()
             .map(|(_, n)| n)
@@ -1446,6 +1379,10 @@ pub fn fixup() -> Result<(), String> {
                 "renamed {rc} {a}-shared symbol(s) in {b} (*{suffix})"
             ));
         }
+        log::log(&format!(
+            "dedup pair {a}∩{b}: {} ms",
+            tp.elapsed().as_millis()
+        ));
     }
 
     // pacman 的 librsvg-2.a 是 rust staticlib——把构建时链接的 C 原生
@@ -1474,10 +1411,18 @@ pub fn fixup() -> Result<(), String> {
     if rsvg.is_file() {
         let mut n = 0u32;
         for _ in 0..8 {
-            if !crate::ar::members(&rsvg, &e.work)
-                .iter()
-                .any(|m| m.as_str() == "gwin32appinfo.c.obj")
-            {
+            // 每趟 `ar d` 后归档已变——重新读档查成员表（纯 Rust，
+            // 替代 `ar t` spawn）/ the archive changes every `ar d`
+            // pass — re-read the member table each round (pure Rust,
+            // replaces the `ar t` spawn)
+            let has = std::fs::read(&rsvg)
+                .map(|d| {
+                    coff::members(&d)
+                        .iter()
+                        .any(|m| m.name == "gwin32appinfo.c.obj")
+                })
+                .unwrap_or(false);
+            if !has {
                 break;
             }
             if sys::run(

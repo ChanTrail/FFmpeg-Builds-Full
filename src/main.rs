@@ -20,7 +20,7 @@ mod stages;
 // 根级重导出：crate::sys / crate::fsx 等旧路径继续有效，调用点零改动
 // Root re-exports: crate::sys / crate::fsx etc. keep working — call sites
 // untouched by the directory move
-pub use core::{ar, buildsys, fsx, json, log, net, pkgcfg, sys};
+pub use core::{ar, buildsys, coff, fsx, json, log, net, pkgcfg, sys};
 pub use engine::extras;
 pub use manifest::{features, patches, sources};
 pub use stages::{deps, ffmpeg, smoke};
@@ -41,11 +41,11 @@ FFmpeg-Builds-Full — FFmpeg 静态构建驱动 / static FFmpeg build driver
   build      全流水线：extras → ffmpeg → package
              the whole pipeline: extras → ffmpeg → package
   build-all  全变体一次建：共享底座一次，随后逐变体出计划，
-             configure 双路并行、编译 jobserver 池化，最后逐变体
+             configure 双路并行、编译变体间串行 -jN，最后逐变体
              install→package / every variant in one run: the shared
              base once, then per-variant plans, two-way parallel
-             configure, jobserver-pooled compile, and finally
-             per-variant install→package
+             configure, serial -jN compiles across variants, and
+             finally per-variant install→package
   packages   安装/确认平台包栈（MSYS2 pacman 等）
              install or verify the platform package stack (MSYS2 pacman etc.)
   extras     只跑 extras 配方引擎（第三方库）
@@ -213,19 +213,19 @@ fn main() {
         // build-all：变体集合一次建完——FFBUILD_SHARED/FFBUILD_DEBUG
         // 由本命令逐变体接管（外部同名旋钮被覆盖）。五阶段编排：
         // 共享底座一次 → 逐变体串行出计划（args 此刻烘焙）→ configure
-        // 双路并行（fork/探测密集非 CPU 密集，≈单倍时长）→ jobserver
-        // 池化编译（两变体共享一个 -jN 令牌池，链接/install 空档互相
-        // 回填）→ 逐变体 install→package（同一 /usr/local 串行收包
-        // 无竞态）/ build-all builds the shipped variant set — this
-        // command owns FFBUILD_SHARED/FFBUILD_DEBUG per variant
-        // (externally set knobs get overridden). Five stages: the
-        // shared base once -> per-variant plans serially (args are
-        // baked right then) -> two-way parallel configure
-        // (fork/probe-bound, not CPU-bound — ≈ a single variant's
-        // wall time) -> jobserver-pooled compile (all variants draw
-        // from one -jN token pool, each variant's link/install tail
-        // backfilled by the others) -> per-variant install->package
-        // (one /usr/local, serial collection, no races)
+        // 双路并行（fork/探测密集非 CPU 密集，≈单倍时长）→ 变体间串行
+        // make -jN（并行编译有资源抢占案底，串行让每变体独占全并发度）
+        // → 逐变体 install→package（同一 /usr/local 串行收包无竞态）
+        // / build-all builds the shipped variant set — this command
+        // owns FFBUILD_SHARED/FFBUILD_DEBUG per variant (externally
+        // set knobs get overridden). Five stages: the shared base
+        // once -> per-variant plans serially (args are baked right
+        // then) -> two-way parallel configure (fork/probe-bound, not
+        // CPU-bound — ≈ a single variant's wall time) -> serial
+        // `make -jN` across variants (parallel compiles contend on
+        // resources; serial gives each variant the full concurrency
+        // alone) -> per-variant install->package (one /usr/local,
+        // serial collection, no races)
         "build-all" => (|| -> Result<(), String> {
             // 发布面只有 静态 + shared——debug/shared-debug 仍可经
             // --debug 单变体手动构建，不进全量线 / only static +
@@ -271,9 +271,15 @@ fn main() {
             // 阶段 3：双路并行 configure / stage 3: two-way parallel
             // configure
             ffmpeg::configure_all(&jobs)?;
-            // 阶段 4：jobserver 池化编译 / stage 4: jobserver-pooled
-            // compile
-            ffmpeg::compile_all(&jobs, &sys::env().work.join("ffmake-all.log"))?;
+            // 阶段 4：变体间串行 make -jN——并行编译有资源抢占案底
+            // （链接/进程派生挤兑），串行让每个变体独占全并发度 /
+            // stage 4: serial `make -jN` across variants — parallel
+            // compiles contend on resources (link/process-spawn
+            // pileups on record); serial gives each variant the full
+            // concurrency alone
+            for job in &jobs {
+                ffmpeg::compile(&job.build_dir, &job.build_log)?;
+            }
             // 阶段 5：逐变体 install→package / stage 5: per-variant
             // install->package
             for (&(s, d), job) in VARIANTS.iter().zip(&jobs) {

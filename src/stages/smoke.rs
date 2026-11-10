@@ -284,6 +284,14 @@ const PRESENCE: &[(&str, L, &[&str])] = &[
     ("decklink", L::Dev, &["decklink"]),
     ("libjack", L::Dev, &["jack"]),
     ("sndio", L::Dev, &["sndio"]),
+    // sdl outdev 在 FFmpeg 5 起注册名 sdl2（旧名 sdl）——双名兜底 /
+    // the sdl outdev registers as `sdl2` since FFmpeg 5 (`sdl` before)
+    // — cover both spellings
+    ("sdl2", L::Dev, &["sdl2", "sdl"]),
+    // ---- 杂项组件面 / misc component faces ----
+    // --enable-zlib 会注册 zlib 解码器（LCL ZLIB codec）/
+    // --enable-zlib registers the zlib decoder (the LCL ZLIB codec)
+    ("zlib", L::Dec, &["zlib"]),
 ];
 
 /// 无独立组件面的特性（TLS 后端、字体整形、gmp、封装头文件等）——
@@ -315,6 +323,11 @@ const FLAG_ONLY: &[&str] = &[
     "libxcb-shm",
     "libxcb-shape",
     "libxcb-xfixes",
+    // 压缩/字符集底座——不注册任何可名列的组件 / compression/charset
+    // plumbing — no nameable component face
+    "bzlib",
+    "lzma",
+    "iconv",
 ];
 
 /// 功能演练种类 / functional exercise kinds
@@ -352,6 +365,7 @@ const FUNCTIONAL: &[(&str, &str, Fkind, &[&str])] = &[
     ("libopenh264", "libopenh264", Fkind::VEnc, &[]),
     ("libxeve", "libxeve", Fkind::VEnc, &[]),
     ("libvvenc", "libvvenc", Fkind::VEnc, &[]),
+    ("libxavs2", "libxavs2", Fkind::VEnc, &[]),
     ("libwebp", "libwebp", Fkind::VEnc, &[]),
     ("libopus", "libopus", Fkind::AEnc, &["-ar", "48000"]),
     ("libmp3lame", "libmp3lame", Fkind::AEnc, &[]),
@@ -925,8 +939,15 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
             fmt,
             &tmp_s,
         ];
-        if sys::run(&fm, &eargs, bin).unwrap_or(1) != 0 {
-            annotate_error(&format!("roundtrip: {enc} failed to encode {fmt}"));
+        // exit 码写进报错——信号死（-1/13x）与正常错误退出的修法
+        // 完全不同 / carry the exit code in the report — a signal
+        // death (-1/13x) needs a very different fix than a clean
+        // error exit
+        let erc = sys::run(&fm, &eargs, bin).unwrap_or(1);
+        if erc != 0 {
+            annotate_error(&format!(
+                "roundtrip: {enc} failed to encode {fmt} (exit {erc})"
+            ));
             failed.push(format!("{enc}(rt)"));
             continue;
         }
@@ -962,8 +983,11 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
             "null",
             "-",
         ];
-        if sys::run(&fm, &dargs, bin).unwrap_or(1) != 0 {
-            annotate_error(&format!("roundtrip: {dec} failed to decode {enc} output"));
+        let drc = sys::run(&fm, &dargs, bin).unwrap_or(1);
+        if drc != 0 {
+            annotate_error(&format!(
+                "roundtrip: {dec} failed to decode {enc} output (exit {drc})"
+            ));
             failed.push(format!("{dec}(rt)"));
         } else {
             println!("roundtrip: {enc} -> {dec} ok");

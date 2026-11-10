@@ -101,13 +101,14 @@ frei0r: enable
 libaribcaption: enable
 libaribb24: enable
 libzvbi: enable
-libtesseract:
-  all: enable
-  # clangarm64 的 msys2 包缺 NEON 对象（DotProductNEON/
-  # intSimdMatrixNEON 未定义——上游打包缺陷）/ the msys2 clangarm64
-  # package lacks its NEON objects (DotProductNEON/intSimdMatrixNEON
-  # undefined — upstream packaging defect)
-  windows-arm64: disable
+# 曾以"clangarm64 的 msys2 包缺 NEON 对象"为由在 windows-arm64 上
+# 关闭——实测归档齐全（dotproductneon/intsimdmatrixneon 对象在场且
+# .text 为真 AdvSIMD 码），归因错误，恢复全平台启用 / was disabled
+# on windows-arm64 over "the msys2 clangarm64 package lacks NEON
+# objects" — the archive checks out complete (dotproductneon/
+# intsimdmatrixneon objects present with real AdvSIMD .text), the
+# attribution was wrong, so it's re-enabled everywhere
+libtesseract: enable
 libqrencode: enable
 libquirc: enable
 liblensfun: enable
