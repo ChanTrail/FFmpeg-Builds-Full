@@ -40,16 +40,19 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "--disable-cli",
             "--enable-static",
             "--enable-pic",
-            // asm nasm de 2019 + pool interna do xavs2 são as superfícies
-            // do crash silencioso (~0.5s, exit -1/sinal) visto nas legs
-            // linux/win x86_64; -threads 1 do ffmpeg não controla a pool
-            // interna. C puro garante execução — encoder é só cobertura /
-            // 2019-era nasm asm + xavs2's own threadpool are the silent
-            // crash surfaces (~0.5s signal death on linux/win x86_64 legs);
-            // ffmpeg's -threads 1 does not control xavs2's internal pool.
-            // Pure C guarantees execution — this encoder is for coverage
+            // asm nasm de 2019 é a superfície do crash silencioso
+            // (~0.5s, exit -1/sinal) que migra entre legs = CPU por VM
+            // diferente → dispatch asm. C puro elimina; encoder é só
+            // cobertura. --disable-thread NÃO: no Windows o windows.h
+            // só entra via cadeia de include dos thread types — sem
+            // thread, xavs2_mdate() quebra (LARGE_INTEGER indefinido) /
+            // 2019-era nasm asm is the silent-crash surface (~0.5s
+            // signal death) that migrates between legs = different VM
+            // CPUs → asm dispatch. Pure C removes it; the encoder is
+            // coverage only. NOT --disable-thread: on Windows windows.h
+            // only arrives via the thread-type include chain — without
+            // threads, xavs2_mdate() breaks (LARGE_INTEGER undefined)
             "--disable-asm",
-            "--disable-thread",
             "--disable-avs",
             "--disable-swscale",
             "--disable-lavf",
