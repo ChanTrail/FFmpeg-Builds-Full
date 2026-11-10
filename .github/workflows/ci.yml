@@ -295,6 +295,15 @@ jobs:
           # (GitHub CLI, a native Windows program) is reachable for the deps
           # publish/restore steps.
           path-type: inherit
+          # arm64 上关掉 action 自带的包下载缓存：msys 层是 x64 仿真，收尾
+          # 的 paccache 静默 127（setup-msys2#358；msys2-autobuild 对 arm64
+          # 同样关缓存，actions/toolkit#1311）。包本身照装——我们自己的
+          # env 缓存已覆盖收益大头 / disable the action's package cache on
+          # arm64: the msys layer is x64-emulated and its closing paccache
+          # call dies silently with 127 (setup-msys2#358; msys2-autobuild
+          # disables it on arm64 too, actions/toolkit#1311). Packages still
+          # install — our own env cache covers the bulk of the win anyway
+          cache: ${{ matrix.platform != 'windows-arm64' }}
           # pacman-contrib carries `paccache`, which this action's post-run
           # cache-save step shells out to; the CLANGARM64 base image does not
           # ship it and the whole job then dies at step 1 with exit 127
