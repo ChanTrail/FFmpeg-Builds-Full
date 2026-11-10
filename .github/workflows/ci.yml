@@ -773,13 +773,13 @@ jobs:
 
   # ── 干净机验证 / Clean-machine verify ───────────────────────────────
   # scheduled.yml 的 verify 腿同款：每平台一条干净 runner，下载本趟
-  # Driver artifact 与 build-<p> 产物，解包后对两个变体逐个 smoke。
+  # Driver artifact 与 build-<p> 产物，解包后对四个变体逐个 smoke。
   # 过了才把 dist 重传为 ffmpeg-<p>——release.yml 只认 ffmpeg-*
   # （"发布=验证过的产物"这条不变量与 scheduled.yml 一致；build-* 仍是
   # 纯留档）。驱动用 artifact 不用已发布 release：CI 验的是本趟代码。
   # The same verify legs as scheduled.yml: one clean runner per platform
   # pulls this run's Driver artifact and the build-<p> product, unpacks
-  # and smokes both variants. Passing legs re-upload dist as
+  # and smokes all four variants. Passing legs re-upload dist as
   # ffmpeg-<p> — release.yml only consumes ffmpeg-* (the same
   # "publish = verified product" invariant as scheduled.yml; build-*
   # stays archive-only). The driver comes from the artifact, not a
@@ -855,13 +855,13 @@ jobs:
           set -euo pipefail
           chmod +x driver/* 2>/dev/null || true
           bins=(pkg/*/bin)
-          # build-all 一腿产两个变体（静态/shared）——逐个冒烟，
-          # shared 变体的旁位解析（$ORIGIN/@loader_path/exe 目录）
-          # 在此顺带实证 / build-all emits two variants per leg
-          # (static/shared) — smoke each one; the shared variant's
-          # sibling resolution ($ORIGIN/@loader_path/exe dir) gets
-          # proven here in passing
-          [[ ${#bins[@]} -eq 2 ]] || { echo "::error::expected exactly two packages, found: ${bins[*]}"; exit 1; }
+          # build-all 一腿产四个变体（静态/shared/debug/shared-debug）
+          # ——逐个冒烟，shared 变体的旁位解析（$ORIGIN/@loader_path/
+          # exe 目录）在此顺带实证 / build-all emits four variants per
+          # leg (static/shared/debug/shared-debug) — smoke each one;
+          # the shared variants' sibling resolution
+          # ($ORIGIN/@loader_path/exe dir) gets proven here in passing
+          [[ ${#bins[@]} -eq 4 ]] || { echo "::error::expected exactly four packages, found: ${bins[*]}"; exit 1; }
           exe="$(find driver -name 'FFmpeg-Builds-Full*' -type f | head -n1)"
           for b in "${bins[@]}"; do
             echo "=== smoke $b ==="

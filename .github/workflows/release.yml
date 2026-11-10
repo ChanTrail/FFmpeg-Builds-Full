@@ -359,7 +359,7 @@ jobs:
   # 物来源（跨 run 拉取）与 FFmpeg commit 解析（payload 优先，包内
   # BUILDINFO.info 兜底）。
   # A green CI's ffmpeg-<p> artifacts ship as-is (the copies its verify
-  # legs re-uploaded after smoking both variants on clean machines —
+  # legs re-uploaded after smoking all four variants on clean machines —
   # not the raw build-*): dated tag + floating latest bucket + old-
   # release pruning — the whole release job lifted from build.yml,
   # changing only where the artifacts come from (cross-run download) and
@@ -443,13 +443,14 @@ jobs:
           ls -lh artifacts/
 
           # Belt and braces: refuse to publish unless every platform is present,
-          # built from the pinned commit, with its checksum — both
-          # variants (static/shared) per platform, 20 files total.
+          # built from the pinned commit, with its checksum — all four
+          # variants (static/shared/debug/shared-debug) per platform,
+          # 40 files total.
           files=()
           for p in windows-x86_64 windows-arm64 linux-x86_64 linux-arm64 macos-arm64; do
             ext="tar.xz"
             [[ "$p" == windows-* ]] && ext="7z"
-            for v in "" "-shared"; do
+            for v in "" "-shared" "-debug" "-shared-debug"; do
               base="artifacts/ffmpeg-$FFMPEG_HASH-$p$v"
               for f in "$base.$ext" "$base.$ext.sha256"; do
                 [[ -f "$f" ]] || { echo "::error::missing $f"; exit 1; }
@@ -496,10 +497,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir latest
-          # 两个变体（默认/-shared）都进 latest——URL 名即形态 /
-          # both variants (default/-shared) land in latest — the URL
-          # spells out the shape
-          re='^ffmpeg-[0-9a-f]{10}-(windows-x86_64|windows-arm64|linux-x86_64|linux-arm64|macos-arm64)(-shared)?\.(7z|tar\.xz)$'
+          # 四个变体（默认/-shared/-debug/-shared-debug）都进 latest——
+          # URL 名即形态 / all four variants
+          # (default/-shared/-debug/-shared-debug) land in latest — the
+          # URL spells out the shape
+          re='^ffmpeg-[0-9a-f]{10}-(windows-x86_64|windows-arm64|linux-x86_64|linux-arm64|macos-arm64)(-shared|-debug|-shared-debug)?\.(7z|tar\.xz)$'
           for f in artifacts/*.7z artifacts/*.tar.xz; do
             name="$(basename "$f")"
             [[ "$name" =~ $re ]] || { echo "::error::unexpected archive name $name"; exit 1; }

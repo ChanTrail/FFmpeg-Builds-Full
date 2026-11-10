@@ -41,9 +41,9 @@ FFmpeg-Builds-Full — FFmpeg 静态构建驱动 / static FFmpeg build driver
   build      全流水线：extras → ffmpeg → package
              the whole pipeline: extras → ffmpeg → package
   build-all  全变体一次建：共享底座一次，随后逐变体出计划，
-             configure 双路并行、编译变体间串行 -jN，最后逐变体
+             configure 四路并行、编译变体间串行 -jN，最后逐变体
              install→package / every variant in one run: the shared
-             base once, then per-variant plans, two-way parallel
+             base once, then per-variant plans, four-way parallel
              configure, serial -jN compiles across variants, and
              finally per-variant install→package
   packages   安装/确认平台包栈（MSYS2 pacman 等）
@@ -213,26 +213,22 @@ fn main() {
         // build-all：变体集合一次建完——FFBUILD_SHARED/FFBUILD_DEBUG
         // 由本命令逐变体接管（外部同名旋钮被覆盖）。五阶段编排：
         // 共享底座一次 → 逐变体串行出计划（args 此刻烘焙）→ configure
-        // 双路并行（fork/探测密集非 CPU 密集，≈单倍时长）→ 变体间串行
+        // 四路并行（fork/探测密集非 CPU 密集，≈单倍时长）→ 变体间串行
         // make -jN（并行编译有资源抢占案底，串行让每变体独占全并发度）
         // → 逐变体 install→package（同一 /usr/local 串行收包无竞态）
         // / build-all builds the shipped variant set — this command
         // owns FFBUILD_SHARED/FFBUILD_DEBUG per variant (externally
         // set knobs get overridden). Five stages: the shared base
         // once -> per-variant plans serially (args are baked right
-        // then) -> two-way parallel configure (fork/probe-bound, not
+        // then) -> four-way parallel configure (fork/probe-bound, not
         // CPU-bound — ≈ a single variant's wall time) -> serial
         // `make -jN` across variants (parallel compiles contend on
         // resources; serial gives each variant the full concurrency
         // alone) -> per-variant install->package (one /usr/local,
         // serial collection, no races)
         "build-all" => (|| -> Result<(), String> {
-            // 发布面只有 静态 + shared——debug/shared-debug 仍可经
-            // --debug 单变体手动构建，不进全量线 / only static +
-            // shared ship — debug/shared-debug remain buildable
-            // manually via --debug on single-variant runs but are
-            // out of the full pipeline
-            const VARIANTS: [(bool, bool); 2] = [(false, false), (true, false)];
+            const VARIANTS: [(bool, bool); 4] =
+                [(false, false), (true, false), (false, true), (true, true)];
             fn set_variant(shared: bool, debug: bool) {
                 // SAFETY：env 只在本驱动线程切换；并行段内的子进程只消费
                 // 计划期烘焙好的 args，不回读旋钮 / SAFETY: env toggles
@@ -252,13 +248,13 @@ fn main() {
                     }
                 }
             }
-            // 阶段 1：共享底座一次——包栈 + extras 前缀两变体同吃一份 /
+            // 阶段 1：共享底座一次——包栈 + extras 前缀四变体同吃一份 /
             // stage 1: the shared base once — package stack + extras
-            // prefix feed both variants
+            // prefix feed all four variants
             set_variant(false, false);
             (p.packages)()?;
             (p.extras)()?;
-            // 阶段 2：逐变体串行出计划——fetch/resolve/探测皆幂等，两个
+            // 阶段 2：逐变体串行出计划——fetch/resolve/探测皆幂等，四个
             // ConfJob 各带独立 build_dir/dropped/日志 / stage 2: plan
             // each variant serially — fetch/resolve/probing are all
             // idempotent; the ConfJobs carry their own
@@ -268,7 +264,7 @@ fn main() {
                 set_variant(s, d);
                 jobs.push((p.ffmpeg_plan)()?);
             }
-            // 阶段 3：双路并行 configure / stage 3: two-way parallel
+            // 阶段 3：四路并行 configure / stage 3: four-way parallel
             // configure
             ffmpeg::configure_all(&jobs)?;
             // 阶段 4：变体间串行 make -jN——并行编译有资源抢占案底

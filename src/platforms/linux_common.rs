@@ -227,12 +227,14 @@ pub fn packages() -> Result<(), String> {
     // containers never read man pages
     let _ = std::fs::remove_file("/var/lib/man-db/auto-update");
 
-    // 降序探测最新 GCC 主版本——runner 镜像还没跟上时留活路
-    // probe the newest GCC major descending — leaves room on runners whose
-    // image has not caught up yet
+    // 降序探测最新 GCC 主版本——runner 镜像还没跟上时留活路（用
+    // capture 而非 run：show 会把整包记录打进日志，这里只要退出码）
+    // probe the newest GCC major descending — leaves room on runners
+    // whose image has not caught up yet (capture, not run: `show` dumps
+    // the whole package record into the log; only the status is needed)
     let mut gccv = 16;
     loop {
-        if sys::run("apt-cache", &["show", &format!("gcc-{gccv}")], &e.work).unwrap_or(1) == 0 {
+        if sys::capture("apt-cache", &["show", &format!("gcc-{gccv}")], &e.work).is_ok() {
             break;
         }
         gccv -= 1;
@@ -252,7 +254,10 @@ pub fn packages() -> Result<(), String> {
     // stays as the last-resort fallback)
     let mut installable: Vec<&str> = Vec::new();
     for p in &pkgs {
-        if sys::run("apt-cache", &["show", p], &e.work).unwrap_or(1) == 0 {
+        // 静默探测——apt-cache show 的整包记录（~90 条 × ~2KB）不该进
+        // 日志 / silent probe — `apt-cache show` dumps the whole package
+        // record (~90 × ~2KB) and none of it belongs in the log
+        if sys::capture("apt-cache", &["show", p], &e.work).is_ok() {
             installable.push(p.as_str());
         } else {
             log::warn(&format!("apt package {p} not offered — skipping"));
@@ -624,7 +629,7 @@ fn sanitize_pc() -> Result<(), String> {
 /// variant's ffmpeg configure job: fetch + assemble args + a private
 /// build dir (ffbuild-ffmpeg{variant}) + dropped-libs{variant}.txt —
 /// configure and compile are orchestrated by the caller (build-all
-/// runs the two variants in parallel)
+/// runs the four variants in parallel)
 pub fn ffmpeg_plan() -> Result<crate::ffmpeg::ConfJob, String> {
     let e = sys::env();
     const REQUIRED: &[&str] = &[

@@ -57,16 +57,16 @@ cat <<EOF
 <br>Automated build of upstream [FFmpeg](https://git.ffmpeg.org/gitweb/ffmpeg.git) \`master\`. $COMMIT_LINE_EN
 EOF
 
-# 平台名作为表格列；行是两个产物变体（静态/共享）。
+# 平台名作为表格列；行是四个产物变体（静态/共享/调试/共享+调试）。
 # 单元格内嵌压缩包与校验双链接——与 deps 发布同布局。
-# Platform names as table columns; rows are the two artifact variants
-# (static/shared). Each cell carries both the
+# Platform names as table columns; rows are the four artifact variants
+# (static/shared/debug/shared+debug). Each cell carries both the
 # archive and the checksum links — same layout as the deps release.
 header="| 产物 Artifact |" sep="|"
 declare -A ROWS=()
 # (变体后缀, 行标签) / (variant suffix, row label)
-VARIANTS=("" "-shared")
-LABELS=("**静态 Static**" "**共享 Shared**")
+VARIANTS=("" "-shared" "-debug" "-shared-debug")
+LABELS=("**静态 Static**" "**共享 Shared**" "**调试 Debug**" "**共享+调试 Shared+Debug**")
 for vi in "${!VARIANTS[@]}"; do ROWS[$vi]="| ${LABELS[$vi]} |"; done
 for p in "${PLATFORMS[@]}"; do
   header="$header $p |"; sep="$sep---|"

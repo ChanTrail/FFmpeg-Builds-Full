@@ -77,6 +77,7 @@ svtjpegxs:
   git: https://github.com/OpenVisualCloud/SVT-JPEG-XS.git
 davs2:
   git: https://github.com/pkuvcl/davs2.git
+  ref: b41cf117452e2d73d827f02d3e30aa20f1c721ac   # 上游停滞，固化末次提交（2022-09）/ upstream stalled, pinned at last commit
 xavs2:
   git: https://github.com/pkuvcl/xavs2.git
   ref: eae1e8b9d12468059bdd7dee893508e470fa83d8   # 上游停滞，固化末次提交（2019-04）/ upstream stalled, pinned at last commit

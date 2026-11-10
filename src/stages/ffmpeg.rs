@@ -137,6 +137,13 @@ fn fetch_inner(dest: &Path) -> Result<Info, String> {
             None,
         )?;
     }
+    // 本地补丁随树上——ffmpeg 走自管克隆（不经 materialize），apply
+    // 必须显式调；context 失配会响亮中止（上游漂移逼人复核，正是
+    // 设计语义）/ local patches land on the tree — ffmpeg takes its
+    // own clone path (not materialize), so apply must be invoked
+    // explicitly; a context mismatch aborts loudly (upstream drift
+    // forcing a human re-check is the designed semantics)
+    crate::patches::apply(dest, "ffmpeg")?;
     let commit = sys::capture(
         "git",
         &["-C", &dest.to_string_lossy(), "rev-parse", "HEAD"],

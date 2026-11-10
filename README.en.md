@@ -2,22 +2,22 @@
 
 [简体中文](README.md) | [English](README.en.md)
 
-A cross-platform FFmpeg build pipeline: every 3 days it builds upstream FFmpeg `master` (the same commit on all five platforms, two variants per platform — static/shared) and publishes them through GitHub Releases.
+A cross-platform FFmpeg build pipeline: every 3 days it builds upstream FFmpeg `master` (the same commit on all five platforms, four variants per platform — static/shared/debug/shared+debug) and publishes them through GitHub Releases.
 All builds are **GPLv3 and redistributable** (non-free libraries such as fdk-aac are deliberately excluded) and everything is **compiled natively** — each platform builds on a runner of its own OS and CPU architecture. No cross-compiling, no Docker.
 
 The whole pipeline is driven by this repository's **Rust driver program** (`FFmpeg-Builds-Full`, see `Cargo.toml` at the root): library recipes, source fetching, FFmpeg's configure orchestration, the deps cache and packaging/verification are all Rust code.
 
 ## Downloads
 
-Every build ships **two variants**: static (default, no suffix) and shared (`-shared`, executables plus shared libraries resolving sibling-wise in the same directory). File names: `ffmpeg-<first-10-of-upstream-commit>-<platform>[-shared].<ext>`, e.g. `ffmpeg-46f23be8b1-windows-x86_64.7z` (static) or `ffmpeg-46f23be8b1-linux-x86_64-shared.tar.xz`. Debug shapes are out of the full pipeline — build them manually via `--debug` / `--shared --debug` on single-variant runs when needed.
+Every build ships **four variants**: static (default, no suffix), shared (`-shared`, executables plus shared libraries resolving sibling-wise in the same directory), debug (`-debug`, `-O0 -g3` full symbols) and shared+debug (`-shared-debug`, both shapes stacked). File names: `ffmpeg-<first-10-of-upstream-commit>-<platform>[-shared|-debug|-shared-debug].<ext>`, e.g. `ffmpeg-46f23be8b1-windows-x86_64.7z` (static) or `ffmpeg-46f23be8b1-linux-x86_64-shared.tar.xz`.
 
 **Floating `latest` (stable links, script-friendly)**:
 
 ```
-https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-latest-<platform>[-shared].<ext>
+https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-latest-<platform>[-shared|-debug|-shared-debug].<ext>
 ```
 
-`<platform>`: `windows-x86_64`, `windows-arm64`, `linux-x86_64`, `linux-arm64`, `macos-arm64`; Windows ships `.7z` (solid archive), the others `.tar.xz`. Both variants have their own latest links.
+`<platform>`: `windows-x86_64`, `windows-arm64`, `linux-x86_64`, `linux-arm64`, `macos-arm64`; Windows ships `.7z` (solid archive), the others `.tar.xz`. All four variants have their own latest links.
 
 **Dated releases**: tagged `YYYYMMDD` (a same-day rebuild appends `-HHMM`), the newest 30 are kept (about 3 months). Every archive ships:
 
@@ -195,7 +195,7 @@ The driver is a single Rust crate at the repository root (`cargo build --release
 FFmpeg-Builds-Full <build|build-all|packages|extras|ffmpeg|package|save-deps|smoke|features|sources>
 ```
 
-`build-all` produces every shipped variant in one run (static + shared): the shared base (packages + extras) runs once, then per-variant plans, two-way parallel configure, jobserver-pooled compile, and per-variant install→package — dependencies are never rebuilt, ffmpeg itself compiles twice; the CI build steps call exactly this command.
+`build-all` produces every shipped variant in one run (static → shared → debug → shared-debug): the shared base (packages + extras) runs once, then per-variant plans, four-way parallel configure, serial `make -jN` across variants, and per-variant install→package — dependencies are never rebuilt, ffmpeg itself compiles four times; the CI build steps call exactly this command.
 
 - **Feature switches** (`features/*.yaml`): the single source of truth for FFmpeg configure flags. Four merge layers — `base.yaml` (always on), `common.yaml` (all platforms), `misc.yaml` (misc items in per-platform sections) and `<os>-<arch>.yaml` (platform specifics); keys are feature names, values `enable`/`disable`, and a repeated key across files is a hard error. Every `enable` must also pass a local probe (pkg-config / file existence) — a failed probe degrades it to `disable`.
 - **Source manifests** (`sources/*.yaml`): the same layered merge; values describe how to fetch — `archive` for fixed tarballs (optional `sha256` check), `git` for repositories resolved live: default-branch HEAD → GitHub/GitLab CI verification → fall back to the newest version tag when red or missing; `ref:` pins a branch/tag/commit, `mirrors:` lists fallback repos tried in order when the primary clone fails. Downloads are async streaming via reqwest (resume + retry backoff) and run concurrently with compilation; git pulls carry stall detection and escalating-backoff retries, and submodule-free sources fall back to host archive endpoints (GitHub `/archive/`, GitLab `/-/archive/`, googlesource `+archive`, …) when every git channel dies.
@@ -203,8 +203,8 @@ FFmpeg-Builds-Full <build|build-all|packages|extras|ffmpeg|package|save-deps|smo
 - **Dependency cache**: built dependencies pack as `deps-<platform>-<hash>.tar.zst` into the fixed `deps` Release; later runs restore it (~1–2 min) and only compile FFmpeg itself. A recipe/manifest change → a new signature → an automatic full rebuild; on timeout a `partial` package is uploaded so the next run resumes.
 - **Platform package stacks** (`packages/*.yaml`): pacman on Windows (UCRT64/CLANGARM64 profiles), apt on Linux (newest GCC probed descending + a pyenv for build tools + Rust/cargo-c), brew on macOS.
 - **Deterministic + strict configure**: all five platforms pass `--disable-autodetect` — only explicitly named libraries take part; whatever the runner image happens to install cannot sneak into the binary. A named library that fails its probe is dropped one by one to enumerate every problem (each config.log is archived), but any drop at all **refuses the build** — an incomplete artifact is never shipped. Missing required libraries (x264, x265, aom, dav1d, vpx, opus, lame, freetype, libass, webp, zlib + the platform TLS) fail immediately.
-- **Two-variant products**: `build-all` emits two artifacts per platform leg — static (default, `--disable-shared`, no name suffix) and shared (`--enable-shared --disable-static`, `-shared` suffix). Debug (`--enable-debug=3 --disable-optimizations --disable-stripping`, `-O0 -g3` full symbols) and shared+debug stay out of the full pipeline — build them manually via `--debug` on single-variant runs. The shared base (packages + extras) runs once; ffmpeg itself compiles twice through per-variant plans → two-way parallel configure → jobserver-pooled compile → per-variant install→package, and `dist/` accumulates both products. One `deps-<platform>` snapshot channel as before (deps always compile `-fPIC`, so linking into shared libs is legal by construction).
-- **Quality gate**: every platform leg's two artifacts each get the driver's `smoke` subcommand on a clean runner (real encodes + a check that no `--enable-nonfree` slipped in + a dynamic-dependency allowlist — the shared variant's sibling resolution is proven here in passing); the release only happens when all five legs succeed — any failure means no publish this round.
+- **Four-variant products**: `build-all` emits four artifacts per platform leg — static (default, `--disable-shared`, no name suffix), shared (`--enable-shared --disable-static`, `-shared` suffix), debug (`--enable-debug=3 --disable-optimizations --disable-stripping`, `-O0 -g3` full symbols, `-debug` suffix) and shared+debug (both switches stacked, `-shared-debug` suffix). The shared base (packages + extras) runs once; ffmpeg itself compiles four times through per-variant plans → four-way parallel configure → serial `make -jN` across variants → per-variant install→package, and `dist/` accumulates all four products. One `deps-<platform>` snapshot channel as before (deps always compile `-fPIC`, so linking into shared libs is legal by construction).
+- **Quality gate**: every platform leg's four artifacts each get the driver's `smoke` subcommand on a clean runner (real encodes + a check that no `--enable-nonfree` slipped in + a dynamic-dependency allowlist — the shared variant's sibling resolution is proven here in passing); the release only happens when all five legs succeed — any failure means no publish this round.
 
 ### Driver CI (`ci.yml`)
 
@@ -227,7 +227,7 @@ FFmpeg-Builds-Full <build|build-all|packages|extras|ffmpeg|package|save-deps|smo
 - The repository must stay **public** — arm/macOS runners are free only for public repos.
 - The first run (or the first after a manifest/recipe change) must compile all dependencies and takes hours; a single job is capped at 6 hours, and what doesn't finish resumes via the `partial` package.
 - The `deps` Release is managed by the pipeline and can be deleted wholesale; it gets rebuilt next run.
-- Debugging failures: the `logs-<platform>` artifact (kept 7 days) contains per-library logs; the `build-<platform>` artifact (kept 3 days) contains any finished archives (both variants in one).
+- Debugging failures: the `logs-<platform>` artifact (kept 7 days) contains per-library logs; the `build-<platform>` artifact (kept 3 days) contains any finished archives (all four variants in one).
 - GitHub disables scheduled workflows after 60 days of inactivity on public repos; an occasional commit is the most reliable fix.
 - Live source resolution needs the GitHub/GitLab APIs; anonymous calls are rate-limited aggressively. CI uses `GITHUB_TOKEN` automatically for GitHub, and a `GITLAB_TOKEN` secret/variable can be configured for GitLab (self-hosted instances included). On poor networks, set a proxy (`HTTPS_PROXY`).
 - Non-free libraries like fdk-aac must be built by yourself — such binaries are **not redistributable**.

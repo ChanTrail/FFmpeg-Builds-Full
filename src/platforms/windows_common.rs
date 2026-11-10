@@ -171,6 +171,92 @@ fn package_rows() -> Result<Vec<crate::manifest::packages::Pkg>, String> {
 /// --overwrite '*' / pacman -S retry wrapper: idempotent --needed
 /// installs; pacover carries --overwrite '*' when recovering a
 /// half-installed env
+/// pacman 本地库条目目录的版本比较：`<name>-<ver>-<rel>` 先比 `<ver>`
+/// 再比 `<rel>`——pkgver 按规范禁含 '-'，末个 '-' 恒为 ver/rel 分界。
+/// 单串比较：数字段按数值（去前导零后比长度再比字典序）、字母段按字
+/// 典序、数字段恒胜字母段、等长前缀短者负。libalpm vercmp 的近似实
+/// 现，够"同包两条目留新"用。
+/// Version compare for pacman local-db entry dirs: compare `<ver>`
+/// first, then `<rel>` — pkgver may not contain '-', so the last dash
+/// always separates ver from rel. Per-string comparison: numeric
+/// chunks by value (leading zeros stripped, then length, then
+/// lexicographic), alpha chunks lexicographically, numeric always
+/// beats alpha, a shorter equal prefix loses. A libalpm vercmp
+/// approximation, enough for "keep the newer of two entries".
+fn alpm_vercmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    // 条目 → (ver, rel)：剥包名（反向剥末尾两段）后末个 '-' 分 ver/rel /
+    // entry -> (ver, rel): peel the name (last two segments from the
+    // back), then the final '-' splits ver from rel
+    fn vr(d: &str) -> (&str, &str) {
+        let mut idx = d.len();
+        for _ in 0..2 {
+            match d[..idx].rfind('-') {
+                Some(i) => idx = i,
+                None => return (d, ""),
+            }
+        }
+        match d[idx + 1..].rfind('-') {
+            Some(i) => {
+                let t = &d[idx + 1..];
+                (&t[..i], &t[i + 1..])
+            }
+            None => (&d[idx + 1..], ""),
+        }
+    }
+    // 单版本串比较 / compare one version string
+    fn chunkcmp(a: &str, b: &str) -> Ordering {
+        let (mut ca, mut cb) = (a.chars().peekable(), b.chars().peekable());
+        loop {
+            // 跳过分隔符 / skip separators
+            while matches!(ca.peek(), Some(c) if !c.is_alphanumeric()) {
+                ca.next();
+            }
+            while matches!(cb.peek(), Some(c) if !c.is_alphanumeric()) {
+                cb.next();
+            }
+            match (ca.peek(), cb.peek()) {
+                (None, None) => return Ordering::Equal,
+                (None, Some(_)) => return Ordering::Less,
+                (Some(_), None) => return Ordering::Greater,
+                (Some(x), Some(y)) => {
+                    let na = x.is_ascii_digit();
+                    let nb = y.is_ascii_digit();
+                    if na != nb {
+                        return if na {
+                            Ordering::Greater
+                        } else {
+                            Ordering::Less
+                        };
+                    }
+                    let mut sa = String::new();
+                    while matches!(ca.peek(), Some(c) if c.is_ascii_digit() == na && c.is_alphanumeric())
+                    {
+                        sa.push(ca.next().unwrap());
+                    }
+                    let mut sb = String::new();
+                    while matches!(cb.peek(), Some(c) if c.is_ascii_digit() == nb && c.is_alphanumeric())
+                    {
+                        sb.push(cb.next().unwrap());
+                    }
+                    let ord = if na {
+                        let (ta, tb) = (sa.trim_start_matches('0'), sb.trim_start_matches('0'));
+                        ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb))
+                    } else {
+                        sa.cmp(&sb)
+                    };
+                    if ord != Ordering::Equal {
+                        return ord;
+                    }
+                }
+            }
+        }
+    }
+    let (va, ra) = vr(a);
+    let (vb, rb) = vr(b);
+    chunkcmp(va, vb).then_with(|| chunkcmp(ra, rb))
+}
+
 fn pacman_install(e: &Env, over: &[&str], pkgs: &[&str], tries: u32) -> Result<(), String> {
     let mut args: Vec<&str> = vec!["-S", "--needed", "--noconfirm", "--noprogressbar"];
     args.extend_from_slice(over);
@@ -320,6 +406,58 @@ pub fn packages() -> Result<(), String> {
     // first — a stamp restored from cache must not mark a run that dies
     // mid-install as healthy
     let _ = std::fs::remove_file(&envstamp);
+
+    // env 缓存是覆盖解包：setup-msys2 基线已写进本地库的核心包条目与
+    // 缓存条目撞名 → 同包多版本目录，pacman 每跑刷一屏 "duplicated
+    // database entry"。按包名归组只留较新版本：基线恒新（它现拉仓库），
+    // 核心包保持与盘上文件一致；mingw 包只有缓存单份不撞。
+    // The env cache extracts over the baseline: core-package entries the
+    // setup-msys2 baseline already wrote collide with the cached copies,
+    // leaving two versioned dirs per package — pacman spams "duplicated
+    // database entry" on every invocation. Group by name and keep only
+    // the newer version: the baseline is always newest (it pulls the
+    // live repo), so core entries stay consistent with on-disk files;
+    // mingw entries exist only in the cache and never collide.
+    {
+        let mut byname: std::collections::HashMap<String, Vec<(String, PathBuf)>> =
+            std::collections::HashMap::new();
+        if let Ok(rd) = std::fs::read_dir(&db) {
+            for ent in rd.flatten() {
+                let path = ent.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let dname = ent.file_name().to_string_lossy().to_string();
+                // 条目目录形如 <name>-<ver>-<rel>：末尾两段是版本 / entry
+                // dirs look like <name>-<ver>-<rel>: the last two dash
+                // segments are the version
+                if let Some(pkg) = dname.rsplitn(3, '-').nth(2) {
+                    byname
+                        .entry(pkg.to_string())
+                        .or_default()
+                        .push((dname, path));
+                }
+            }
+        }
+        let mut deduped = 0usize;
+        for (_pkg, mut vers) in byname {
+            if vers.len() < 2 {
+                continue;
+            }
+            vers.sort_by(|a, b| alpm_vercmp(&a.0, &b.0));
+            let keep = vers.pop().map(|v| v.0).unwrap_or_default();
+            for (dname, path) in vers {
+                log::log(&format!("pacman db dedupe: {dname} -> keep {keep}"));
+                fsx::rm_rf(&path);
+                deduped += 1;
+            }
+        }
+        if deduped > 0 {
+            log::log(&format!(
+                "pacman db dedupe: dropped {deduped} stale entr(ies)"
+            ));
+        }
+    }
 
     // 住在纯 MSYS 仓库里的工具（不是 mingw-w64-*）。
     // Tools living in the plain MSYS repo (not mingw-w64-*).
@@ -478,7 +616,7 @@ pub fn packages() -> Result<(), String> {
 /// the current variant's ffmpeg configure job: fetch sources ->
 /// features flags + platform toolchain args -> a private build dir
 /// (ffbuild-ffmpeg{variant}) — configure and compile are orchestrated
-/// by the caller (build-all runs the two variants in parallel)
+/// by the caller (build-all runs the four variants in parallel)
 pub fn ffmpeg_plan() -> Result<crate::ffmpeg::ConfJob, String> {
     let e = sys::env();
     // 必需的库——丢包重试不得丢它们

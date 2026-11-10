@@ -1,0 +1,12 @@
+diff --git a/libavcodec/libxavs2.c b/libavcodec/libxavs2.c
+--- a/libavcodec/libxavs2.c
++++ b/libavcodec/libxavs2.c
+@@ -113,7 +113,7 @@ static av_cold int xavs2_init(AVCodecContext *avctx)
+     }
+ 
+     ff_mpeg12_find_best_frame_rate(avctx->framerate, &code, NULL, NULL, 0);
+-    xavs2_opt_set2("FrameRate",   "%d", code);
++    xavs2_opt_set2("fps",       "%.6f", av_q2d(avctx->framerate));
+ 
+     cae->encoder = cae->api->encoder_create(cae->param);
+ 

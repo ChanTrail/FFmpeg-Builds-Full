@@ -37,6 +37,31 @@ struct Row {
 
 static TABLE: &[Row] = &[
     Row {
+        name: "ffmpeg",
+        // davs2 解码器把 info_level 硬编码为 0（全量输出）——davs2 自有
+        // stderr 日志不受 ffmpeg -loglevel 控制，冒烟时被版本横幅/线程/
+        // CU 警告刷屏；提到 ERROR 级只对齐语义，不改解码行为 /
+        // the davs2 decoder hardcodes info_level=0 (full verbosity) —
+        // davs2's own stderr log ignores ffmpeg -loglevel and floods the
+        // smoke log with version banners/thread chatter/CU warnings;
+        // raising to ERROR aligns semantics, no decode-behavior change
+        pin: None,
+        body: include_str!("../../patches/ffmpeg/0001-libdavs2-error-level.patch"),
+    },
+    Row {
+        name: "ffmpeg",
+        // libxavs2 包装器走弃用名 "FrameRate"（整数编码），xavs2 每开一次
+        // 编码器就打 XAVS2_LOG_ERROR 级弃用告警；改用现代名 "fps"（浮点
+        // 帧率直传）——与上游参数表对齐，ffmpeg 侧迟早也会这么改 /
+        // the libxavs2 wrapper uses the deprecated "FrameRate" name (int
+        // code); xavs2 prints an XAVS2_LOG_ERROR deprecation line on every
+        // encoder open; switch to the modern "fps" name (float rate
+        // passed through) — matches upstream's own parameter table and
+        // where upstream ffmpeg will land eventually
+        pin: None,
+        body: include_str!("../../patches/ffmpeg/0002-libxavs2-fps-param.patch"),
+    },
+    Row {
         name: "gmp",
         // 对 gmp-6.3.0.tar.xz 钉死 sha256——源一换版本此补丁必须人工复核 /
         // pinned to gmp-6.3.0.tar.xz's sha256 — bumping the source forces a

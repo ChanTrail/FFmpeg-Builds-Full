@@ -837,7 +837,25 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
                 .iter()
                 .chain(v_in)
                 .chain(*extra)
-                .chain(["-frames:v", "5", "-c:v", comp, "-f", "null", "-"].iter())
+                // CFR 归一输出时间戳——深 lookahead 编码器（vvenc/xavs2）
+                // 按内部重排吐包，muxer 对短输入会报非单调 dts /
+                // CFR-normalize output timestamps — deep-lookahead
+                // encoders (vvenc/xavs2) emit packets reordered, and the
+                // muxer reports non-monotonic dts on short inputs
+                .chain(
+                    [
+                        "-frames:v",
+                        "5",
+                        "-c:v",
+                        comp,
+                        "-fps_mode",
+                        "cfr",
+                        "-f",
+                        "null",
+                        "-",
+                    ]
+                    .iter(),
+                )
                 .map(|s| s.to_string())
                 .collect(),
             Fkind::AEnc => head
@@ -938,6 +956,8 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
             "60",
             "-c:v",
             enc,
+            "-fps_mode",
+            "cfr",
             "-f",
             fmt,
             &tmp_s,
