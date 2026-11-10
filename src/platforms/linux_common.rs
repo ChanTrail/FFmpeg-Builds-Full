@@ -182,8 +182,43 @@ pub fn packages() -> Result<(), String> {
         return Err("apt-get not found — the Linux pipeline targets Debian/Ubuntu".into());
     }
     log::group_begin("Install build tools");
-    let _guard = sys::EnvGuard::set(&[("DEBIAN_FRONTEND", "noninteractive".to_string())]);
-    sys::run_ok("apt-get", &["update"], &e.work)?;
+    // needrestart 双闸：MODE=a 让它不问即重启、SUSPEND=1 干脆整段不跑——
+    // ubuntu-24.04 镜像自带 needrestart，postinst 的服务重启问答是
+    // apt-get 批量装挂死的头号嫌疑（实证 ~600s 无声）/ double gate on
+    // needrestart: MODE=a makes it restart without asking, SUSPEND=1
+    // skips it outright — ubuntu-24.04 images ship it and its
+    // service-restart prompt is the prime suspect for batch installs
+    // hanging silently (~600s observed)
+    let _guard = sys::EnvGuard::set(&[
+        ("DEBIAN_FRONTEND", "noninteractive".to_string()),
+        ("NEEDRESTART_MODE", "a".to_string()),
+        ("NEEDRESTART_SUSPEND", "1".to_string()),
+    ]);
+    // apt 三闸：断流连接 60s 超时 ×3 重试（镜像中途挂死不再等一辈子）、
+    // dpkg 锁等待封顶 300s（开机的 apt-daily 持锁）/ three apt gates:
+    // stalled connections time out at 60s with 3 retries (no more
+    // waiting forever on a wedged mirror), the dpkg lock wait caps at
+    // 300s (boot-time apt-daily holds it)
+    let apt_o: Vec<&str> = [
+        "-o",
+        "Acquire::Retries=3",
+        "-o",
+        "Acquire::http::Timeout=60",
+        "-o",
+        "Acquire::https::Timeout=60",
+        "-o",
+        "DPkg::Lock::Timeout=300",
+    ]
+    .into_iter()
+    .collect();
+    let apt = |args: &[&str], cwd: &Path| -> Result<i32, String> {
+        let mut a: Vec<&str> = apt_o.clone();
+        a.extend_from_slice(args);
+        sys::run("apt-get", &a, cwd)
+    };
+    if apt(&["update"], &e.work)? != 0 {
+        return Err("apt-get update failed".to_string());
+    }
 
     // 摘掉 man-db 的 auto-update 印记：它的 postinst 触发器在大批量安装
     // 时会全量重建 mandb，runner 上白烧 30-60s——构建容器不看 man 页
@@ -208,20 +243,26 @@ pub fn packages() -> Result<(), String> {
     log::log(&format!("gcc slot: gcc-{gccv}"));
 
     let pkgs = package_rows(gccv)?;
-    let refs: Vec<&str> = pkgs.iter().map(String::as_str).collect();
-    // 整列表装；缺包逐个回退——某个发行版没有的包不拖死整个构建
-    // install the whole list; fall back one-by-one so a package missing on
-    // this release never stops the build
+    // 先 apt-cache 全表预筛：缺席名点名剔除再整批装——某个发行版没有的
+    // 包不再把批量装拖垮后靠 ~90 次逐包 spawn 收场（逐包回退保留为
+    // 末档兜底）/ prefilter the whole list through apt-cache first:
+    // absent names get named and dropped before the batch — a package
+    // missing on this release can no longer sink the batch and leave a
+    // ~90-spawn per-package grind as the only path forward (per-package
+    // stays as the last-resort fallback)
+    let mut installable: Vec<&str> = Vec::new();
+    for p in &pkgs {
+        if sys::run("apt-cache", &["show", p], &e.work).unwrap_or(1) == 0 {
+            installable.push(p.as_str());
+        } else {
+            log::warn(&format!("apt package {p} not offered — skipping"));
+        }
+    }
     let mut args = vec!["install", "-y", "--no-install-recommends"];
-    args.extend(&refs);
-    if sys::run("apt-get", &args, &e.work)? != 0 {
-        for p in &refs {
-            if sys::run(
-                "apt-get",
-                &["install", "-y", "--no-install-recommends", p],
-                &e.work,
-            )? != 0
-            {
+    args.extend(&installable);
+    if apt(&args, &e.work)? != 0 {
+        for p in &installable {
+            if apt(&["install", "-y", "--no-install-recommends", p], &e.work)? != 0 {
                 log::warn(&format!("apt package {p} could not be installed"));
             }
         }

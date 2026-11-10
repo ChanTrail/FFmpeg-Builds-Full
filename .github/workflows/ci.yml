@@ -326,6 +326,10 @@ jobs:
       # 存：替换正在运行的 bash 已加载的 DLL 会炸，那部分是
       # setup-msys2 的地盘。key 带 run_id + 前缀回退=滚动最新快照；
       # 半截状态的缓存由驱动里的完成戳机制兜住。
+      # 存侧拆成显式 save 步（见 Publish deps 之后）：合体 actions/cache
+      # 的 post-if 恒为 success()——失败与取消都静默不存，env 又值得在
+      # 取消时存（build 段取消时环境早已装好）。由 .ff-env-complete
+      # 戳把关，装到半途的快照永远写不进缓存。
       # The unpacked pacman environment rides actions/cache wholesale: the
       # $MSYSTEM_PREFIX subtree + pacman's local DB /var/lib/pacman/local.
       # On a hit every `pacman -S --needed` in the driver's packages() is a
@@ -336,10 +340,16 @@ jobs:
       # that part belongs to setup-msys2 anyway. run_id key + prefix
       # fallback = rolling newest snapshot; a half-written env is caught by
       # the completion-stamp check inside the driver.
+      # The save side is an explicit step (after Publish deps): the
+      # combined actions/cache hard-codes post-if: success() — failures
+      # and cancellations silently save nothing, yet a cancelled
+      # mid-build run already holds a complete env worth keeping. The
+      # .ff-env-complete stamp gates it: a half-installed snapshot can
+      # never reach the cache.
       - name: Restore MSYS2 env cache
         if: matrix.kind == 'windows'
         id: envcache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: |
             ${{ runner.temp }}\msys64\${{ matrix.msysdir }}
@@ -350,10 +360,14 @@ jobs:
 
       # ccache 滚动缓存——显式调用模式（驱动按 FFBUILD_CCACHE 给 --cc
       # 加前缀，不走 symlink masquerade）；arm64 腿不设开关（WoA 仿真的
-      # rdrand 崩溃有案底）/ rolling ccache cache — explicit-invocation
-      # mode (the driver prefixes --cc when FFBUILD_CCACHE is set; no
-      # symlink masquerade); the arm64 leg never gets the flag (the WoA
-      # rdrand crash is on record)
+      # rdrand 崩溃有案底）。存侧同样是显式 save 步：ccache 条目按内容
+      # 寻址，取消时半截目录照样是有效命中料，always() 存。
+      # rolling ccache cache — explicit-invocation mode (the driver
+      # prefixes --cc when FFBUILD_CCACHE is set; no symlink
+      # masquerade); the arm64 leg never gets the flag (the WoA rdrand
+      # crash is on record). The save side is an explicit step too:
+      # ccache entries are content-addressed, so a truncated dir at
+      # cancel time is still valid hit material — saved via always().
       - name: Restore ccache (Windows)
         # 门槛同 FFBUILD_CCACHE——arm64 腿 ccache 不跑、目录不存在，
         # 缓存步整段跳过（否则 post-job save 报 path-not-exist 警告）
@@ -361,7 +375,8 @@ jobs:
         # and the dir never exists; skip the step entirely (else the
         # post-job save warns path-not-exist)
         if: matrix.platform == 'windows-x86_64'
-        uses: actions/cache@v6
+        id: ccachewin
+        uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}\ffmpeg-ccache
           key: ccache-${{ matrix.platform }}-${{ github.run_id }}
@@ -399,6 +414,41 @@ jobs:
           FFBUILD_MSYS2: ${{ runner.temp }}\msys64
           GH_TOKEN: ${{ github.token }}
         run: ./driver/FFmpeg-Builds-Full.exe save-deps
+
+      # env 完成戳探测：戳在 var/lib/pacman/local/.ff-env-complete——驱动
+      # 在 env 安装收尾时落下、安装开始前先摘除，戳在=环境完整。取消场景
+      # 下 always() 步仍被 GitHub 放行，戳探针把"装在半途"挡在缓存外。
+      # Env completeness probe: the stamp lives at
+      # var/lib/pacman/local/.ff-env-complete — the driver drops it before
+      # installing and re-creates it at the end, so its presence means a
+      # complete env. GitHub still runs always() steps on cancellation;
+      # the stamp keeps "installed halfway" out of the cache.
+      - name: Probe MSYS2 env completeness
+        if: always() && matrix.kind == 'windows'
+        id: envprobe
+        shell: bash
+        run: |
+          if [ -f "${RUNNER_TEMP}/msys64/var/lib/pacman/local/.ff-env-complete" ]; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save MSYS2 env cache
+        if: always() && matrix.kind == 'windows' && steps.envprobe.outputs.ok == '1' && steps.envcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ runner.temp }}\msys64\${{ matrix.msysdir }}
+            ${{ runner.temp }}\msys64\var\lib\pacman\local
+          key: ${{ steps.envcache.outputs.cache-primary-key }}
+
+      - name: Save ccache (Windows)
+        if: always() && matrix.platform == 'windows-x86_64' && steps.ccachewin.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}\ffmpeg-ccache
+          key: ${{ steps.ccachewin.outputs.cache-primary-key }}
 
       # ------------------------------------------------------------------ Linux
       - name: Free disk space
@@ -475,7 +525,8 @@ jobs:
       # (configure's probe compiles included)
       - name: Restore ccache (Linux)
         if: matrix.kind == 'linux'
-        uses: actions/cache@v6
+        id: ccachelinux
+        uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/ffmpeg-ccache
           key: ccache-${{ matrix.platform }}-${{ github.run_id }}
@@ -548,6 +599,17 @@ jobs:
             GITHUB_ACTIONS="$GITHUB_ACTIONS" \
             ./driver/FFmpeg-Builds-Full save-deps
 
+      # ccache 条目按内容寻址、单条原子写——取消留下的半截目录仍是有效
+      # 命中料，always() 存 / ccache entries are content-addressed and
+      # written atomically — a truncated dir at cancel time is still valid
+      # hit material, saved via always()
+      - name: Save ccache (Linux)
+        if: always() && matrix.kind == 'linux' && steps.ccachelinux.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ffmpeg-ccache
+          key: ${{ steps.ccachelinux.outputs.cache-primary-key }}
+
       # ------------------------------------------------------------------ macOS
       # The runner image ships a Homebrew tap that Homebrew warns about on
       # every invocation; we do not use it.
@@ -556,10 +618,13 @@ jobs:
         run: brew untap aws/tap || true
 
       # ccache + the workspace snapshot cache make the otherwise from-scratch
-      # dependency rebuild several times faster.
+      # dependency rebuild several times faster. The save side is explicit:
+      # the workspace is mid-write state at cancel time, so save on
+      # success/failure (!cancelled()) rather than always().
       - name: Restore warm caches (macOS)
         if: matrix.kind == 'macos'
-        uses: actions/cache@v6
+        id: macwarm
+        uses: actions/cache/restore@v6
         with:
           path: |
             ${{ runner.temp }}/ffmpeg-ccache
@@ -592,6 +657,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: ./driver/FFmpeg-Builds-Full save-deps
+
+      # 取消时工作区正是写到一半的状态——只在成功/失败时存 /
+      # the workspace is mid-write state at cancel time — save on
+      # success/failure only
+      - name: Save warm caches (macOS)
+        if: matrix.kind == 'macos' && !cancelled() && steps.macwarm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ runner.temp }}/ffmpeg-ccache
+            ${{ runner.temp }}/ffmpeg-${{ matrix.platform }}-workspace
+          key: ${{ steps.macwarm.outputs.cache-primary-key }}
 
       # ----------------------------------------------------------------- common
       # 完整构建的产物（ffmpeg 压缩包 + sha256）随 workflow artifact

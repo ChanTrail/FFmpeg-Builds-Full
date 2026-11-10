@@ -178,7 +178,10 @@ pub fn restore() -> Result<(), String> {
             ),
             &e.work,
         )?;
-        fsx::rm_rf(&ddir);
+        // 资产留档：save() 的内容级 dirty 判定要拿它逐字节对比（包不大，
+        // work 目录随轮次清理）/ keep the asset around — save()'s
+        // content-level dirty check byte-compares against it (it's small
+        // and the work dir gets cleaned every run anyway)
         // 输入集不符 → extras 重跑；.ok 标记保留（带源哈希自选）
         // different inputs -> extras re-check; .ok markers stay (they carry
         // the per-recipe source hash and self-select)
@@ -1584,11 +1587,13 @@ pub fn extras_stage() -> Result<(), String> {
 
 /// 差集清单 → 剔 pacman 拥有 → tar -19 → deps::publish。
 /// complete = 配方表零失败走完（.extras/done + status 无 failed）；
-/// dirty = 本轮有改动（status 行或文件差集/新时间戳）。
+/// dirty = 与恢复快照逐字节比对有出入（mtime 差集只是候选——postfix
+/// 手术与 pacman 每轮都重写字节不变的文件）。
 /// Delta manifest -> drop pacman-owned -> tar -19 ->
 /// deps::publish. complete = the recipe table finished with zero failures
-/// (.extras/done + no failed status lines); dirty = anything moved this
-/// run (status lines or the file delta/newer-than-stamp set).
+/// (.extras/done + no failed status lines); dirty = byte-level drift
+/// from the restored snapshot (the mtime delta is only a candidate set —
+/// postfix surgery and pacman rewrite identical bytes every run).
 pub fn save() -> Result<(), String> {
     let e = sys::env();
     let platform = e.plat();
@@ -1616,15 +1621,12 @@ pub fn save() -> Result<(), String> {
     let complete = e.prefix_win.join(".extras/done").is_file()
         && !status.is_empty()
         && !status.lines().any(|l| l.ends_with(" failed"));
-    let mut dirty = status
-        .lines()
-        .any(|l| l.ends_with(" ok") || l.ends_with(" failed"));
     if !deps::have_gh() {
         log::log("no GH_TOKEN/gh; deps cannot be published, skipping pack");
         return Ok(());
     }
-    // 前缀差集兼当 dirty 检查 + 上传 manifest 源 / the prefix delta doubles
-    // as the dirty check and feeds the upload manifest
+    // 前缀差集兼当 dirty 候选集 + 上传 manifest 源 / the prefix delta is
+    // the dirty candidate set and feeds the upload manifest
     let after = prefix_listing(e);
     fsx::write(&e.work.join("deps-after.txt"), &after.join("\n"))?;
     let beforeset: HashSet<String> = fsx::read(&before).lines().map(|l| l.to_string()).collect();
@@ -1641,22 +1643,106 @@ pub fn save() -> Result<(), String> {
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
     let touched: Vec<String> = fsx::find_newer(&e.prefix_win, stamp_mt);
     fsx::write(&e.work.join("deps-touched.txt"), &touched.join("\n"))?;
-    // dirty 只看真实内容变化：.extras/*（status/flags/done——每轮必重写，
-    // 且 status.txt 在基线前被删、恒落 added）与 .deps-sig 是状态元文件，
-    // 不算脏——但它们必须留在 added/touched 里供发布清单打包（.ok 是下轮
-    // cached 的凭据，done/status 是 complete 判定的输入）/ dirty means
-    // real content changes only: .extras/* (status/flags/done — rewritten
-    // every run; status.txt is even deleted before the baseline so it
-    // always lands in `added`) and .deps-sig are state metadata — they
-    // stay in added/touched for the publish manifest (.ok files are next
-    // run's cached evidence; done/status feed the complete check) but
-    // must not count as dirt, or every run republishes forever
+    // dirty 按内容不按 mtime：postfix 归档手术、.pc 补丁、shaderc 遮蔽、
+    // pacman --needed 每轮都把字节不变的文件重写一遍——mtime 差集只算
+    // 候选，真脏与否靠与恢复快照逐字节比对；pacman 拥有文件反正不进
+    // 清单不参与判定；.extras/*（status/flags/done——每轮必重写，且
+    // status.txt 在基线前被删、恒落 added）与 .deps-sig 是状态元文件
+    // 也不算脏——但它们留在 added/touched 里供发布清单打包（.ok 是下轮
+    // cached 的凭据，done/status 是 complete 判定的输入）/ dirty is
+    // decided by content, not mtime: postfix archive surgery, .pc
+    // patching, the shaderc shadow and pacman --needed all rewrite
+    // byte-identical files every run — the mtime delta is a candidate
+    // set only; real dirt comes from byte-comparing against the
+    // restored snapshot. pacman-owned files (never in the manifest
+    // anyway) don't count; .extras/* (status/flags/done — rewritten
+    // every run; status.txt is deleted before the baseline so it
+    // always lands in `added`) and .deps-sig are state metadata — not
+    // dirt either. They stay in added/touched for the publish manifest
+    // (.ok files are next run's cached evidence; done/status feed the
+    // complete check)
     let is_meta = |p: &String| p.starts_with("./.extras/") || p == "./.deps-sig";
-    if added.iter().any(|p| !is_meta(p)) || touched.iter().any(|p| !is_meta(p)) {
-        dirty = true;
+    let owned: HashSet<String> = pacman_files().into_iter().collect();
+    let oldset: HashSet<String> = fsx::read(&e.work.join("deps-old-manifest.txt"))
+        .lines()
+        .map(|l| l.to_string())
+        .collect();
+    let mut cands: Vec<String> = added
+        .iter()
+        .chain(touched.iter())
+        .filter(|p| !is_meta(p) && !owned.contains(*p))
+        .filter(|p| e.prefix_win.join(p.trim_start_matches("./")).is_file())
+        .cloned()
+        .collect();
+    cands.sort();
+    cands.dedup();
+    // overlay 成员从前缀里消失也算真变（快照得跟着删）/ overlay members
+    // that vanished from the prefix are a real change too (the snapshot
+    // must drop them)
+    let afterset: HashSet<String> = after.iter().cloned().collect();
+    let gone = oldset
+        .iter()
+        .any(|f| !is_meta(f) && !owned.contains(f) && !afterset.contains(f));
+    let ran = status
+        .lines()
+        .any(|l| l.ends_with(" ok") || l.ends_with(" failed"));
+    let mut dirty = gone;
+    if !dirty && (!cands.is_empty() || ran) {
+        let asset = if restored.is_empty() {
+            std::path::PathBuf::new()
+        } else {
+            e.work.join("deps").join(&restored)
+        };
+        if asset.is_file() {
+            // 旧快照整棵解开，逐字节复核候选——全部相同才算未变 / unpack
+            // the old snapshot once and byte-verify every candidate —
+            // all identical means unchanged
+            let xdir = e.work.join("deps-old-x");
+            fsx::rm_rf(&xdir);
+            fsx::install_d(&xdir)?;
+            let aposix = sys::win_to_posix(&asset, &e.msys2_root);
+            let xposix = sys::win_to_posix(&xdir, &e.msys2_root);
+            if sys::bash_ok(
+                &format!("tar -C '{xposix}' -I zstd -xf '{aposix}'"),
+                &e.work,
+            )
+            .is_ok()
+            {
+                for c in &cands {
+                    let rel = c.trim_start_matches("./");
+                    let oldf = xdir.join(rel);
+                    let same = oldset.contains(c)
+                        && oldf.is_file()
+                        && match (std::fs::read(&oldf), std::fs::read(e.prefix_win.join(rel))) {
+                            (Ok(o), Ok(n)) => o == n,
+                            _ => false,
+                        };
+                    if !same {
+                        dirty = true;
+                        log::log(&format!("deps delta: first real change at {c}"));
+                        break;
+                    }
+                }
+            } else {
+                // 旧包解不开——按真变处理 / can't unpack the old snapshot —
+                // treat as changed
+                dirty = true;
+            }
+            fsx::rm_rf(&xdir);
+        } else {
+            // 没有可对比的旧快照——有候选或配方跑过就当脏 / no snapshot to
+            // compare against — candidates or recipe runs count as change
+            dirty = !cands.is_empty() || ran;
+        }
     }
-    // 反正不可能上传时跳过打包 / skip the tar when no upload can happen
-    if !restored.is_empty() && restored != format!("deps-{platform}-partial.tar.zst") && !dirty {
+    log::log(&format!(
+        "deps delta: {} candidate(s), gone={gone}, dirty={dirty}",
+        cands.len()
+    ));
+    // 反正不可能上传时跳过打包（partial 快照同样适用——字节相同就没有
+    // 可发布的增量）/ skip the tar when no upload can happen (partial
+    // snapshots included — identical bytes mean nothing to publish)
+    if !restored.is_empty() && !dirty {
         log::log("deps prefix unchanged since restored snapshot; skipping pack+upload");
         return Ok(());
     }
@@ -1667,11 +1753,7 @@ pub fn save() -> Result<(), String> {
     let mut man: Vec<String> = Vec::new();
     man.extend(added);
     man.extend(touched);
-    man.extend(
-        fsx::read(&e.work.join("deps-old-manifest.txt"))
-            .lines()
-            .map(|l| l.to_string()),
-    );
+    man.extend(oldset.iter().cloned());
     // .deps-sig 在 stamp 之前写好，永不进差集——显式点名 / .deps-sig is
     // written before the stamp exists and never reaches the manifest via
     // the delta — name it explicitly
@@ -1689,10 +1771,9 @@ pub fn save() -> Result<(), String> {
                 || std::fs::symlink_metadata(e.prefix_win.join(rel)).is_ok()
         })
         .collect();
-    // 彻底丢掉 pacman 拥有的路径（重算——本轮 extras 可能写了新的
-    // vendored 清单）/ drop pacman-owned paths for good (recompute — this
-    // run's extras may have written new vendored manifests)
-    let owned: HashSet<String> = pacman_files().into_iter().collect();
+    // 彻底丢掉 pacman 拥有的路径（复用上面 dirty 判定算出的 owned）/
+    // drop pacman-owned paths for good (reuse `owned` from the dirty
+    // check above)
     let man: Vec<String> = man.into_iter().filter(|f| !owned.contains(f)).collect();
     fsx::write(&e.work.join("deps-manifest.txt"), &man.join("\n"))?;
     log::log(&format!(

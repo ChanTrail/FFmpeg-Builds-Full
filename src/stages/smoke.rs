@@ -284,10 +284,6 @@ const PRESENCE: &[(&str, L, &[&str])] = &[
     ("decklink", L::Dev, &["decklink"]),
     ("libjack", L::Dev, &["jack"]),
     ("sndio", L::Dev, &["sndio"]),
-    // sdl outdev 在 FFmpeg 5 起注册名 sdl2（旧名 sdl）——双名兜底 /
-    // the sdl outdev registers as `sdl2` since FFmpeg 5 (`sdl` before)
-    // — cover both spellings
-    ("sdl2", L::Dev, &["sdl2", "sdl"]),
     // ---- 杂项组件面 / misc component faces ----
     // --enable-zlib 会注册 zlib 解码器（LCL ZLIB codec）/
     // --enable-zlib registers the zlib decoder (the LCL ZLIB codec)
@@ -323,6 +319,13 @@ const FLAG_ONLY: &[&str] = &[
     "libxcb-shm",
     "libxcb-shape",
     "libxcb-xfixes",
+    // sdl2 上游已移除 outdev（master 的 outdev_list.c 无 sdl 条目），
+    // 现在只喂 ffplay_deps——唯一可观察面是 --enable 旗标本身（ffplay
+    // 存在性由必需二进制检查覆盖）/ sdl2's outdev was removed upstream
+    // (no sdl entry in master's outdev_list.c) — it now only feeds
+    // ffplay_deps; the flag itself is the only observable face (ffplay's
+    // existence is covered by the required-bins check)
+    "sdl2",
     // 压缩/字符集底座——不注册任何可名列的组件 / compression/charset
     // plumbing — no nameable component face
     "bzlib",
