@@ -24,18 +24,15 @@ libjack:
   git: https://github.com/jackaudio/jack2.git
 sndio:
   git: https://caoua.org/git/sndio
-libshaderc:
-  git: https://github.com/google/shaderc.git
-libglslang:
-  git: https://github.com/KhronosGroup/glslang.git
+# libshaderc/libglslang/libnpp/libcelt：FFmpeg 已移除这些 configure
+# 特性，连同 features 键一并删除——不再是"留档可启"，发了旗标就是
+# unknown-option / FFmpeg dropped these configure options outright, so
+# the feature keys are gone too — emitting a flag would be an
+# unknown-option, not a "kept for the record"
 cuda-nvcc: {}              # NVIDIA CUDA Toolkit 组件，无独立公开仓库 / part of the NVIDIA CUDA Toolkit, no standalone repo
-libnpp: {}                 # 同上——CUDA Toolkit 头文件库 / same — a CUDA Toolkit headers lib
 decklink: {}               # Blackmagic 闭源 SDK，无公开源码地址 / proprietary SDK, no public source
 libklvanc:
   git: https://github.com/stoth68000/libklvanc.git
-libcelt:
-  git: https://gitlab.xiph.org/xiph/celt.git
-  ref: e18de7747fb1655e66bf8d291560587036bfe53c   # 上游停滞，固化末次提交（2011-09）/ upstream stalled, pinned at last commit
 libsmbclient:
   git: https://gitlab.com/samba-team/samba.git
 libmfx:

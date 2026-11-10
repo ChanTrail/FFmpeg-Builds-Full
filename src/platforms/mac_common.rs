@@ -492,21 +492,51 @@ pub fn package() -> Result<(), String> {
     // shared build: collect the real lib*.*.dylib files flat into bin/
     // (IDs are already @rpath and the exes carry an @loader_path
     // rpath — no install_name_tool surgery needed)
-    if sys::shared()
-        && let Ok(rd) = std::fs::read_dir(usrlocal.join("lib"))
-    {
-        for ent in rd.flatten() {
-            let p = ent.path();
-            let n = ent.file_name().to_string_lossy().to_string();
-            if n.ends_with(".dylib")
-                && n.trim_end_matches(".dylib").contains('.')
-                && p.is_file()
-                && !p
-                    .symlink_metadata()
-                    .map(|m| m.file_type().is_symlink())
-                    .unwrap_or(false)
-            {
-                fsx::install(&p, &pkg.join(format!("bin/{n}")))?;
+    if sys::shared() {
+        if let Ok(rd) = std::fs::read_dir(usrlocal.join("lib")) {
+            for ent in rd.flatten() {
+                let p = ent.path();
+                let n = ent.file_name().to_string_lossy().to_string();
+                if n.ends_with(".dylib")
+                    && n.trim_end_matches(".dylib").contains('.')
+                    && p.is_file()
+                    && !p
+                        .symlink_metadata()
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false)
+                {
+                    fsx::install(&p, &pkg.join(format!("bin/{n}")))?;
+                }
+            }
+        }
+        // 链接名别名收第二趟：dylib 间引用与 exe 记的都是 SONAME 短名
+        // （@rpath/libavcodec.63.dylib——真文件是 .63.28.100 全版本），
+        // 只收真文件 dyld 按名找不到、包检同判；别名以实体副本入包
+        // （fs::copy 随链接取目标字节，比符号链接更抗解压器），不带
+        // 版本的无名 .dylib 是 dev 链接跳过 / second pass for the
+        // link-name aliases: dylib cross-refs and the exes record the
+        // short SONAME (@rpath/libavcodec.63.dylib — the real file is
+        // the fully-versioned .63.28.100), so real files alone leave
+        // dyld — and the allowlist — resolving a name that isn't
+        // there. Aliases ship as real copies (fs::copy follows the
+        // link for identical bytes — sturdier than symlinks against
+        // sloppy extractors); the unversioned .dylib is a dev link
+        // and is skipped
+        if let Ok(rd) = std::fs::read_dir(usrlocal.join("lib")) {
+            for ent in rd.flatten() {
+                let p = ent.path();
+                let n = ent.file_name().to_string_lossy().to_string();
+                let versioned = n
+                    .strip_suffix(".dylib")
+                    .and_then(|s| s.rsplit('.').next())
+                    .is_some_and(|seg| !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit()));
+                if versioned
+                    && p.symlink_metadata()
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false)
+                {
+                    fsx::install(&p, &pkg.join(format!("bin/{n}")))?;
+                }
             }
         }
     }
@@ -554,7 +584,7 @@ pub fn package() -> Result<(), String> {
     }
     let license = e.work.join("ffmpeg/COPYING.GPLv3");
     if license.is_file() {
-        fsx::install(&license, &pkg.join("LICENSE.txt"))?;
+        fsx::install(&license, &pkg.join("LICENSE"))?;
     }
 
     // 一切必须静态链接：otool -L 只允许 OS 自带库（/usr/lib/ 与
@@ -613,8 +643,34 @@ pub fn package() -> Result<(), String> {
         .unwrap_or_default()
         .trim()
         .to_string();
+    // BUILDINFO.info 版式向发行样例靠齐（结构与 linux_common 同款注
+    // 释）/ the BUILDINFO.info layout follows the release sample (same
+    // structure as linux_common)
+    let vword = if variant.is_empty() {
+        "static"
+    } else {
+        variant.trim_start_matches('-')
+    };
+    // External Assets 按实际启用旗标生成（同 linux_common 注释）/
+    // the External Assets section follows the actually-enabled flags
+    // (same note as linux_common)
+    let assets = crate::ffmpeg::external_assets(&buildconf);
     let info = format!(
-        "FFmpeg version : {version}\nFFmpeg commit  : {commit}\nPlatform       : {platform} (macOS {swvers})\nDropped by configure : {}\nExtras         :\n{}\n{buildconf}",
+        "FFmpeg 64-bit {vword} macOS build from www.chantrail.com\n\
+        \n\
+        Version: {version}\n\
+        \n\
+        License: GPL v3\n\
+        \n\
+        Source Code: https://git.ffmpeg.org/gitweb/ffmpeg.git/commit/{commit}\n\
+        \n\
+        {assets}\
+        {vword} build configuration: \n\
+        \n\
+        {buildconf}\n\
+        Platform             : {platform} (macOS {swvers})\n\
+        Dropped by configure : {}\n\
+        Extras               :\n{}\n",
         dropped.replace('\n', " ").trim(),
         status
             .lines()
@@ -622,7 +678,7 @@ pub fn package() -> Result<(), String> {
             .collect::<Vec<_>>()
             .join("\n"),
     );
-    fsx::write(&pkg.join("BUILDINFO.txt"), &info)?;
+    fsx::write(&pkg.join("BUILDINFO.info"), &info)?;
 
     fsx::install_d(&e.dist)?;
     let tarname = format!("{name}.tar.xz");

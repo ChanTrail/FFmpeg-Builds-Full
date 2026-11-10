@@ -13,13 +13,13 @@ gcrypt: disable
 schannel: disable        # Windows 系统 TLS 后端（不用，统一走 gnutls）/ Windows' system TLS backend (unused — gnutls everywhere)
 libjack: disable         # 音频工作站场景 / pro-audio
 sndio: disable
-libshaderc: disable      # vulkan 着色器走 SPIRV-Cross，不用 shaderc 链 / shaders via SPIRV-Cross
-libglslang: disable
+# libshaderc/libglslang/libnpp/libcelt：上游 FFmpeg 已删这些特性——
+# 连 disable 都不能再发（unknown-option 拒配），键从 FEATURES 表移除 /
+# upstream FFmpeg removed these options — even --disable-* now fails as
+# an unknown option, so the keys left the FEATURES table
 cuda-nvcc: disable
-libnpp: disable
 decklink: disable        # 需要 Blackmagic SDK / needs the Blackmagic SDK
 libklvanc: disable
-libcelt: disable
 libsmbclient: disable
 libmfx: disable          # 已被 libvpl 取代 / superseded by libvpl
 libopenvino: disable

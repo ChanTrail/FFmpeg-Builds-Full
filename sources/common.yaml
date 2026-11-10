@@ -216,6 +216,7 @@ zvbi:
   git: https://github.com/zapping-vbi/zvbi.git   # 上游已迁 GitHub；SF 仅到 0.2.35 / upstream moved to GitHub; SF caps at 0.2.35
 vapoursynth:
   git: https://github.com/vapoursynth/vapoursynth.git
+  ref: R82   # 浮动解析会捡 R70.11（无点号的 R82 不算"版本样式"tag——尚无 meson.build）；钉死到首个 meson 发布代 / floating resolution picks R70.11 (dot-less R82 isn't a "version-looking" tag — and R70.11 predates meson.build); pin the meson-era release line
 avisynth:
   git: https://github.com/AviSynth/AviSynthPlus.git
 qrencode:

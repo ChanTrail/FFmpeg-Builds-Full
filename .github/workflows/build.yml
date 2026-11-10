@@ -752,13 +752,13 @@ jobs:
           set -euo pipefail
           chmod +x driver/* 2>/dev/null || true
           bins=(pkg/*/bin)
-          # build-all 一腿产三个变体（静态/shared/debug）——逐个冒烟，
-          # shared 变体的旁位解析（$ORIGIN/@loader_path/exe 目录）在
-          # 此顺带实证 / build-all emits three variants per leg
-          # (static/shared/debug) — smoke each one; the shared
-          # variant's sibling resolution ($ORIGIN/@loader_path/exe dir)
-          # gets proven here in passing
-          [[ ${#bins[@]} -eq 3 ]] || { echo "::error::expected exactly three packages, found: ${bins[*]}"; exit 1; }
+          # build-all 一腿产四个变体（静态/shared/debug/shared-debug）
+          # ——逐个冒烟，shared 变体的旁位解析（$ORIGIN/@loader_path/
+          # exe 目录）在此顺带实证 / build-all emits four variants per
+          # leg (static/shared/debug/shared-debug) — smoke each one;
+          # the shared variants' sibling resolution
+          # ($ORIGIN/@loader_path/exe dir) gets proven here in passing
+          [[ ${#bins[@]} -eq 4 ]] || { echo "::error::expected exactly four packages, found: ${bins[*]}"; exit 1; }
           exe="$(find driver -name 'FFmpeg-Builds-Full*' -type f | head -n1)"
           for b in "${bins[@]}"; do
             echo "=== smoke $b ==="
@@ -839,13 +839,14 @@ jobs:
           ls -lh artifacts/
 
           # Belt and braces: refuse to publish unless every platform is present,
-          # built from the pinned commit, with its checksum — all three
-          # variants (static/shared/debug) per platform, 30 files total.
+          # built from the pinned commit, with its checksum — all four
+          # variants (static/shared/debug/shared-debug) per platform,
+          # 40 files total.
           files=()
           for p in windows-x86_64 windows-arm64 linux-x86_64 linux-arm64 macos-arm64; do
             ext="tar.xz"
             [[ "$p" == windows-* ]] && ext="7z"
-            for v in "" "-shared" "-debug"; do
+            for v in "" "-shared" "-debug" "-shared-debug"; do
               base="artifacts/ffmpeg-$FFMPEG_HASH-$p$v"
               for f in "$base.$ext" "$base.$ext.sha256"; do
                 [[ -f "$f" ]] || { echo "::error::missing $f"; exit 1; }
@@ -892,9 +893,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir latest
-          # 三个变体（默认/-shared/-debug）都进 latest——URL 名即形态 /
-          # all three variants (default/-shared/-debug) land in latest —
-          # the URL spells out the shape
+          # 四个变体（默认/-shared/-debug/-shared-debug）都进 latest——
+          # URL 名即形态 / all four variants
+          # (default/-shared/-debug/-shared-debug) land in latest — the
+          # URL spells out the shape
           re='^ffmpeg-[0-9a-f]{10}-(windows-x86_64|windows-arm64|linux-x86_64|linux-arm64|macos-arm64)(-shared|-debug|-shared-debug)?\.(7z|tar\.xz)$'
           for f in artifacts/*.7z artifacts/*.tar.xz; do
             name="$(basename "$f")"

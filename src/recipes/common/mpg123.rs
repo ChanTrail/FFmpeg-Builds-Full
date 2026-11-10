@@ -23,7 +23,17 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     // --enable-components=libmpg123 turns out to switch off the .pc
     // install rule along with the extras — back to a default full
     // build; missing audio backends degrade on their own
-    buildsys::autotools_build(&src, &[])?;
+    //
+    // --with-audio=dummy 只编 dummy 输出模块：mpg123 本体二进制是
+    // 副产品，ffmpeg 只要 libmpg123；pulse/alsa/sdl/openal 输出模块
+    // 会拉着 libpulse.a/libasound.a 进链接——pkg-config --libs（无
+    // --static）不吐 Libs.private，pa_* 内部符号全悬空 /
+    // --with-audio=dummy builds only the dummy output module: the
+    // mpg123 binary is a by-product — ffmpeg needs libmpg123 alone.
+    // pulse/alsa/sdl/openal output modules drag libpulse.a/libasound.a
+    // into the link, and pkg-config --libs (no --static) never emits
+    // Libs.private, leaving pa_* internals undefined
+    buildsys::autotools_build(&src, &["--with-audio=dummy"])?;
     // 兜底：万一该版本仍不产 libmpg123.pc，手写补齐（lame 的
     // pkg-config 探测只靠它）/ fallback: if this build still shipped
     // no libmpg123.pc, fabricate one (lame's pkg-config probe lives

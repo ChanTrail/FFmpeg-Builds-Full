@@ -41,10 +41,11 @@ FFmpeg-Builds-Full — FFmpeg 静态构建驱动 / static FFmpeg build driver
   build      全流水线：extras → ffmpeg → package
              the whole pipeline: extras → ffmpeg → package
   build-all  全变体一次建：首变体（静态）走完整流水线产出 deps
-             前缀，后续 shared/debug 变体只跑 ffmpeg → package /
-             every variant in one run: the first (static) takes the
-             full pipeline to produce the deps prefix, the shared /
-             debug variants then only re-run ffmpeg → package
+             前缀，后续 shared/debug/shared-debug 变体只跑
+             ffmpeg → package / every variant in one run: the first
+             (static) takes the full pipeline to produce the deps
+             prefix, the shared / debug / shared-debug variants then
+             only re-run ffmpeg → package
   packages   安装/确认平台包栈（MSYS2 pacman 等）
              install or verify the platform package stack (MSYS2 pacman etc.)
   extras     只跑 extras 配方引擎（第三方库）
@@ -220,7 +221,7 @@ fn main() {
         // ffmpeg→package (the extras .ok markers would no-op a
         // re-run anyway, but skipping outright is cleaner)
         "build-all" => (|| -> Result<(), String> {
-            for (i, (shared, debug)) in [(false, false), (true, false), (false, true)]
+            for (i, (shared, debug)) in [(false, false), (true, false), (false, true), (true, true)]
                 .iter()
                 .enumerate()
             {

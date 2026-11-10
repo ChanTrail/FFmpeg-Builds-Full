@@ -467,3 +467,74 @@ pub fn build(build_dir: &Path, log_file: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// 需要外部资产的特性 → (资产名, 获取地址)。运行时 dlopen 插件或读数据
+/// 文件的特性才进包提示；静态编进的库不算资产
+/// features that need external assets -> (asset label, fetch URL). Only
+/// runtime-dlopen plugins and runtime-read data files qualify; libs
+/// statically linked in are not assets
+const EXTERNAL_ASSETS: &[(&str, &str, &str)] = &[
+    // frei0r 只编宿主头文件——插件本体在上游 frei0r 仓（标准插件集即
+    // 该仓所产）/ frei0r builds only the host headers — the plugins
+    // themselves live in the upstream frei0r repo (the standard plugin
+    // set is what it produces)
+    ("frei0r", "frei0r plugins", "https://github.com/dyne/frei0r"),
+    // lensfun 配方只产库——XML 数据库在上游仓 data/db（也是
+    // lensfun-update-data 的抓取源）/ the lensfun recipe ships the
+    // library alone — the XML database lives in upstream's data/db
+    // (the same source lensfun-update-data pulls from)
+    (
+        "liblensfun",
+        "lensfun database",
+        "https://github.com/lensfun/lensfun",
+    ),
+    (
+        "whisper",
+        "whisper models",
+        "https://huggingface.co/ggerganov/whisper.cpp/tree/main",
+    ),
+    (
+        "libtesseract",
+        "tesseract data",
+        "https://github.com/tesseract-ocr/tessdata",
+    ),
+    (
+        "pocketsphinx",
+        "pocketsphinx models",
+        "https://github.com/cmusphinx/pocketsphinx/tree/master/model",
+    ),
+    ("ladspa", "LADSPA plugins", "https://www.ladspa.org/"),
+    ("lv2", "LV2 plugins", "https://lv2plug.in/"),
+];
+
+/// 由 -buildconf 的 configuration 行拼 External Assets 段：以实际启用
+/// 旗标为准（平台级 disable 的特性自动缺席）；全灭时连段名都不留
+/// build the External Assets section from the -buildconf configuration
+/// line, driven by the flags that were actually enabled (platform-level
+/// disables simply absent); the whole section is omitted when none hit
+pub fn external_assets(buildconf: &str) -> String {
+    let mut out = String::new();
+    for (flag, label, url) in EXTERNAL_ASSETS {
+        // 整词匹配——frei0r 这类短名防子串误配 / whole-token match —
+        // short names like frei0r must not substring-collide
+        let want = format!("--enable-{flag}");
+        if buildconf
+            .split_whitespace()
+            .any(|t| t.trim_end_matches(',') == want)
+        {
+            // "label:" 左对齐到 22 列挂 URL（样例版式；最长标签
+            // "pocketsphinx models:" 20 字符，18 列会黏连）/ "label:"
+            // left-aligned to column 22 before the URL (sample
+            // layout; the longest label "pocketsphinx models:" is 20
+            // chars — column 18 would glue it to the URL)
+            out.push_str(&format!("{:<22}{url}\n", format!("{label}:")));
+        }
+    }
+    if out.is_empty() {
+        return out;
+    }
+    // 尾部空行随段带走——调用方直接内嵌，空段连分隔空行一并消失 /
+    // the trailing blank line rides with the section — callers inline
+    // it verbatim and an empty section takes its separator along
+    format!("External Assets\n{out}\n")
+}

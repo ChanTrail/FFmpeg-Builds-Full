@@ -733,7 +733,7 @@ pub fn package() -> Result<(), String> {
     }
     let license = e.work.join("ffmpeg/COPYING.GPLv3");
     if license.is_file() {
-        fsx::install(&license, &pkg.join("LICENSE.txt"))?;
+        fsx::install(&license, &pkg.join("LICENSE"))?;
     }
 
     // 可执行文件必须能在裸 Windows 上跑：只许导入系统 DLL——绝不许导入
@@ -823,8 +823,36 @@ pub fn package() -> Result<(), String> {
         .next()
         .unwrap_or("")
         .to_string();
+    // BUILDINFO.info 版式向发行样例靠齐（结构与 linux_common 同款注
+    // 释）；MSYS2 缺包清单随平台信息附尾 / the BUILDINFO.info layout
+    // follows the release sample (same structure as linux_common); the
+    // MSYS2 missing-package list trails with the platform info
+    let vword = if variant.is_empty() {
+        "static"
+    } else {
+        variant.trim_start_matches('-')
+    };
+    // External Assets 按实际启用旗标生成（同 linux_common 注释）/
+    // the External Assets section follows the actually-enabled flags
+    // (same note as linux_common)
+    let assets = crate::ffmpeg::external_assets(&buildconf);
     let info = format!(
-        "FFmpeg version : {version}\nFFmpeg commit  : {commit}\nPlatform       : {platform} ({ccid}, {ccv})\nMSYS2 packages not available/installed : {}\nDropped by configure : {}\nExtras         :\n{}\n{buildconf}",
+        "FFmpeg 64-bit {vword} Windows build from www.chantrail.com\n\
+        \n\
+        Version: {version}\n\
+        \n\
+        License: GPL v3\n\
+        \n\
+        Source Code: https://git.ffmpeg.org/gitweb/ffmpeg.git/commit/{commit}\n\
+        \n\
+        {assets}\
+        {vword} build configuration: \n\
+        \n\
+        {buildconf}\n\
+        Platform                               : {platform} ({ccid}, {ccv})\n\
+        MSYS2 packages not available/installed : {}\n\
+        Dropped by configure                   : {}\n\
+        Extras                                 :\n{}\n",
         missing.replace('\n', " ").trim(),
         dropped.replace('\n', " ").trim(),
         status
@@ -833,7 +861,7 @@ pub fn package() -> Result<(), String> {
             .collect::<Vec<_>>()
             .join("\n"),
     );
-    fsx::write(&pkg.join("BUILDINFO.txt"), &info)?;
+    fsx::write(&pkg.join("BUILDINFO.info"), &info)?;
 
     fsx::install_d(&e.dist)?;
     // 固实 7z（-ms=on 全档一个 solid block，压缩率最优）；msys zip 包

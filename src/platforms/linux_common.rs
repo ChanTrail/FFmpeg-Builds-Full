@@ -647,23 +647,44 @@ pub fn package() -> Result<(), String> {
     // stamp $ORIGIN on the whole bin layer: exes and their mutual .so
     // references all resolve sibling-wise, so the package runs from
     // any path
-    if sys::shared()
-        && let Ok(rd) = std::fs::read_dir(usrlocal.join("lib"))
-    {
-        for ent in rd.flatten() {
-            let p = ent.path();
-            let n = ent.file_name().to_string_lossy().to_string();
-            // 只收真实文件——.so/.so.M 符号链接让 fs::copy 复制出
-            // 重复实体 / real files only — the .so/.so.M symlinks would
-            // just make fs::copy emit duplicate bodies
-            if n.contains(".so.")
-                && p.is_file()
-                && !p
-                    .symlink_metadata()
-                    .map(|m| m.file_type().is_symlink())
-                    .unwrap_or(false)
-            {
-                fsx::install(&p, &pkg.join(format!("bin/{n}")))?;
+    if sys::shared() {
+        if let Ok(rd) = std::fs::read_dir(usrlocal.join("lib")) {
+            for ent in rd.flatten() {
+                let p = ent.path();
+                let n = ent.file_name().to_string_lossy().to_string();
+                if n.contains(".so.")
+                    && p.is_file()
+                    && !p
+                        .symlink_metadata()
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false)
+                {
+                    fsx::install(&p, &pkg.join(format!("bin/{n}")))?;
+                }
+            }
+        }
+        // SONAME 链接别名收第二趟：exe/.so 的 NEEDED 记的是短名
+        // （libavcodec.so.63——真文件是 .so.63.28.100 全版本），只收
+        // 真文件 ld.so 按名找不到、ldd 白名单同判；别名以实体副本入
+        // 包（fs::copy 随链接取目标字节），不带版本段的 .so dev 链接
+        // 跳过 / second pass for the SONAME aliases: the exes'/.sos'
+        // NEEDED entries record the short name (libavcodec.so.63 —
+        // the real file is the fully-versioned .so.63.28.100), so
+        // real files alone leave ld.so — and the ldd allowlist —
+        // resolving a name that isn't there. Aliases ship as real
+        // copies (fs::copy follows the link for identical bytes);
+        // the unversioned .so dev links are skipped
+        if let Ok(rd) = std::fs::read_dir(usrlocal.join("lib")) {
+            for ent in rd.flatten() {
+                let p = ent.path();
+                let n = ent.file_name().to_string_lossy().to_string();
+                if n.contains(".so.")
+                    && p.symlink_metadata()
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false)
+                {
+                    fsx::install(&p, &pkg.join(format!("bin/{n}")))?;
+                }
             }
         }
         for f in fsx::walk(&pkg.join("bin")) {
@@ -715,7 +736,7 @@ pub fn package() -> Result<(), String> {
     }
     let license = e.work.join("ffmpeg/COPYING.GPLv3");
     if license.is_file() {
-        fsx::install(&license, &pkg.join("LICENSE.txt"))?;
+        fsx::install(&license, &pkg.join("LICENSE"))?;
     }
 
     // 运行时依赖白名单：默认全静态产物的 ldd 输出是 "not a dynamic
@@ -802,8 +823,43 @@ pub fn package() -> Result<(), String> {
         .next()
         .and_then(|l| l.split_whitespace().last().map(|s| s.to_string()))
         .unwrap_or_default();
+    // BUILDINFO.info 版式向发行样例靠齐：品牌头（变体词随产物）→
+    // Version/License/Source Code → External Assets → "<变体> build
+    // configuration:" 领起 -buildconf 原文；dropped/extras 附尾 /
+    // the BUILDINFO.info layout follows the release sample: a branded
+    // header (variant word follows the artifact) ->
+    // Version/License/Source Code -> External Assets -> "<variant>
+    // build configuration:" introducing the verbatim -buildconf dump;
+    // dropped/extras trail at the end
+    let vword = if variant.is_empty() {
+        "static"
+    } else {
+        variant.trim_start_matches('-')
+    };
+    // External Assets 按本二进制 -buildconf 里的实际启用旗标生成——
+    // 需要运行时 dlopen 插件/数据文件的特性才有资产可列（windows-
+    // arm64 的 tesseract 缺席自动不列）/ the External Assets section
+    // is generated from the flags actually enabled in this binary's
+    // -buildconf — only features needing runtime-dlopen plugins or
+    // data files get an asset entry (windows-arm64's absent tesseract
+    // drops out by itself)
+    let assets = crate::ffmpeg::external_assets(&buildconf);
     let info = format!(
-        "FFmpeg version : {version}\nFFmpeg commit  : {commit}\nPlatform       : {platform} ({ccid}, glibc {libc})\nDropped by configure : {}\nExtras         :\n{}\n{buildconf}",
+        "FFmpeg 64-bit {vword} Linux build from www.chantrail.com\n\
+        \n\
+        Version: {version}\n\
+        \n\
+        License: GPL v3\n\
+        \n\
+        Source Code: https://git.ffmpeg.org/gitweb/ffmpeg.git/commit/{commit}\n\
+        \n\
+        {assets}\
+        {vword} build configuration: \n\
+        \n\
+        {buildconf}\n\
+        Platform             : {platform} ({ccid}, glibc {libc})\n\
+        Dropped by configure : {}\n\
+        Extras               :\n{}\n",
         dropped.replace('\n', " ").trim(),
         status
             .lines()
@@ -811,7 +867,7 @@ pub fn package() -> Result<(), String> {
             .collect::<Vec<_>>()
             .join("\n"),
     );
-    fsx::write(&pkg.join("BUILDINFO.txt"), &info)?;
+    fsx::write(&pkg.join("BUILDINFO.info"), &info)?;
 
     fsx::install_d(&e.dist)?;
     let tarname = format!("{name}.tar.xz");

@@ -700,6 +700,38 @@ pub fn run_tee(prog: &str, args: &[&str], dir: &Path, logfile: &Path) -> Result<
     let mut so = ch.stdout.take().unwrap();
     let mut se = ch.stderr.take().unwrap();
     let mut f = std::fs::File::create(logfile).map_err(|e| format!("{logfile:?}: {e}"))?;
+    // CI 回显抑制期的时间心跳：TEE_HEARTBEAT 字节里程碑只在子进程
+    // 有输出时触发——安静期（链接、长编译单元）控制台彻底静默，像
+    // 冻住。补一条 30s 报活线，字节数由读写循环经共享原子计数喂入 /
+    // a time-based heartbeat for the CI echo-suppressed stretch:
+    // TEE_HEARTBEAT byte milestones only fire while the child talks —
+    // quiet stretches (link steps, long compile units) leave the
+    // console dead silent and looking hung. A 30s liveness line fixes
+    // it; the byte counts are fed by the reader loops via shared
+    // atomics
+    let written_out = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let written_err = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (beat_tx, beat_rx) = std::sync::mpsc::channel::<()>();
+    let beat = if ci {
+        let tag_b = tag.clone();
+        let (wo, we) = (written_out.clone(), written_err.clone());
+        Some(std::thread::spawn(move || {
+            let mut secs = 0u32;
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                beat_rx.recv_timeout(std::time::Duration::from_secs(30))
+            {
+                secs += 30;
+                let total = wo.load(std::sync::atomic::Ordering::Relaxed)
+                    + we.load(std::sync::atomic::Ordering::Relaxed);
+                crate::log::log(&format!(
+                    "… {tag_b}: {} written, still running ({secs}s)",
+                    human_size(total as u64)
+                ));
+            }
+        }))
+    } else {
+        None
+    };
     // stderr 读线程：必须与 stdout 并行排空——管道写满而没人读时两条流
     // 会互相堵死；同写日志文件并回显本进程 stderr
     // the stderr reader thread must drain in parallel with stdout — a full
@@ -717,6 +749,7 @@ pub fn run_tee(prog: &str, args: &[&str], dir: &Path, logfile: &Path) -> Result<
                 Ok(n) => {
                     let _ = f_err.write_all(&buf[..n]);
                     written += n;
+                    written_err.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
                     if !ci {
                         let _ = wr.write_all(&buf[..n]);
                         let _ = wr.flush();
@@ -746,6 +779,7 @@ pub fn run_tee(prog: &str, args: &[&str], dir: &Path, logfile: &Path) -> Result<
             Ok(n) => {
                 let _ = f.write_all(&buf[..n]);
                 written += n;
+                written_out.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
                 if !ci {
                     let _ = wr.write_all(&buf[..n]);
                     let _ = wr.flush();
@@ -765,6 +799,14 @@ pub fn run_tee(prog: &str, args: &[&str], dir: &Path, logfile: &Path) -> Result<
         tee_beat(&tag, written);
     }
     let _ = t.join();
+    // 子进程输出已尽：停表收编心跳线程（send 即唤醒，不等下一个
+    // 30s 刻度）/ child output is done: stop and collect the
+    // heartbeat thread (the send wakes it now, not on the next 30s
+    // tick)
+    let _ = beat_tx.send(());
+    if let Some(h) = beat {
+        let _ = h.join();
+    }
     ch.wait()
         .map(|s| s.code().unwrap_or(-1))
         .map_err(|e| format!("wait {prog}: {e}"))

@@ -13,10 +13,10 @@
 #
 # <ffmpeg-source-dir> 只需要 FFmpeg 的 `configure`（以 --help 运行）。
 # <archives-dir> 存放每个平台的 ffmpeg-*-<platform>.{7z,tar.xz}；构建
-# 报告在包内 <name>/BUILDINFO.txt，内容是 `ffmpeg -buildconf` 的输出。
+# 报告在包内 <name>/BUILDINFO.info，内容是 `ffmpeg -buildconf` 的输出。
 # <ffmpeg-source-dir> only needs FFmpeg's `configure` (it is run with --help).
 # <archives-dir> holds ffmpeg-*-<platform>.{7z,tar.xz} for every platform;
-# the build report lives inside each archive as <name>/BUILDINFO.txt and
+# the build report lives inside each archive as <name>/BUILDINFO.info and
 # contains the output of `ffmpeg -buildconf`.
 # =============================================================================
 set -euo pipefail
@@ -49,9 +49,9 @@ trap 'rm -rf "$tmp"' EXIT
 total="$(wc -l <"$tmp/candidates.txt" | tr -d ' ')"
 [[ "$total" -gt 0 ]] || { echo "::error::no external libraries found in configure --help" >&2; exit 1; }
 
-# 每个平台启用的选项：从压缩包内抽出 BUILDINFO.txt 到 stdout
+# 每个平台启用的选项：从压缩包内抽出 BUILDINFO.info 到 stdout
 # （.7z 走 7z x -so，.tar.xz 走 tar -xO；两者都支持通配成员名）。
-# The enabled options of each platform: BUILDINFO.txt is pulled from inside
+# The enabled options of each platform: BUILDINFO.info is pulled from inside
 # the archive straight to stdout (7z x -so for .7z, tar -xO for .tar.xz;
 # both accept a wildcard member name).
 for p in "${PLATFORMS[@]}"; do
@@ -61,13 +61,13 @@ for p in "${PLATFORMS[@]}"; do
   case "$f" in
     *.7z)
       sevenz="$(command -v 7zz || command -v 7z)"
-      "$sevenz" x -so "$f" '*/BUILDINFO.txt' >"$tmp/$p.info"
+      "$sevenz" x -so "$f" '*/BUILDINFO.info' >"$tmp/$p.info"
       ;;
     *.tar.xz)
-      tar -xOf "$f" --wildcards '*/BUILDINFO.txt' >"$tmp/$p.info"
+      tar -xOf "$f" --wildcards '*/BUILDINFO.info' >"$tmp/$p.info"
       ;;
   esac
-  [[ -s "$tmp/$p.info" ]] || { echo "::error::no BUILDINFO.txt inside $f" >&2; exit 1; }
+  [[ -s "$tmp/$p.info" ]] || { echo "::error::no BUILDINFO.info inside $f" >&2; exit 1; }
   grep -oE -- '--enable-[A-Za-z0-9_-]+' "$tmp/$p.info" | sed 's/^--enable-//' | sort -u >"$tmp/$p.enabled"
 done
 
