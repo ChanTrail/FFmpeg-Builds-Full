@@ -472,11 +472,14 @@ pub fn packages() -> Result<(), String> {
     Ok(())
 }
 
-/// FFmpeg 阶段：取源码 → features 旗标 + 平台工具链参数 → 丢包重试
-/// configure → 编译安装
-/// The FFmpeg stage: fetch sources → features flags + platform toolchain
-/// args → drop-and-retry configure → compile+install
-pub fn ffmpeg() -> Result<(), String> {
+/// 当前变体的 ffmpeg 配置作业：取源码 → features 旗标 + 平台工具链
+/// 参数 → 独立构建目录（ffbuild-ffmpeg{variant}）——configure 与编译
+/// 由调用方统一编排（build-all 四变体并行）
+/// the current variant's ffmpeg configure job: fetch sources ->
+/// features flags + platform toolchain args -> a private build dir
+/// (ffbuild-ffmpeg{variant}) — configure and compile are orchestrated
+/// by the caller (build-all runs the four variants in parallel)
+pub fn ffmpeg_plan() -> Result<crate::ffmpeg::ConfJob, String> {
     let e = sys::env();
     // 必需的库——丢包重试不得丢它们
     // required libraries — the drop-and-retry loop must never drop them
@@ -507,7 +510,12 @@ pub fn ffmpeg() -> Result<(), String> {
             info.commit, info.hash, info.version
         ),
     )?;
-    let build = e.work.join("ffbuild-ffmpeg");
+    // 一变体一目录：四变体并行 configure/编译互不干扰 / one dir per
+    // variant: the four-way parallel configure/compile keeps its hands
+    // off the others
+    let build = e
+        .work
+        .join(format!("ffbuild-ffmpeg{}", sys::variant_suffix()));
     fsx::rm_rf(&build);
     fsx::install_d(&build)?;
 
@@ -619,16 +627,35 @@ pub fn ffmpeg() -> Result<(), String> {
     } else {
         args.push("--disable-shared".into());
     }
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let dropped = e.work.join("dropped-libs.txt");
+    let variant = sys::variant_suffix();
+    Ok(crate::ffmpeg::ConfJob {
+        label: sys::variant_word(),
+        build_dir: build,
+        configure: src_dir.join("configure"),
+        args,
+        dropped: e.work.join(format!("dropped-libs{variant}.txt")),
+        required: REQUIRED,
+        build_log: e.work.join(format!("ffmpeg-build{variant}.log")),
+    })
+}
+
+/// FFmpeg 阶段：取源码 → features 旗标 + 平台工具链参数 → 丢包重试
+/// configure → 编译安装（单变体路径，与 build-all 共用 plan）
+/// The FFmpeg stage: fetch sources -> features flags + platform toolchain
+/// args -> drop-and-retry configure -> compile+install (the
+/// single-variant path; shares the plan with build-all)
+pub fn ffmpeg() -> Result<(), String> {
+    let job = ffmpeg_plan()?;
+    let refs: Vec<&str> = job.args.iter().map(String::as_str).collect();
     crate::ffmpeg::configure(
-        &build,
-        &src_dir.join("configure"),
+        &job.build_dir,
+        &job.configure,
         &refs,
-        &dropped,
-        REQUIRED,
+        &job.dropped,
+        job.required,
+        &job.label,
     )?;
-    crate::ffmpeg::build(&build, &e.work.join("ffmpeg-build.log"))
+    crate::ffmpeg::build(&job.build_dir, &job.build_log)
 }
 
 /// package 阶段：收集二进制/文档/预设 → DLL 导入白名单 → 冒烟测试 →
@@ -659,11 +686,7 @@ pub fn package() -> Result<(), String> {
     // variant suffixes: shared/debug artifacts would shadow the
     // static one by name — both shapes can coexist under one driver
     // dir, so names must discriminate (fixed order: -shared-debug)
-    let variant = format!(
-        "{}{}",
-        if sys::shared() { "-shared" } else { "" },
-        if sys::debug() { "-debug" } else { "" },
-    );
+    let variant = sys::variant_suffix();
     let name = format!("ffmpeg-{hash}-{platform}{variant}");
     let pkgroot = e.work.join("pkg");
     let pkg = pkgroot.join(&name);
@@ -811,7 +834,7 @@ pub fn package() -> Result<(), String> {
     )
     .unwrap_or_default();
     let missing = fsx::read(&e.work.join("missing-packages.txt"));
-    let dropped = fsx::read(&e.work.join("dropped-libs.txt"));
+    let dropped = fsx::read(&e.work.join(format!("dropped-libs{variant}.txt")));
     let status = fsx::read(&e.prefix_win.join(".extras/status.txt"));
     let ccid = sys::capture(&e.cc, &["-dumpmachine"], &e.work)
         .unwrap_or_default()

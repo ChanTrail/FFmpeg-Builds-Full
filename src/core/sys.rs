@@ -261,6 +261,33 @@ pub fn debug() -> bool {
         .unwrap_or(false)
 }
 
+/// 变体后缀：static → ""，其余 "-shared"/"-debug"/"-shared-debug"——
+/// 产物名、构建目录、dropped-libs 文件名的统一拼接件（固定顺序
+/// shared 在前）/ variant suffix: "" for static, otherwise
+/// "-shared"/"-debug"/"-shared-debug" — the shared suffix piece for
+/// artifact names, build dirs and dropped-libs filenames (shared
+/// always leads)
+pub fn variant_suffix() -> String {
+    format!(
+        "{}{}",
+        if shared() { "-shared" } else { "" },
+        if debug() { "-debug" } else { "" },
+    )
+}
+
+/// 变体词："static"/"shared"/"debug"/"shared-debug"——日志与
+/// BUILDINFO 的人类可读名 / the variant word —
+/// "static"/"shared"/"debug"/"shared-debug": the human-readable name
+/// used in logs and BUILDINFO
+pub fn variant_word() -> String {
+    let s = variant_suffix();
+    if s.is_empty() {
+        "static".into()
+    } else {
+        s.trim_start_matches('-').to_string()
+    }
+}
+
 /// 系统 pkg-config 的编译期默认搜索路径——读 `pkg-config --variable
 /// pc_path`，跨发行版/架构都正确（自动覆盖 multiarch 目录）。进程级
 /// 缓存一次探测；查不到退化为常见兜底 / the system pkg-config

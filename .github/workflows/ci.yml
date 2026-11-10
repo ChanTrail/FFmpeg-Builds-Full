@@ -1,22 +1,22 @@
 # Rust 驱动程序（FFmpeg-Builds-Full）的 CI：所有分支 push 与
 # PR→master 先跑五个平台的 fmt/check/clippy/test；全绿后各平台现编
-# release 驱动 → 按 build.yml 的 runner 布局做完整 FFmpeg 构建尝试
-# （build 子命令全链：packages + extras + ffmpeg + package，产物进
-# workflow artifact 供检视）→ save-deps 把依赖前缀快照发回 "deps"
-# release。只尝试构建，FFmpeg 产物在本 workflow 一律不发布——发布
-# 在 build.yml（它监听本 workflow 在非 master 分支的成功完成，链出
-# pre-release 构建；release.yml 则在 master 上接棒做驱动发布）。
+# release 驱动 → 按 scheduled.yml 的 runner 布局做完整 FFmpeg 构建
+# （build-all 子命令全链：packages + extras + ffmpeg + package，产物
+# 进 workflow artifact）。master push 且全绿时尾部 release job 发
+# dispatch 调起 release.yml——它按 run-id 跨 run 拉本 run 的
+# Driver-*/ffmpeg-* 产物直接发布（驱动与 FFmpeg 都只吃 CI 验证过的产
+# 物，不再重编）。save-deps 照旧把依赖前缀快照发回 "deps" release。
 # CI for the Rust driver (FFmpeg-Builds-Full): every branch push and
 # PRs to master first run fmt/check/clippy/test on all five platforms;
 # once all green, each platform builds the release driver in place and
-# attempts a COMPLETE FFmpeg build on build.yml's runner layout (the
-# full `build` subcommand: packages + extras + ffmpeg + package, with
-# the product riding a workflow artifact for inspection) -> save-deps
-# publishing the prefix snapshot back to the "deps" release. The FFmpeg
-# product is never published from this workflow — publishing lives in
-# build.yml (it listens for this workflow succeeding on non-master
-# branches for pre-release builds; release.yml chains on master for
-# driver releases).
+# performs a COMPLETE FFmpeg build on scheduled.yml's runner layout
+# (the full `build-all` chain: packages + extras + ffmpeg + package,
+# product riding a workflow artifact). On an all-green master push the
+# tail release job dispatches release.yml — it pulls this run's
+# Driver-*/ffmpeg-* artifacts cross-run by run-id and publishes them
+# as-is (driver and FFmpeg ship exactly what CI verified, nothing is
+# rebuilt). save-deps still publishes the prefix snapshot back to the
+# "deps" release.
 name: CI
 
 on:
@@ -52,10 +52,10 @@ jobs:
   # fmt --check + cargo check + clippy -D warnings + cargo test on each of
   # the five target platforms: the driver's cfg!(windows)/cfg(unix)/aarch64
   # branches only compile on their own platform.
-  # 矩阵与 build.yml 的 driver/build 矩阵一一对应：cfg!(windows)/
+  # 矩阵与 scheduled.yml 的 build 矩阵一一对应：cfg!(windows)/
   # cfg(unix) 之外还有 cfg!(target_arch = "aarch64") 分支，x86 上编
   # 不到的 arm 代码也要各编各测一遍。
-  # The matrix mirrors build.yml's driver/build matrix one-to-one:
+  # The matrix mirrors scheduled.yml's build matrix one-to-one:
   # besides cfg!(windows)/cfg(unix) there are cfg!(target_arch =
   # "aarch64") branches — arm-only code that never compiles on x86
   # gets built and tested on its own runner too.
@@ -152,16 +152,21 @@ jobs:
           name: Driver-${{ matrix.platform }}
           path: target/release/${{ matrix.exe }}
           if-no-files-found: error
-          retention-days: 1
+          # release.yml 按 run-id 跨 run 拉这份产物直接发布——留存要
+          # 覆盖"CI 完跑→发布"间隔与手动重发窗口 / release.yml pulls
+          # this artifact cross-run by run-id and publishes it as-is —
+          # retention must cover the CI-finish→publish gap plus manual
+          # re-release windows
+          retention-days: 7
 
   # ── FFmpeg 源码解析 / FFmpeg source resolution ───────────────────────
   # 五条腿构建同一份 upstream commit——build 阶段每条腿自己 clone 的话，
   # 上游在跑期间前进会造成跨平台源码漂移，诊断对不上。resolve 一次由
-  # FFMPEG_SHA 喂给所有腿（build.yml 的 prepare job 同款）。
+  # FFMPEG_SHA 喂给所有腿(same as scheduled.yml's prepare job)。
   # All five legs build the same upstream commit — if every leg cloned
   # for itself, upstream moving mid-run would skew sources across
   # platforms and corrupt diagnosis. Resolve once and feed every leg
-  # via FFMPEG_SHA (same as build.yml's prepare job).
+  # via FFMPEG_SHA (scheduled.yml's prepare job).
   prepare:
     name: Resolve FFmpeg master
     runs-on: ubuntu-26.04
@@ -190,17 +195,18 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "Building FFmpeg commit $sha"
 
-  # ── FFmpeg 构建尝试 / FFmpeg build attempt ───────────────────────────
-  # 与 build.yml 的 build job 同一 runner 布局、同一环境安装、同一
-  # build 子命令（packages + extras + ffmpeg + package 全链）——产物
-  # 随 workflow artifact 留档供检视，save-deps 照旧把前缀快照发回
-  # "deps" release；只不发布 FFmpeg release（那是 build.yml 的地盘）。
-  # The same runner layout, env installation and `build` subcommand as
-  # build.yml's build job (the full packages + extras + ffmpeg + package
-  # chain) — the product rides a workflow artifact for inspection and
-  # save-deps still publishes the prefix snapshot back to the "deps"
-  # release; the only thing skipped is the FFmpeg release itself
-  # (that's build.yml's turf).
+  # ── FFmpeg 构建 / FFmpeg build ──────────────────────────────────────
+  # 与 scheduled.yml 的 build job 同一 runner 布局、同一环境安装、同一
+  # build-all 全链（packages + extras + ffmpeg + package）——产物随
+  # workflow artifact 留档；master 全绿时 release.yml 按 run-id 把它
+  # 直接发布出去（scheduled.yml 只剩定时跟上游的活）。save-deps 照旧
+  # 把前缀快照发回 "deps" release。
+  # The same runner layout, env installation and full `build-all` chain
+  # as scheduled.yml's build job (packages + extras + ffmpeg + package)
+  # — the product rides a workflow artifact and, on an all-green master
+  # push, release.yml publishes it as-is by run-id (scheduled.yml only
+  # keeps the periodic upstream-tracking duty). save-deps still
+  # publishes the prefix snapshot back to the "deps" release.
   build:
     name: Build (${{ matrix.platform }})
     needs: [driver, prepare]
@@ -416,11 +422,16 @@ jobs:
 
       # 自建工具目录（python venv / rustup / cargo-c）走 actions/cache——
       # 装一次 ~1-2 分钟，之后每轮探测到二进制就跳过。apt 包走 Azure 本地
-      # 镜像足够快，缓存 root 拥有的下载目录不值得折腾。
+      # 镜像足够快，缓存 root 拥有的下载目录不值得折腾。key 只哈希
+      # packages/linux-tools.yaml——钉版真源：代码重构不误炸，真改钉版
+      # 才冷装。
       # Self-installed tool dirs (python venv / rustup / cargo-c) ride
       # actions/cache — ~1-2 min once, then binary probes skip the steps.
       # The apt packages come from the Azure-local mirror quickly enough
       # that caching a root-owned download dir is not worth the plumbing.
+      # The key hashes packages/linux-tools.yaml alone — the pin truth
+      # source: code refactors can't bust it, a real pin bump
+      # cold-installs.
       - name: Prepare tool cache dirs (Linux)
         if: matrix.kind == 'linux'
         run: |
@@ -440,15 +451,15 @@ jobs:
             /opt/pyenv
             /opt/cargo
             /opt/rustup
-          # 不给 restore-keys：key 里哈希了驱动的 packages 实现，版本钉
-          # （cargo-c、pip 清单）一改自动冷装；前缀回退反而会把旧版二进
-          # 制恢复回来，而"二进制在场即跳过"探针会把它当成新版。
-          # No restore-keys on purpose: the key hashes the driver's
-          # packages implementation, so a bump of any pinned version
-          # (cargo-c, the pip list) cold-installs; a prefix fallback would
-          # restore the OLD binaries and the "skip if binary exists"
-          # probes would take them for the new version.
-          key: tools-${{ matrix.platform }}-${{ hashFiles('src/platforms/linux_common.rs', 'packages/linux.yaml') }}
+          # 不给 restore-keys：key 里哈希了钉版清单（cargo-c、pip 清单、
+          # rustup channel、.deb URL），一改自动冷装；前缀回退反而会把
+          # 旧版二进制恢复回来，而"二进制在场即跳过"探针会把它当成新版。
+          # No restore-keys on purpose: the key hashes the pin manifest
+          # (cargo-c, the pip list, the rustup channel, the .deb URLs), so
+          # a bump of any pinned version cold-installs; a prefix fallback
+          # would restore the OLD binaries and the "skip if binary
+          # exists" probes would take them for the new version.
+          key: tools-${{ matrix.platform }}-${{ hashFiles('packages/linux-tools.yaml') }}
 
       # ccache 滚动缓存——显式调用模式（驱动按 FFBUILD_CCACHE 给 --cc
       # 加前缀）；ffmpeg 跟 master 但跨 run 大部分文件不变，预处理
@@ -678,18 +689,127 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # ── 干净机验证 / Clean-machine verify ───────────────────────────────
+  # scheduled.yml 的 verify 腿同款：每平台一条干净 runner，下载本趟
+  # Driver artifact 与 build-<p> 产物，解包后对四个变体逐个 smoke。
+  # 过了才把 dist 重传为 ffmpeg-<p>——release.yml 只认 ffmpeg-*
+  # （"发布=验证过的产物"这条不变量与 scheduled.yml 一致；build-* 仍是
+  # 纯留档）。驱动用 artifact 不用已发布 release：CI 验的是本趟代码。
+  # The same verify legs as scheduled.yml: one clean runner per platform
+  # pulls this run's Driver artifact and the build-<p> product, unpacks
+  # and smokes all four variants. Passing legs re-upload dist as
+  # ffmpeg-<p> — release.yml only consumes ffmpeg-* (the same
+  # "publish = verified product" invariant as scheduled.yml; build-*
+  # stays archive-only). The driver comes from the artifact, not a
+  # published release: CI verifies this run's own code.
+  verify:
+    name: Verify (${{ matrix.platform }})
+    needs: [driver, build]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x86_64
+            runner: windows-latest
+          - platform: windows-arm64
+            runner: windows-11-arm
+          - platform: linux-x86_64
+            runner: ubuntu-26.04
+          - platform: linux-arm64
+            runner: ubuntu-26.04-arm
+          - platform: macos-arm64
+            runner: macos-latest
+    steps:
+      - name: Download driver artifact (for `smoke`)
+        uses: actions/download-artifact@v8
+        with:
+          name: Driver-${{ matrix.platform }}
+          path: driver
+
+      - name: Download build
+        uses: actions/download-artifact@v8
+        with:
+          name: build-${{ matrix.platform }}
+          path: dist
+
+      # Catches corruption between the build job and this one.
+      - name: Verify SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c -- *.sha256
+          else
+            shasum -a 256 -c -- *.sha256
+          fi
+
+      # 仅 Windows 产物是固实 7z——GHA windows 镜像自带 7z（MSYS2
+      # 包栈另有 p7zip 兜底）/ only Windows products are solid 7z —
+      # the GHA windows image ships 7z (with the MSYS2 stack's p7zip
+      # as fallback)
+      - name: Extract (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p pkg
+          for f in dist/*.7z; do 7z x -y "$f" -opkg >/dev/null; done
+
+      - name: Extract (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p pkg
+          for f in dist/*.tar.xz; do tar -xf "$f" -C pkg; done
+
+      # 驱动的 smoke 子命令在干净环境测 ffmpeg/ffprobe/ffplay / the
+      # driver's `smoke` subcommand tests ffmpeg/ffprobe/ffplay on a clean
+      # machine
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x driver/* 2>/dev/null || true
+          bins=(pkg/*/bin)
+          # build-all 一腿产四个变体（静态/shared/debug/shared-debug）
+          # ——逐个冒烟，shared 变体的旁位解析（$ORIGIN/@loader_path/
+          # exe 目录）在此顺带实证 / build-all emits four variants per
+          # leg (static/shared/debug/shared-debug) — smoke each one;
+          # the shared variants' sibling resolution
+          # ($ORIGIN/@loader_path/exe dir) gets proven here in passing
+          [[ ${#bins[@]} -eq 4 ]] || { echo "::error::expected exactly four packages, found: ${bins[*]}"; exit 1; }
+          exe="$(find driver -name 'FFmpeg-Builds-Full*' -type f | head -n1)"
+          for b in "${bins[@]}"; do
+            echo "=== smoke $b ==="
+            "$exe" smoke "$b"
+          done
+
+      # Only builds that passed verification are published; release.yml
+      # picks up `ffmpeg-*` artifacts and nothing else.
+      - name: Upload verified build
+        uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-${{ matrix.platform }}
+          path: |
+            dist/*.7z
+            dist/*.tar.xz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
   # ── Release（仅 master push 全绿）/ Release (master pushes, all-green only)
   # 发 repository_dispatch 调起独立的 Release run——dispatch 是
-  # GITHUB_TOKEN 下官方留的链接口（release.yml 链 build.yml 用的同款）。
-  # 不用 workflow_call：可复用调用把被调 job 内联进本 run 并共享
-  # artifact 命名空间——CI driver job 与 release build job 的
-  # driver-<p> 撞名，release 组装步曾拿到无 sha256 的 CI 版 artifact。
-  # dispatch 既保"红 CI → Release 零记录"（workflow_run 事件没有结论
-  # 过滤器，completed 含失败，旧实现每条红 CI 都留一条全跳过记录），
-  # 又还它独立 run 条目与隔离命名空间。
+  # GITHUB_TOKEN 下官方留的链接口。不用 workflow_call：可复用调用把
+  # 被调 job 内联进本 run 并共享 artifact 命名空间——CI driver job 与
+  # release build job 的 driver-<p> 撞名，release 组装步曾拿到无
+  # sha256 的 CI 版 artifact。dispatch 既保"红 CI → Release 零记录"
+  # （workflow_run 事件没有结论过滤器，completed 含失败，旧实现每条
+  # 红 CI 都留一条全跳过记录），又还它独立 run 条目与隔离命名空间。
   # fires a repository_dispatch so release.yml runs as its OWN run —
-  # dispatch is the sanctioned chaining hook under GITHUB_TOKEN (the
-  # same one release.yml uses to kick build.yml). Not workflow_call:
+  # dispatch is the sanctioned chaining hook under GITHUB_TOKEN. Not
+  # workflow_call:
   # reusable calls inline callee jobs into this run and share the
   # artifact namespace — CI's driver job and the release build job
   # both uploaded driver-<p>, and the assemble step picked CI's
@@ -700,23 +820,30 @@ jobs:
   # run entry and isolated namespace.
   release:
     name: Kick Release
-    needs: [test, driver, build]
+    needs: [test, driver, build, prepare, verify]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: write
     steps:
-      - name: Fire the Release Driver dispatch
+      - name: Fire the Release dispatch
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # client_payload.sha = 被 CI 测过的 commit——release.yml 检出
-          # 它做版本探测与构建（CI 完跑到发布之间可能有新 push）/
-          # client_payload.sha = the CI-tested commit — release.yml
-          # checks it out for the version probe and builds (new pushes
-          # may land between CI finishing and the release)
+          # client_payload：sha = 被 CI 测过的 commit（release.yml 检出
+          # 它做版本探测，CI 完跑到发布之间可能有新 push）；run_id =
+          # 本 run——release.yml 按它跨 run 拉 Driver-*/ffmpeg-* 产物
+          # 直接发布，驱动与 FFmpeg 都只吃 CI 已验证的产物，不再重编 /
+          # client_payload: sha = the CI-tested commit (release.yml
+          # checks it out for the version probe — new pushes may land
+          # between CI finishing and the release); run_id = this run —
+          # release.yml pulls the Driver-*/ffmpeg-* artifacts cross-run
+          # by it and publishes them as-is: driver and FFmpeg ship
+          # exactly what CI verified, nothing gets rebuilt
           gh api "repos/$GITHUB_REPOSITORY/dispatches" \
-            -f "event_type=Release Driver" \
-            -F "client_payload[sha]=$GITHUB_SHA"
+            -f "event_type=Release" \
+            -F "client_payload[sha]=$GITHUB_SHA" \
+            -F "client_payload[run_id]=$GITHUB_RUN_ID" \
+            -F "client_payload[ffmpeg_sha]=${{ needs.prepare.outputs.sha }}"

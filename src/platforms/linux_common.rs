@@ -83,6 +83,82 @@ fn package_rows(gccv: u32) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// packages/linux-tools.yaml 的钉版表：rustup channel/profile、cargo-c
+/// 版号、pyenv 里的 pip 包、发行版快照 .deb——CI tool-cache key 唯一
+/// 哈希这个文件，钉版改动冷装一次，代码重构不再误炸 / the pin table
+/// from packages/linux-tools.yaml: the rustup channel/profile, the
+/// cargo-c version, the pyenv pip list and the distro snapshot .debs —
+/// the CI tool-cache key hashes only this file, so pin bumps
+/// cold-install once while code refactors stop busting it
+struct ToolPins {
+    /// rustup-init --default-toolchain / rustup channel
+    rustup_channel: String,
+    /// rustup-init --profile / rustup profile
+    rustup_profile: String,
+    /// cargo-c 发布版号（不带 v 前缀）/ cargo-c release version (no v prefix)
+    cargo_c: String,
+    /// /opt/pyenv venv 里的 pip 包 / pip packages for the /opt/pyenv venv
+    pip: Vec<String>,
+    /// 发行版快照 .deb：(名字, URL) / distro snapshot .debs: (name, URL)
+    debs: Vec<(String, String)>,
+}
+
+/// 载入 packages/linux-tools.yaml；全部字段必填——缺了哪根钉都是
+/// 钉版真源自己出毛病，早败比拿错版本强 / load
+/// packages/linux-tools.yaml; every field is required — a missing pin
+/// is the truth source itself being broken, so failing early beats
+/// picking a wrong version
+fn tool_pins() -> Result<ToolPins, String> {
+    use yaml_rust2::{Yaml, YamlLoader};
+    let p = sys::env().repo_root.join("packages/linux-tools.yaml");
+    let text = fsx::read(&p);
+    let docs = YamlLoader::load_from_str(&text)
+        .map_err(|e| format!("{}: YAML parse error: {e}", p.display()))?;
+    let doc = docs
+        .first()
+        .ok_or_else(|| format!("{}: empty tool manifest", p.display()))?;
+    // 字段读取助手：缺键/类型错都带清单名定位 / field readers: a
+    // missing key or a wrong type is reported with the manifest name
+    let str_at = |y: &Yaml, key: &str| -> Result<String, String> {
+        y[key]
+            .as_str()
+            .map(|s| s.trim().to_string())
+            .ok_or_else(|| format!("{}: '{key}' must be a string", p.display()))
+    };
+    let arr_at = |y: &Yaml, key: &str| -> Result<Vec<String>, String> {
+        y[key]
+            .as_vec()
+            .map(|v| {
+                v.iter()
+                    .filter_map(|i| i.as_str().map(|s| s.trim().to_string()))
+                    .collect()
+            })
+            .ok_or_else(|| format!("{}: '{key}' must be a string array", p.display()))
+    };
+    let mut debs = Vec::new();
+    if let Some(h) = doc["debs"].as_hash() {
+        for (k, v) in h {
+            let name = k
+                .as_str()
+                .ok_or_else(|| format!("{}: deb key must be a string", p.display()))?;
+            let url = v
+                .as_str()
+                .ok_or_else(|| format!("{}: 'debs.{name}' must be a string", p.display()))?;
+            debs.push((name.to_string(), url.trim().to_string()));
+        }
+    }
+    if debs.is_empty() {
+        return Err(format!("{}: 'debs' must be a non-empty map", p.display()));
+    }
+    Ok(ToolPins {
+        rustup_channel: str_at(&doc["rustup"], "channel")?,
+        rustup_profile: str_at(&doc["rustup"], "profile")?,
+        cargo_c: str_at(doc, "cargo_c")?,
+        pip: arr_at(doc, "pip")?,
+        debs,
+    })
+}
+
 /// packages 阶段：apt 包装（整表批量 + 逐包回退）→ 最新 GCC 设为默认
 /// 编译器（/usr/local/bin 遮蔽 + update-alternatives）→ pyenv 里的
 /// meson/ninja/cmake → autoconf 2.73/automake 1.18 快照 .deb 直解进 /
@@ -199,30 +275,27 @@ pub fn packages() -> Result<(), String> {
     }
     let _ = sys::bash("hash -r; gcc --version | head -n1", &e.work);
 
+    // 自建工具的全部钉版集中在 packages/linux-tools.yaml——CI
+    // tool-cache key 唯一哈希它：重构本文件不再误炸缓存，真改钉版才
+    // 冷装 / every pin for the self-installed tools lives in
+    // packages/linux-tools.yaml — the CI tool-cache key hashes only that
+    // file: refactoring this file stops busting the cache, a real pin
+    // bump is what cold-installs
+    let pins = tool_pins()?;
+
     // meson/ninja/cmake 装进 virtualenv（系统 Python 是 "externally
-    // managed"）；/opt/pyenv 随 deps 快照走：二进制在场即跳过
+    // managed"）；/opt/pyenv 走 CI tool-cache：二进制在场即跳过
     // meson, ninja, cmake & co. live in a virtualenv (the system Python is
-    // externally managed); /opt/pyenv rides the deps snapshot: present
+    // externally managed); /opt/pyenv rides the CI tool-cache: present
     // binaries skip creation + pip
     if !(Path::new("/opt/pyenv/bin/meson").is_file()
         && Path::new("/opt/pyenv/bin/ninja").is_file()
         && Path::new("/opt/pyenv/bin/cmake").is_file())
     {
         sys::run_ok("python3", &["-m", "venv", "/opt/pyenv"], &e.work)?;
-        sys::run_ok(
-            "/opt/pyenv/bin/pip",
-            &[
-                "install",
-                "--quiet",
-                "meson",
-                "ninja",
-                "cmake",
-                "jinja2",
-                "jsonschema",
-                "setuptools",
-            ],
-            &e.work,
-        )?;
+        let mut args = vec!["install", "--quiet"];
+        args.extend(pins.pip.iter().map(String::as_str));
+        sys::run_ok("/opt/pyenv/bin/pip", &args, &e.work)?;
     } else {
         log::log("python build-tool venv restored from cache");
     }
@@ -238,16 +311,7 @@ pub fn packages() -> Result<(), String> {
     // -f, even removed libltdl-dev. lame demands AC_PREREQ(2.73) which no
     // released tarball provides; libiconv's autogen wants aclocal-1.18
     // specifically
-    for (name, url) in [
-        (
-            "autoconf",
-            "https://archive.ubuntu.com/ubuntu/pool/main/a/autoconf/autoconf_2.73-2_all.deb",
-        ),
-        (
-            "automake",
-            "https://archive.ubuntu.com/ubuntu/pool/main/a/automake/automake_1.18.1-4_all.deb",
-        ),
-    ] {
+    for (name, url) in &pins.debs {
         let deb = e.work.join(format!("{name}.deb"));
         crate::net::download_sync(url, &deb)?;
         sys::run_ok("dpkg", &["-x", &deb.to_string_lossy(), "/"], &e.work)?;
@@ -266,7 +330,10 @@ pub fn packages() -> Result<(), String> {
     if !(Path::new("/opt/cargo/bin/cargo").is_file() && Path::new("/opt/cargo/bin/rustc").is_file())
     {
         sys::bash_ok(
-            "curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable",
+            &format!(
+                "curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile {} --default-toolchain {}",
+                pins.rustup_profile, pins.rustup_channel
+            ),
             &e.work,
         )?;
     } else {
@@ -279,7 +346,8 @@ pub fn packages() -> Result<(), String> {
         };
         sys::bash_ok(
             &format!(
-                "curl -fsSL https://github.com/lu-zero/cargo-c/releases/download/v0.10.26/cargo-c-{cc_arch}-unknown-linux-musl.tar.gz | tar -xz -C /opt/cargo/bin"
+                "curl -fsSL https://github.com/lu-zero/cargo-c/releases/download/v{}/cargo-c-{cc_arch}-unknown-linux-musl.tar.gz | tar -xz -C /opt/cargo/bin",
+                pins.cargo_c
             ),
             &e.work,
         )?;
@@ -509,7 +577,14 @@ fn sanitize_pc() -> Result<(), String> {
     Ok(())
 }
 
-pub fn ffmpeg() -> Result<(), String> {
+/// 当前变体的 ffmpeg 配置作业：取源 + 组装 args + 建独立构建目录
+/// （ffbuild-ffmpeg{variant}）+ dropped-libs{variant}.txt——configure
+/// 与编译由调用方统一编排（build-all 四变体并行）/ the current
+/// variant's ffmpeg configure job: fetch + assemble args + a private
+/// build dir (ffbuild-ffmpeg{variant}) + dropped-libs{variant}.txt —
+/// configure and compile are orchestrated by the caller (build-all
+/// runs the four variants in parallel)
+pub fn ffmpeg_plan() -> Result<crate::ffmpeg::ConfJob, String> {
     let e = sys::env();
     const REQUIRED: &[&str] = &[
         "libx264",
@@ -534,7 +609,12 @@ pub fn ffmpeg() -> Result<(), String> {
             info.commit, info.hash, info.version
         ),
     )?;
-    let build = e.work.join("ffbuild-ffmpeg");
+    // 一变体一目录：四变体并行 configure/编译互不干扰 / one dir per
+    // variant: the four-way parallel configure/compile keeps its hands
+    // off the others
+    let build = e
+        .work
+        .join(format!("ffbuild-ffmpeg{}", sys::variant_suffix()));
     fsx::rm_rf(&build);
     fsx::install_d(&build)?;
 
@@ -667,19 +747,39 @@ pub fn ffmpeg() -> Result<(), String> {
         args.push("--disable-shared".into());
     }
     // .pc 静态名消毒必须在 configure 探测之前（探测链接行直接消费
-    // Libs.private）/ the .pc static-name sanitization must run before
-    // configure probing (probe link lines consume Libs.private verbatim)
+    // Libs.private）；四变体重复跑幂等——token 已折叠的不再变化 /
+    // the .pc static-name sanitization must run before configure
+    // probing (probe link lines consume Libs.private verbatim);
+    // idempotent across the four variants — folded tokens stay folded
     sanitize_pc()?;
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let dropped = e.work.join("dropped-libs.txt");
+    let variant = sys::variant_suffix();
+    Ok(crate::ffmpeg::ConfJob {
+        label: sys::variant_word(),
+        build_dir: build,
+        configure: src_dir.join("configure"),
+        args,
+        dropped: e.work.join(format!("dropped-libs{variant}.txt")),
+        required: REQUIRED,
+        build_log: e.work.join(format!("ffmpeg-build{variant}.log")),
+    })
+}
+
+pub fn ffmpeg() -> Result<(), String> {
+    // 单变体路径：计划 → configure → 编译安装（与 build-all 共用
+    // plan，行为不变）/ the single-variant path: plan -> configure ->
+    // compile+install (shares the plan with build-all, unchanged
+    // behavior)
+    let job = ffmpeg_plan()?;
+    let refs: Vec<&str> = job.args.iter().map(String::as_str).collect();
     crate::ffmpeg::configure(
-        &build,
-        &src_dir.join("configure"),
+        &job.build_dir,
+        &job.configure,
         &refs,
-        &dropped,
-        REQUIRED,
+        &job.dropped,
+        job.required,
+        &job.label,
     )?;
-    crate::ffmpeg::build(&build, &e.work.join("ffmpeg-build.log"))
+    crate::ffmpeg::build(&job.build_dir, &job.build_log)
 }
 
 /// package 阶段：收集二进制/文档/man 页/预设 → ldd 白名单（仅 glibc
@@ -708,11 +808,7 @@ pub fn package() -> Result<(), String> {
     // variant suffixes: shared/debug artifacts would shadow the
     // static one by name — both shapes can coexist under one driver
     // dir, so names must discriminate (fixed order: -shared-debug)
-    let variant = format!(
-        "{}{}",
-        if sys::shared() { "-shared" } else { "" },
-        if sys::debug() { "-debug" } else { "" },
-    );
+    let variant = sys::variant_suffix();
     let name = format!("ffmpeg-{hash}-{platform}{variant}");
     let pkgroot = e.work.join("pkg");
     let pkg = pkgroot.join(&name);
@@ -898,7 +994,7 @@ pub fn package() -> Result<(), String> {
         &e.work,
     )
     .unwrap_or_default();
-    let dropped = fsx::read(&e.work.join("dropped-libs.txt"));
+    let dropped = fsx::read(&e.work.join(format!("dropped-libs{variant}.txt")));
     let status = fsx::read(&Path::new(PREFIX).join(".extras/status.txt"));
     let ccid = sys::capture(&e.cc, &["-dumpmachine"], &e.work)
         .unwrap_or_default()

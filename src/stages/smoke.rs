@@ -3,9 +3,21 @@
 //! 在每个发布的平台上运行，只依赖 ffmpeg/ffprobe 二进制本身。
 //! Runs on every shipped platform; relies only on the ffmpeg/ffprobe
 //! binaries themselves.
+//!
+//! 覆盖面由 features 清单驱动：resolve() 的 enabled 集（清单意图 × 库
+//! 探测）就是"本构建该有哪些特性"的期望——每个启用特性都要 (a) 在
+//! -version 里看到 --enable 旗标（直抓 configure 丢包）(b) 有对应组件
+//! 出现在 ffmpeg 的组件清单里（presence）(c) 能空跑的真实跑一遍
+//! （functional）/ Coverage is driven by the features manifest:
+//! resolve()'s enabled set (manifest intent × library probes) is the
+//! expectation of what this build should contain — every enabled feature
+//! must (a) show its --enable flag in -version (catches configure drops
+//! directly), (b) have a component in ffmpeg's listings (presence), and
+//! (c) actually run when a self-contained exercise exists (functional).
 
 use crate::log;
 use crate::sys;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 /// annotate_error：发 GitHub 错误注解（换行/百分号按 workflow-command
@@ -18,21 +30,530 @@ fn annotate_error(msg: &str) {
         .replace('\n', "%0A");
     println!("::error title=smoke test::{m}");
 }
+fn annotate_warn(msg: &str) {
+    let m = msg
+        .replace('%', "%25")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A");
+    println!("::warning title=smoke test::{m}");
+}
 
 /// 每个发布构建都必须有的编码器 / encoders every shipped build must have
 const REQUIRED_ENCODERS: &[&str] = &["libx264", "libopus", "libmp3lame"];
-/// 存在于此构建时就真实试编码的编码器 / encoders exercised for real when
-/// present in this build
-const TRIED_ENCODERS: &[&str] = &[
-    "libx264",
-    "libx265",
-    "libvpx-vp9",
-    "libsvtav1",
-    "libaom-av1",
+
+/// 组件清单类别：对应 ffmpeg -< listing> 的哪个输出 / which ffmpeg
+/// -<listing> output a component appears in
+#[derive(Clone, Copy)]
+enum L {
+    Enc,
+    Dec,
+    Filt,
+    Prot,
+    Demux,
+    Mux,
+    Dev,
+    Hw,
+}
+impl L {
+    fn flag(self) -> &'static str {
+        match self {
+            L::Enc => "-encoders",
+            L::Dec => "-decoders",
+            L::Filt => "-filters",
+            L::Prot => "-protocols",
+            L::Demux => "-demuxers",
+            L::Mux => "-muxers",
+            L::Dev => "-devices",
+            L::Hw => "-hwaccels",
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            L::Enc => "encoders",
+            L::Dec => "decoders",
+            L::Filt => "filters",
+            L::Prot => "protocols",
+            L::Demux => "demuxers",
+            L::Mux => "muxers",
+            L::Dev => "devices",
+            L::Hw => "hwaccels",
+        }
+    }
+}
+
+/// presence 表：yaml 特性名 → (清单, 候选组件 any-of)。组件名以清单输出
+/// 的空白分隔 token 精确匹配（protocols 项带冒号，抓取时已修剪）。
+/// 特性可占多行（dvdnav/dvdread 同指 dvdvideo）/ presence table:
+/// yaml feature -> (listing, any-of component candidates). Component
+/// names match whitespace-separated tokens exactly (protocol entries
+/// carry colons, trimmed at capture). A feature may take several rows
+/// (dvdnav/dvdread both expect dvdvideo)
+const PRESENCE: &[(&str, L, &[&str])] = &[
+    // ---- 视频编解码 / video codecs ----
+    ("libx264", L::Enc, &["libx264", "libx264rgb"]),
+    ("libx265", L::Enc, &["libx265"]),
+    ("libaom", L::Enc, &["libaom-av1"]),
+    ("libdav1d", L::Dec, &["libdav1d"]),
+    ("libvpx", L::Enc, &["libvpx-vp8", "libvpx-vp9"]),
+    ("libsvtav1", L::Enc, &["libsvtav1"]),
+    ("librav1e", L::Enc, &["librav1e"]),
+    ("libjxl", L::Enc, &["libjxl"]),
+    ("libwebp", L::Enc, &["libwebp", "libwebp_anim"]),
+    ("libopenjpeg", L::Enc, &["libopenjpeg"]),
+    ("libtheora", L::Enc, &["libtheora"]),
+    ("libxvid", L::Enc, &["libxvid"]),
+    ("libkvazaar", L::Enc, &["libkvazaar"]),
+    ("libopenh264", L::Enc, &["libopenh264"]),
+    ("liboapv", L::Enc, &["liboapv"]),
+    ("libxeve", L::Enc, &["libxeve"]),
+    ("libxevd", L::Dec, &["libxevd"]),
+    ("libvvenc", L::Enc, &["libvvenc"]),
+    ("libdavs2", L::Dec, &["libdavs2"]),
+    ("libxavs2", L::Enc, &["libxavs2"]),
+    ("libsvtjpegxs", L::Enc, &["libsvtjpegxs"]),
+    ("libsvtjpegxs", L::Dec, &["libsvtjpegxs"]),
+    // LCEVC 解码器族按解码基名注册（liblcevc_h264 等）——前缀兜底 /
+    // the LCEVC decoder family registers per base codec (liblcevc_h264
+    // ...) — the prefix fallback covers them all
+    ("liblcevc-dec", L::Dec, &["liblcevc_"]),
+    ("libuavs3d", L::Dec, &["libuavs3d"]),
+    (
+        "libvpl",
+        L::Enc,
+        &["h264_qsv", "hevc_qsv", "av1_qsv", "mpeg2_qsv", "vp9_qsv"],
+    ),
+    ("libmfx", L::Enc, &["h264_qsv", "hevc_qsv", "av1_qsv"]),
+    // ---- 音频编解码 / audio codecs ----
+    ("libvorbis", L::Enc, &["libvorbis"]),
+    ("libopus", L::Enc, &["libopus"]),
+    ("libmp3lame", L::Enc, &["libmp3lame"]),
+    ("libspeex", L::Enc, &["libspeex"]),
+    ("libshine", L::Enc, &["libshine"]),
+    ("libgsm", L::Enc, &["libgsm", "libgsm_ms"]),
+    ("liblc3", L::Enc, &["liblc3"]),
+    ("libopencore-amrnb", L::Enc, &["libopencore_amrnb"]),
+    ("libopencore-amrwb", L::Dec, &["libopencore_amrwb"]),
+    ("libvo-amrwbenc", L::Enc, &["libvo_amrwbenc"]),
+    ("libtwolame", L::Enc, &["libtwolame"]),
+    ("libcodec2", L::Enc, &["libcodec2"]),
+    ("libilbc", L::Enc, &["libilbc"]),
+    ("libfdk-aac", L::Enc, &["libfdk_aac"]),
+    ("libmodplug", L::Dec, &["libmodplug"]),
+    ("libopenmpt", L::Dec, &["libopenmpt"]),
+    ("libgme", L::Dec, &["libgme"]),
+    ("openal", L::Dev, &["openal"]),
+    // ---- 滤镜 / filters ----
+    ("libflite", L::Filt, &["flite"]),
+    ("pocketsphinx", L::Filt, &["asr"]),
+    ("libbs2b", L::Filt, &["bs2b"]),
+    ("librubberband", L::Filt, &["rubberband"]),
+    ("libmysofa", L::Filt, &["sofalizer"]),
+    ("libass", L::Filt, &["ass", "subtitles"]),
+    // drawtext 只在 freetype 在场时才编译——它就是 freetype 的组件面 /
+    // drawtext only compiles when freetype is present — it IS
+    // freetype's component face
+    ("libfreetype", L::Filt, &["drawtext"]),
+    ("lcms2", L::Filt, &["icc_transform"]),
+    ("cairo", L::Filt, &["drawvg"]),
+    ("librsvg", L::Dec, &["librsvg"]),
+    ("libzimg", L::Filt, &["zscale"]),
+    (
+        "libvidstab",
+        L::Filt,
+        &["vidstabdetect", "vidstabtransform"],
+    ),
+    ("libvmaf", L::Filt, &["libvmaf"]),
+    ("frei0r", L::Filt, &["frei0r", "frei0r_src"]),
+    ("libtesseract", L::Filt, &["ocr"]),
+    ("libqrencode", L::Filt, &["qrencode", "qrencodesrc"]),
+    ("libquirc", L::Filt, &["quirc"]),
+    ("liblensfun", L::Filt, &["lensfun"]),
+    ("whisper", L::Filt, &["whisper"]),
+    ("lv2", L::Filt, &["lv2"]),
+    ("ladspa", L::Filt, &["ladspa"]),
+    ("libplacebo", L::Filt, &["libplacebo"]),
+    ("libopencv", L::Filt, &["ocv"]),
+    (
+        "cuda-llvm",
+        L::Filt,
+        &[
+            "scale_cuda",
+            "yadif_cuda",
+            "bilateral_cuda",
+            "chromakey_cuda",
+            "colorspace_cuda",
+            "overlay_cuda",
+            "thumbnail_cuda",
+            "transpose_cuda",
+        ],
+    ),
+    ("coreimage", L::Filt, &["coreimage", "coreimagesrc"]),
+    // ---- 字幕解码 / subtitle decoders ----
+    ("libaribcaption", L::Dec, &["libaribcaption"]),
+    ("libaribb24", L::Dec, &["libaribb24"]),
+    // 注册名是 libzvbi_teletextdec——前缀兜底 / registers as
+    // libzvbi_teletextdec — prefix fallback
+    ("libzvbi", L::Dec, &["libzvbi_"]),
+    // ---- 容器、协议、光盘 / containers, protocols, discs ----
+    ("libxml2", L::Demux, &["dash"]),
+    ("libssh", L::Prot, &["sftp", "scp", "libssh"]),
+    ("libsrt", L::Prot, &["srt"]),
+    ("librist", L::Prot, &["rist"]),
+    ("libzmq", L::Prot, &["zmq"]),
+    ("librabbitmq", L::Prot, &["amqp"]),
+    ("libbluray", L::Prot, &["bluray"]),
+    // dvdvideo 解复用器由 dvdnav+dvdread 合力支撑 /
+    // the dvdvideo demuxer stands on dvdnav+dvdread together
+    ("libdvdnav", L::Demux, &["dvdvideo"]),
+    ("libdvdread", L::Demux, &["dvdvideo"]),
+    ("libcdio", L::Dev, &["libcdio"]),
+    ("libcaca", L::Dev, &["caca"]),
+    ("chromaprint", L::Mux, &["chromaprint"]),
+    ("libsmbclient", L::Prot, &["smb"]),
+    ("avisynth", L::Demux, &["avisynth"]),
+    ("vapoursynth", L::Demux, &["vapoursynth"]),
+    // ---- 硬件加速 / hwaccel ----
+    ("vaapi", L::Hw, &["vaapi"]),
+    ("vdpau", L::Hw, &["vdpau"]),
+    ("opencl", L::Hw, &["opencl"]),
+    ("vulkan", L::Hw, &["vulkan"]),
+    ("nvdec", L::Hw, &["cuda"]),
+    (
+        "cuvid",
+        L::Dec,
+        &[
+            "h264_cuvid",
+            "hevc_cuvid",
+            "av1_cuvid",
+            "vp9_cuvid",
+            "vp8_cuvid",
+            "mjpeg_cuvid",
+        ],
+    ),
+    ("nvenc", L::Enc, &["h264_nvenc", "hevc_nvenc", "av1_nvenc"]),
+    (
+        "v4l2_m2m",
+        L::Enc,
+        &[
+            "h264_v4l2m2m",
+            "hevc_v4l2m2m",
+            "vp8_v4l2m2m",
+            "vp9_v4l2m2m",
+            "mpeg4_v4l2m2m",
+            "mpeg2_v4l2m2m",
+        ],
+    ),
+    ("d3d11va", L::Hw, &["d3d11va"]),
+    ("d3d12va", L::Hw, &["d3d12va"]),
+    ("dxva2", L::Hw, &["dxva2"]),
+    ("videotoolbox", L::Hw, &["videotoolbox"]),
+    (
+        "mediafoundation",
+        L::Enc,
+        &["h264_mf", "hevc_mf", "av1_mf", "aac_mf", "mp3_mf"],
+    ),
+    ("amf", L::Enc, &["h264_amf", "hevc_amf", "av1_amf"]),
+    (
+        "audiotoolbox",
+        L::Enc,
+        &["aac_at", "alac_at", "ac3_at", "eac3_at", "mp3_at"],
+    ),
+    // ---- 采集设备 / capture devices ----
+    ("alsa", L::Dev, &["alsa"]),
+    ("libpulse", L::Dev, &["pulse"]),
+    ("libdc1394", L::Dev, &["libdc1394"]),
+    ("xlib", L::Dev, &["x11grab"]),
+    ("libxcb", L::Dev, &["xcbgrab"]),
+    ("libdrm", L::Dev, &["kmsgrab"]),
+    ("avfoundation", L::Dev, &["avfoundation"]),
+    ("decklink", L::Dev, &["decklink"]),
+    ("libjack", L::Dev, &["jack"]),
+    ("sndio", L::Dev, &["sndio"]),
 ];
 
-/// smoke_test <bin-dir>：版本/许可证/编码器清单/真实编码体检
-/// Version/license/encoder-inventory/real-encode checks
+/// 无独立组件面的特性（TLS 后端、字体整形、gmp、封装头文件等）——
+/// presence 到 --enable 旗标为止 / features with no distinct component
+/// face (TLS backends, text shaping, gmp, header shims, ...) — presence
+/// stops at the --enable flag
+const FLAG_ONLY: &[&str] = &[
+    "gnutls",
+    "openssl",
+    "mbedtls",
+    "gcrypt",
+    "schannel",
+    "securetransport",
+    "libharfbuzz",
+    "libfribidi",
+    "libfontconfig",
+    "gmp",
+    "libsnappy",
+    "libcurl",
+    "librtmp",
+    "ffnvcodec",
+    "cuda-nvcc",
+    "appkit",
+    "metal",
+    "libklvanc",
+    "libopenvino",
+    "libtensorflow",
+    "libtorch",
+    "libxcb-shm",
+    "libxcb-shape",
+    "libxcb-xfixes",
+];
+
+/// 功能演练种类 / functional exercise kinds
+#[derive(Clone, Copy)]
+enum Fkind {
+    /// testsrc2 → -c:v <comp>（extra 插在 -c:v 前）
+    /// testsrc2 -> -c:v <comp> (extra spliced before -c:v)
+    VEnc,
+    /// sine → -c:a <comp>（extra 插 -c:a 前，携带采样率等约束）
+    /// sine -> -c:a <comp> (extra carries rate/channel constraints)
+    AEnc,
+    /// testsrc2 → -vf <comp=filtergraph> / testsrc2 -> -vf <graph>
+    VFilter,
+    /// sine → -af <comp=filtergraph> / sine -> -af <graph>
+    AFilter,
+    /// lavfi 源 <comp> 直接输入 / lavfi source <comp> as the input
+    LavfiSrcV,
+    LavfiSrcA,
+    /// sine → -f chromaprint 实写文件 / sine -> -f chromaprint real file
+    MuxFile,
+}
+
+/// (yaml 特性名, 组件名或 filtergraph, 种类, 附加参数) /
+/// (yaml feature, component or filtergraph, kind, extra args)
+const FUNCTIONAL: &[(&str, &str, Fkind, &[&str])] = &[
+    ("libx264", "libx264", Fkind::VEnc, &[]),
+    ("libx265", "libx265", Fkind::VEnc, &[]),
+    ("libvpx", "libvpx-vp9", Fkind::VEnc, &[]),
+    ("libsvtav1", "libsvtav1", Fkind::VEnc, &[]),
+    ("libaom", "libaom-av1", Fkind::VEnc, &[]),
+    ("librav1e", "librav1e", Fkind::VEnc, &[]),
+    ("libkvazaar", "libkvazaar", Fkind::VEnc, &[]),
+    ("libxvid", "libxvid", Fkind::VEnc, &[]),
+    ("libtheora", "libtheora", Fkind::VEnc, &[]),
+    ("libopenh264", "libopenh264", Fkind::VEnc, &[]),
+    ("libxeve", "libxeve", Fkind::VEnc, &[]),
+    ("libvvenc", "libvvenc", Fkind::VEnc, &[]),
+    ("libwebp", "libwebp", Fkind::VEnc, &[]),
+    ("libopus", "libopus", Fkind::AEnc, &["-ar", "48000"]),
+    ("libmp3lame", "libmp3lame", Fkind::AEnc, &[]),
+    ("libvorbis", "libvorbis", Fkind::AEnc, &[]),
+    ("libtwolame", "libtwolame", Fkind::AEnc, &[]),
+    ("libshine", "libshine", Fkind::AEnc, &[]),
+    (
+        "libopencore-amrnb",
+        "libopencore_amrnb",
+        Fkind::AEnc,
+        &["-ar", "8000", "-ac", "1"],
+    ),
+    (
+        "libvo-amrwbenc",
+        "libvo_amrwbenc",
+        Fkind::AEnc,
+        &["-ar", "16000", "-ac", "1"],
+    ),
+    (
+        "libgsm",
+        "libgsm",
+        Fkind::AEnc,
+        &["-ar", "8000", "-ac", "1"],
+    ),
+    (
+        "libcodec2",
+        "libcodec2",
+        Fkind::AEnc,
+        &["-ar", "8000", "-ac", "1"],
+    ),
+    (
+        "libilbc",
+        "libilbc",
+        Fkind::AEnc,
+        &["-ar", "8000", "-ac", "1"],
+    ),
+    (
+        "libspeex",
+        "libspeex",
+        Fkind::AEnc,
+        &["-ar", "8000", "-ac", "1"],
+    ),
+    ("liblc3", "liblc3", Fkind::AEnc, &[]),
+    ("libzimg", "zscale=w=320:h=240", Fkind::VFilter, &[]),
+    ("libbs2b", "bs2b", Fkind::AFilter, &[]),
+    ("librubberband", "rubberband=tempo=1.1", Fkind::AFilter, &[]),
+    // soxr 没有独立组件面——aresample=resampler=soxr 就是它的功能位 /
+    // soxr has no component face of its own — aresample=resampler=soxr
+    // IS its functional slot
+    ("libsoxr", "aresample=resampler=soxr", Fkind::AFilter, &[]),
+    ("libflite", "flite=text=hello", Fkind::LavfiSrcA, &[]),
+    (
+        "libqrencode",
+        "qrencodesrc=text=ffbuild",
+        Fkind::LavfiSrcV,
+        &[],
+    ),
+    ("chromaprint", "chromaprint", Fkind::MuxFile, &[]),
+];
+
+/// (编码器, 解码器, 中间格式) —— 编码 5 帧落地再由对应第三方解码器解出
+/// 的 roundtrip / (encoder, decoder, container) — encode 5 frames to
+/// disk then decode back through the paired third-party decoder
+const ROUNDTRIP: &[(&str, &str, &str)] = &[
+    ("libaom-av1", "libdav1d", "ivf"),
+    ("libxeve", "libxevd", "evc"),
+    ("libxavs2", "libdavs2", "avs2"),
+];
+
+/// token 集合：清单输出按空白切，protocols 尾冒号一并修剪 /
+/// token set: split listings on whitespace, trimming the protocol colons
+fn token_set(out: &str) -> HashSet<String> {
+    out.split_whitespace()
+        .map(|t| t.trim_matches(':'))
+        .filter(|t| !t.is_empty() && !t.starts_with('-') && t.len() > 1)
+        .map(String::from)
+        .collect()
+}
+
+/// 清单 token 命中：候选串以 _ 结尾按前缀匹配（liblcevc_ 族），否则精确 /
+/// listing token hit: a candidate ending in _ matches by prefix (the
+/// liblcevc_ family), others match exactly
+fn listed(set: &HashSet<String>, cands: &[&str]) -> Option<String> {
+    cands.iter().find_map(|c| {
+        if let Some(pre) = c.strip_suffix('_') {
+            if set.iter().any(|t| t.starts_with(pre)) {
+                return Some((*c).to_string());
+            }
+            None
+        } else if set.contains(*c) {
+            Some((*c).to_string())
+        } else {
+            None
+        }
+    })
+}
+
+/// 视频编码失败的诊断链：SIMD 掩码 → 单线程 → gdb 回溯（沿用旧行为，
+/// 原 TRIED_ENCODERS 失败路径整段抽出）/ the failed-encode diagnostic
+/// chain: SIMD mask -> single thread -> gdb backtrace (carried over
+/// from the old TRIED_ENCODERS failure path, extracted verbatim)
+fn diagnose_failed_encode(fm: &str, enc: &str, args: &[&str], bin: &Path, rc: i32) {
+    // SIMD 掩码诊断：libaom 读 AOM_SIMD_CAPS_MASK——0 掩掉全部 SIMD
+    // 档回落纯 C，过即"SIMD 路径崩"反证（libaom-av1 在 avx512 平台
+    // 的 0xC0000005 实证）。其它编码器不吃这个变量，无副作用 /
+    // SIMD-mask diagnostic: libaom honors AOM_SIMD_CAPS_MASK — 0
+    // masks every SIMD level onto the C path, so a pass is
+    // counter-evidence for a SIMD-path crash (empirical:
+    // libaom-av1's 0xC0000005 on an avx512 host). Other encoders
+    // ignore the var — no side effects
+    let drc = sys::cmd(fm, args)
+        .env("AOM_SIMD_CAPS_MASK", "0")
+        .status()
+        .map(|s| s.code().unwrap_or(-1))
+        .unwrap_or(1);
+    println!("encode test: {enc} retried with AOM_SIMD_CAPS_MASK=0 -> exit {drc}");
+    // 单线程诊断：enc_init 里按核数配 worker/线程资源——高核数
+    // 机器上 av1 的 >64 逻辑核路径（processor groups）有崩溃先例；
+    // -threads 1 过即 MT 分配是死因，仍崩则锁定纯 init 路径 /
+    // single-thread diagnostic: enc_init sizes workers/thread
+    // resources by core count — av1 has a >64-logical-core crash
+    // precedent (processor groups); a -threads 1 pass fingers MT
+    // allocation, a continued crash pins pure init
+    let mut targs: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    // args 里 -c:v <enc> 前插 -threads 1 / splice -threads 1 before
+    // -c:v <enc>
+    if let Some(i) = targs.iter().position(|s| s == "-c:v") {
+        targs.splice(i..i, ["-threads".into(), "1".into()]);
+        let trc = sys::run(
+            fm,
+            &targs.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            bin,
+        )
+        .unwrap_or(1);
+        println!("encode test: {enc} retried with -threads 1 -> exit {trc}");
+    }
+    // 崩溃（132=SIGILL，139=SIGSEGV）且无输出时：PATH 上有 gdb 时在
+    // gdb 下重跑抓回溯。打包后的 $FFMPEG strip 过——FFMPEG_GDB 指
+    // 未剥离副本 / on a crash with no output, rerun under gdb when one
+    // is on PATH: the packaged ffmpeg is stripped, FFMPEG_GDB points at
+    // the unstripped copy
+    // Windows 崩溃走 NTSTATUS 负码（0xC0000005 即 -1073741819），
+    // 不是 POSIX 信号值——负数退出码一并算崩溃 / Windows crashes
+    // surface as negative NTSTATUS codes (0xC0000005 ==
+    // -1073741819), not POSIX signal values — any negative exit
+    // code counts as a crash
+    if (rc == 132 || rc == 139 || rc < 0) && sys::which("gdb").is_some() {
+        log::group_begin(&format!("gdb backtrace: {enc}"));
+        let target = std::env::var("FFMPEG_GDB").unwrap_or_else(|_| fm.to_string());
+        // 全文落 dist 诊断件——CI output gate 会把大输出吞掉（实证：
+        // 25KiB 回溯只剩一行 suppressed 提示），控制台只留尾部精要 /
+        // the full trace goes to a dist diagnostics file — the CI
+        // output gate eats large output (empirical: a 25KiB backtrace
+        // shrank to a one-line suppression note); the console keeps
+        // only a tail excerpt
+        let (trace, _) = sys::capture_lax(
+            "gdb",
+            &[
+                "-q",
+                "-batch",
+                "-ex",
+                "set confirm off",
+                "-ex",
+                "run",
+                "-ex",
+                "info threads",
+                "-ex",
+                "info registers",
+                "-ex",
+                "info sharedlibrary",
+                // bt 压轴：控制台只打尾部 50 行——把帧序列放最后，
+                // 否则尾窗被 info sharedlibrary 的 DLL 表整个占掉
+                // / bt goes last: the console shows only the final
+                // 50 lines — frames must sit at the tail or the DLL
+                // table of info sharedlibrary fills the window
+                "-ex",
+                "thread apply all bt 30",
+                "-ex",
+                "bt 30",
+                "-ex",
+                "quit",
+                "--args",
+                &target,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=640x360:rate=25",
+                "-frames:v",
+                "5",
+                "-c:v",
+                enc,
+                "-f",
+                "null",
+                "-",
+            ],
+            bin,
+        )
+        .unwrap_or_default();
+        let dist = sys::env().dist.clone();
+        let diag = dist.join(format!("smoke-gdb-{enc}.txt"));
+        let _ = crate::fsx::install_d(&dist);
+        let _ = crate::fsx::write(&diag, &trace);
+        println!("[smoke] full gdb trace -> {}", diag.display());
+        let tail: Vec<&str> = trace.lines().collect();
+        for l in tail.iter().skip(tail.len().saturating_sub(50)) {
+            println!("{l}");
+        }
+        log::group_end();
+    }
+}
+
+/// smoke_test <bin-dir>：版本/许可证/特性覆盖/真实编码体检
+/// Version/license/feature-coverage/real-encode checks
 pub fn smoke_test(bin: &Path) -> Result<(), String> {
     let ext = if bin.join("ffmpeg.exe").is_file() {
         ".exe"
@@ -68,7 +589,46 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
         return fail("build is configured with --enable-nonfree and must not be redistributed");
     }
 
-    // --- 哪些外部库进了构建 / which external libraries made it in ---
+    // --- 期望特性集：features 清单为本（resolve 的 enabled = 清单意图 ×
+    // 库探测）；独立 smoke 无前缀可探时回落 -version 旗标 ∩ 已知组件面 /
+    // expected feature set: the manifest is authoritative (resolve's
+    // enabled = intent × probes); standalone smoke with no prefix to
+    // probe falls back to -version flags ∩ known component faces
+    let version_enabled: BTreeSet<String> = version
+        .split_whitespace()
+        .filter_map(|t| t.strip_prefix("--enable-"))
+        .map(String::from)
+        .collect();
+    let known: BTreeSet<&str> = PRESENCE
+        .iter()
+        .map(|r| r.0)
+        .chain(FLAG_ONLY.iter().copied())
+        .chain(FUNCTIONAL.iter().map(|r| r.0))
+        .collect();
+    let resolved = crate::features::resolve()
+        .map(|r| {
+            // 探测降级=预期缺席，仅信息输出（不是失败）/ probe-degraded
+            // is expected-absent, informational only (not a failure)
+            if !r.degraded.is_empty() {
+                println!(
+                    "manifest degraded (expected absent): {}",
+                    r.degraded.join(" ")
+                );
+            }
+            r.enabled.into_iter().collect::<BTreeSet<String>>()
+        })
+        .unwrap_or_default();
+    let expected: BTreeSet<String> = if !resolved.is_empty() {
+        resolved
+    } else {
+        version_enabled
+            .iter()
+            .filter(|n| known.contains(n.as_str()))
+            .cloned()
+            .collect()
+    };
+
+    // --- 外部库清单（沿用旧输出）/ external-library inventory ---
     let mut libs: Vec<&str> = version
         .split_whitespace()
         .filter_map(|t| t.strip_prefix("--enable-lib"))
@@ -81,14 +641,78 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
         libs.join(" lib")
     );
 
+    // --- 组件清单一次抓齐 / capture every listing once ---
+    let mut listings: BTreeMap<&'static str, HashSet<String>> = BTreeMap::new();
+    for l in [
+        L::Enc,
+        L::Dec,
+        L::Filt,
+        L::Prot,
+        L::Demux,
+        L::Mux,
+        L::Dev,
+        L::Hw,
+    ] {
+        let out = sys::capture(&fm, &["-hide_banner", l.flag()], bin)
+            .map_err(|e| format!("ffmpeg {}: {e}", l.flag()))?;
+        listings.insert(l.name(), token_set(&out));
+    }
+    let in_listing =
+        |l: L, cands: &[&str]| -> Option<String> { listed(&listings[l.name()], cands) };
+
     // --- 必需编码器 / required encoders ---
-    let encoders = sys::capture(&fm, &["-hide_banner", "-encoders"], bin)
-        .map_err(|e| format!("ffmpeg -encoders: {e}"))?;
-    let has = |enc: &str| encoders.split_whitespace().any(|t| t == enc);
+    let encoders = &listings[L::Enc.name()];
+    let has = |enc: &str| encoders.contains(enc);
     for enc in REQUIRED_ENCODERS {
         if !has(enc) {
             return fail(&format!("required encoder '{enc}' is missing"));
         }
+    }
+
+    // --- presence：每个启用特性 flag 必现 + 组件必在清单 /
+    // presence: every enabled feature must show its flag AND a component
+    let mut presence_fail: Vec<String> = Vec::new();
+    let mut uncovered: Vec<String> = Vec::new();
+    for feat in &expected {
+        if !version_enabled.contains(feat) {
+            annotate_error(&format!(
+                "feature '{feat}' enabled by the manifest but --enable-{feat} absent from ffmpeg -version"
+            ));
+            presence_fail.push(format!("{feat} (flag dropped)"));
+            continue;
+        }
+        let rows: Vec<_> = PRESENCE.iter().filter(|r| r.0 == feat.as_str()).collect();
+        if rows.is_empty() {
+            // FUNCTIONAL 表自身就是覆盖（libsoxr 这类无组件面特性）——
+            // 只把真正无行无演练的上报覆盖缺口 / a FUNCTIONAL row is
+            // coverage in itself (face-less features like libsoxr) —
+            // only truly row-less + exercise-less features get reported
+            if !FLAG_ONLY.contains(&feat.as_str())
+                && !FUNCTIONAL.iter().any(|f| f.0 == feat.as_str())
+            {
+                uncovered.push(feat.clone());
+            }
+            continue;
+        }
+        for (_, l, cands) in rows {
+            match in_listing(*l, cands) {
+                Some(hit) => println!("presence: {feat} -> {hit} ({})", l.name()),
+                None => {
+                    annotate_error(&format!(
+                        "feature '{feat}' is enabled but none of {cands:?} appears in -{}",
+                        l.name()
+                    ));
+                    presence_fail.push(format!("{feat} (no {})", l.name()));
+                }
+            }
+        }
+    }
+    if !uncovered.is_empty() {
+        annotate_warn(&format!(
+            "enabled features with no smoke-coverage row: {}",
+            uncovered.join(" ")
+        ));
+        println!("coverage gap (warning only): {}", uncovered.join(" "));
     }
 
     // --- 真实编码 / real encodes ---
@@ -144,40 +768,125 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
     if !(streams.contains("h264") && streams.contains("opus")) {
         return fail(&format!("unexpected streams in output: {streams}"));
     }
-    if sys::run(
-        &fm,
-        &[
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
+    log::group_end();
+
+    // --- 功能演练：presence 之上能空跑的每个特性都真实跑一遍 /
+    // functional: every enabled feature with a self-contained exercise
+    // runs it for real
+    let mut failed: Vec<String> = presence_fail;
+    for (feat, comp, kind, extra) in FUNCTIONAL {
+        if !expected.contains(*feat) {
+            continue;
+        }
+        // presence 已报缺的组件不再复跑（避免一错两报）/ a component
+        // already reported missing is not exercised again (one bug,
+        // one report)
+        let comp_name = comp.split('=').next().unwrap_or(comp);
+        let comp_present = match *kind {
+            Fkind::VEnc => has(comp_name),
+            Fkind::AEnc => has(comp_name),
+            Fkind::VFilter | Fkind::AFilter => listings[L::Filt.name()].contains(comp_name),
+            Fkind::LavfiSrcV | Fkind::LavfiSrcA => listings[L::Filt.name()].contains(comp_name),
+            Fkind::MuxFile => listings[L::Mux.name()].contains(comp_name),
+        };
+        if !comp_present {
+            continue;
+        }
+        let v_in: &[&str] = &[
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=440:duration=1",
-            "-c:a",
-            "libmp3lame",
-            "-f",
-            "null",
-            "-",
-        ],
-        bin,
-    )? != 0
-    {
-        return fail("libmp3lame encode failed");
-    }
-    log::group_end();
-
-    // 把每个编码器都试一遍再放弃：一次 run 报出所有坏掉的
-    // try every encoder before giving up so one run reports all broken ones
-    let mut failed: Vec<String> = Vec::new();
-    for enc in TRIED_ENCODERS {
-        if !has(enc) {
-            println!("encode test: {enc} not present in this build, skipped");
+            "testsrc2=size=640x360:rate=25:duration=2",
+        ];
+        let a_in: &[&str] = &["-f", "lavfi", "-i", "sine=frequency=440:duration=2"];
+        let head: &[&str] = &["-hide_banner", "-loglevel", "error", "-y"];
+        let args: Vec<String> = match kind {
+            Fkind::VEnc => head
+                .iter()
+                .chain(v_in)
+                .chain(*extra)
+                .chain(["-frames:v", "5", "-c:v", comp, "-f", "null", "-"].iter())
+                .map(|s| s.to_string())
+                .collect(),
+            Fkind::AEnc => head
+                .iter()
+                .chain(a_in)
+                .chain(*extra)
+                .chain(["-t", "1", "-c:a", comp, "-f", "null", "-"].iter())
+                .map(|s| s.to_string())
+                .collect(),
+            Fkind::VFilter => head
+                .iter()
+                .chain(v_in)
+                .chain(["-vf", comp, "-frames:v", "5", "-f", "null", "-"].iter())
+                .map(|s| s.to_string())
+                .collect(),
+            Fkind::AFilter => head
+                .iter()
+                .chain(a_in)
+                .chain(["-af", comp, "-t", "1", "-f", "null", "-"].iter())
+                .map(|s| s.to_string())
+                .collect(),
+            Fkind::LavfiSrcV => head
+                .iter()
+                .chain(["-f", "lavfi", "-i", comp].iter())
+                .chain(["-frames:v", "1", "-f", "null", "-"].iter())
+                .map(|s| s.to_string())
+                .collect(),
+            Fkind::LavfiSrcA => head
+                .iter()
+                .chain(["-f", "lavfi", "-i", comp].iter())
+                .chain(["-t", "0.5", "-f", "null", "-"].iter())
+                .map(|s| s.to_string())
+                .collect(),
+            Fkind::MuxFile => {
+                let dst = bin.join(format!("smoke-{comp}.txt"));
+                let _g = scopeguard(&dst);
+                let dst_s = dst.to_string_lossy().to_string();
+                let a: Vec<String> = head
+                    .iter()
+                    .chain(a_in)
+                    .chain(["-t", "1", "-f", comp, &dst_s].iter())
+                    .map(|s| s.to_string())
+                    .collect();
+                let rc = sys::run(&fm, &a.iter().map(|s| s.as_str()).collect::<Vec<_>>(), bin)
+                    .unwrap_or(1);
+                if rc != 0 || !dst.is_file() {
+                    annotate_error(&format!("exercise '{feat}' ({comp}) failed (exit {rc})"));
+                    failed.push(format!("{feat}/{comp}"));
+                } else {
+                    println!("exercise: {feat} -> {comp} ok");
+                }
+                continue;
+            }
+        };
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let rc = sys::run(&fm, &refs, bin).unwrap_or(1);
+        if rc == 0 {
+            println!("exercise: {feat} -> {comp} ok");
             continue;
         }
-        println!("encode test: {enc}");
-        let args = [
+        println!("exercise: {feat} -> {comp} FAILED (exit {rc})");
+        if matches!(kind, Fkind::VEnc) {
+            diagnose_failed_encode(&fm, comp, &refs, bin, rc);
+        }
+        annotate_error(&format!(
+            "feature '{feat}' enabled but its exercise ({comp}) failed (exit {rc})"
+        ));
+        failed.push(format!("{feat}/{comp}"));
+    }
+
+    // --- 编码→解码 roundtrip：成对第三方组件各验一半 /
+    // encode->decode roundtrips: paired third-party components each
+    // prove one direction
+    for (enc, dec, fmt) in ROUNDTRIP {
+        if !(has(enc) && listings[L::Dec.name()].contains(*dec)) {
+            continue;
+        }
+        let tmp = bin.join(format!("smoke-rt-{dec}.{fmt}"));
+        let _g = scopeguard(&tmp);
+        let tmp_s = tmp.to_string_lossy().to_string();
+        let eargs = [
             "-hide_banner",
             "-loglevel",
             "error",
@@ -191,135 +900,36 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
             "-c:v",
             enc,
             "-f",
+            fmt,
+            &tmp_s,
+        ];
+        if sys::run(&fm, &eargs, bin).unwrap_or(1) != 0 {
+            annotate_error(&format!("roundtrip: {enc} failed to encode {fmt}"));
+            failed.push(format!("{enc}(rt)"));
+            continue;
+        }
+        let dargs = [
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-c:v",
+            dec,
+            "-i",
+            &tmp_s,
+            "-f",
             "null",
             "-",
         ];
-        let rc = sys::run(&fm, &args, bin).unwrap_or(1);
-        if rc == 0 {
-            continue;
+        if sys::run(&fm, &dargs, bin).unwrap_or(1) != 0 {
+            annotate_error(&format!("roundtrip: {dec} failed to decode {enc} output"));
+            failed.push(format!("{dec}(rt)"));
+        } else {
+            println!("roundtrip: {enc} -> {dec} ok");
         }
-        println!("encode test: {enc} FAILED (exit status {rc})");
-        // SIMD 掩码诊断：libaom 读 AOM_SIMD_CAPS_MASK——0 掩掉全部 SIMD
-        // 档回落纯 C，过即"SIMD 路径崩"反证（libaom-av1 在 avx512 平台
-        // 的 0xC0000005 实证）。其它编码器不吃这个变量，无副作用 /
-        // SIMD-mask diagnostic: libaom honors AOM_SIMD_CAPS_MASK — 0
-        // masks every SIMD level onto the C path, so a pass is
-        // counter-evidence for a SIMD-path crash (empirical:
-        // libaom-av1's 0xC0000005 on an avx512 host). Other encoders
-        // ignore the var — no side effects
-        let drc = sys::cmd(&fm, &args)
-            .env("AOM_SIMD_CAPS_MASK", "0")
-            .status()
-            .map(|s| s.code().unwrap_or(-1))
-            .unwrap_or(1);
-        println!("encode test: {enc} retried with AOM_SIMD_CAPS_MASK=0 -> exit {drc}");
-        // 单线程诊断：enc_init 里按核数配 worker/线程资源——高核数
-        // 机器上 av1 的 >64 逻辑核路径（processor groups）有崩溃先例；
-        // -threads 1 过即 MT 分配是死因，仍崩则锁定纯 init 路径 /
-        // single-thread diagnostic: enc_init sizes workers/thread
-        // resources by core count — av1 has a >64-logical-core crash
-        // precedent (processor groups); a -threads 1 pass fingers MT
-        // allocation, a continued crash pins pure init
-        let mut targs: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        // args 里 -c:v <enc> 前插 -threads 1 / splice -threads 1 before
-        // -c:v <enc>
-        if let Some(i) = targs.iter().position(|s| s == "-c:v") {
-            targs.splice(i..i, ["-threads".into(), "1".into()]);
-            let trc = sys::run(
-                &fm,
-                &targs.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                bin,
-            )
-            .unwrap_or(1);
-            println!("encode test: {enc} retried with -threads 1 -> exit {trc}");
-        }
-        // 崩溃（132=SIGILL，139=SIGSEGV）且无输出时：PATH 上有 gdb 时在
-        // gdb 下重跑抓回溯。打包后的 $FFMPEG strip 过——FFMPEG_GDB 指
-        // 未剥离副本 / on a crash with no output, rerun under gdb when one
-        // is on PATH: the packaged ffmpeg is stripped, FFMPEG_GDB points at
-        // the unstripped copy
-        // Windows 崩溃走 NTSTATUS 负码（0xC0000005 即 -1073741819），
-        // 不是 POSIX 信号值——负数退出码一并算崩溃 / Windows crashes
-        // surface as negative NTSTATUS codes (0xC0000005 ==
-        // -1073741819), not POSIX signal values — any negative exit
-        // code counts as a crash
-        if (rc == 132 || rc == 139 || rc < 0) && sys::which("gdb").is_some() {
-            log::group_begin(&format!("gdb backtrace: {enc}"));
-            let target = std::env::var("FFMPEG_GDB").unwrap_or_else(|_| fm.clone());
-            // 全文落 dist 诊断件——CI output gate 会把大输出吞掉（实证：
-            // 25KiB 回溯只剩一行 suppressed 提示），控制台只留尾部精要 /
-            // the full trace goes to a dist diagnostics file — the CI
-            // output gate eats large output (empirical: a 25KiB backtrace
-            // shrank to a one-line suppression note); the console keeps
-            // only a tail excerpt
-            let (trace, _) = sys::capture_lax(
-                "gdb",
-                &[
-                    "-q",
-                    "-batch",
-                    "-ex",
-                    "set confirm off",
-                    "-ex",
-                    "run",
-                    "-ex",
-                    "info threads",
-                    "-ex",
-                    "info registers",
-                    "-ex",
-                    "info sharedlibrary",
-                    // bt 压轴：控制台只打尾部 50 行——把帧序列放最后，
-                    // 否则尾窗被 info sharedlibrary 的 DLL 表整个占掉
-                    // / bt goes last: the console shows only the final
-                    // 50 lines — frames must sit at the tail or the DLL
-                    // table of info sharedlibrary fills the window
-                    "-ex",
-                    "thread apply all bt 30",
-                    "-ex",
-                    "bt 30",
-                    "-ex",
-                    "quit",
-                    "--args",
-                    &target,
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-y",
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "testsrc2=size=640x360:rate=25",
-                    "-frames:v",
-                    "5",
-                    "-c:v",
-                    enc,
-                    "-f",
-                    "null",
-                    "-",
-                ],
-                bin,
-            )
-            .unwrap_or_default();
-            let dist = sys::env().dist.clone();
-            let diag = dist.join(format!("smoke-gdb-{enc}.txt"));
-            let _ = crate::fsx::install_d(&dist);
-            let _ = crate::fsx::write(&diag, &trace);
-            println!("[smoke] full gdb trace -> {}", diag.display());
-            let tail: Vec<&str> = trace.lines().collect();
-            for l in tail.iter().skip(tail.len().saturating_sub(50)) {
-                println!("{l}");
-            }
-            log::group_end();
-        }
-        annotate_error(&format!(
-            "encoder '{enc}' is present but failed to encode (exit status {rc})"
-        ));
-        failed.push(enc.to_string());
     }
+
     if !failed.is_empty() {
-        return Err(format!(
-            "smoke test failed: encoders that are present but cannot encode: {}",
-            failed.join(" ")
-        ));
+        return Err(format!("smoke test failed: {}", failed.join(" ")));
     }
     println!("smoke test passed");
     Ok(())

@@ -40,12 +40,12 @@ FFmpeg-Builds-Full — FFmpeg 静态构建驱动 / static FFmpeg build driver
 命令 / Commands:
   build      全流水线：extras → ffmpeg → package
              the whole pipeline: extras → ffmpeg → package
-  build-all  全变体一次建：首变体（静态）走完整流水线产出 deps
-             前缀，后续 shared/debug/shared-debug 变体只跑
-             ffmpeg → package / every variant in one run: the first
-             (static) takes the full pipeline to produce the deps
-             prefix, the shared / debug / shared-debug variants then
-             only re-run ffmpeg → package
+  build-all  全变体一次建：共享底座一次，随后逐变体出计划，
+             configure 四路并行、编译 jobserver 池化，最后逐变体
+             install→package / every variant in one run: the shared
+             base once, then per-variant plans, four-way parallel
+             configure, jobserver-pooled compile, and finally
+             per-variant install→package
   packages   安装/确认平台包栈（MSYS2 pacman 等）
              install or verify the platform package stack (MSYS2 pacman etc.)
   extras     只跑 extras 配方引擎（第三方库）
@@ -211,44 +211,74 @@ fn main() {
     let rc = match cmd {
         "build" => (p.build)(),
         // build-all：变体集合一次建完——FFBUILD_SHARED/FFBUILD_DEBUG
-        // 由本命令逐变体接管（外部同名旋钮被覆盖）；首变体走完整流
-        // 水线产出 deps 前缀，后续变体直跑 ffmpeg→package（extras
-        // 的 .ok 标记本来也会 no-op，直接跳过更干净）/ build-all
-        // builds the whole variant set — this command owns
-        // FFBUILD_SHARED/FFBUILD_DEBUG per variant (externally set
-        // knobs get overridden); the first variant takes the full
-        // pipeline to produce the deps prefix, later ones run only
-        // ffmpeg→package (the extras .ok markers would no-op a
-        // re-run anyway, but skipping outright is cleaner)
+        // 由本命令逐变体接管（外部同名旋钮被覆盖）。五阶段编排：
+        // 共享底座一次 → 逐变体串行出计划（args 此刻烘焙）→ configure
+        // 四路并行（fork/探测密集非 CPU 密集，≈单倍时长）→ jobserver
+        // 池化编译（四变体共享一个 -jN 令牌池，链接/install 空档互相
+        // 回填）→ 逐变体 install→package（同一 /usr/local 串行收包
+        // 无竞态）/ build-all builds the whole variant set — this
+        // command owns FFBUILD_SHARED/FFBUILD_DEBUG per variant
+        // (externally set knobs get overridden). Five stages: the
+        // shared base once -> per-variant plans serially (args are
+        // baked right then) -> four-way parallel configure
+        // (fork/probe-bound, not CPU-bound — ≈ a single variant's
+        // wall time) -> jobserver-pooled compile (all variants draw
+        // from one -jN token pool, each variant's link/install tail
+        // backfilled by the others) -> per-variant install->package
+        // (one /usr/local, serial collection, no races)
         "build-all" => (|| -> Result<(), String> {
-            for (i, (shared, debug)) in [(false, false), (true, false), (false, true), (true, true)]
-                .iter()
-                .enumerate()
-            {
-                // SAFETY：单线程驱动，子进程尚未派生，改环境无并发读写
-                // SAFETY: single-threaded driver, no children spawned
-                // yet — env writes are race-free
+            const VARIANTS: [(bool, bool); 4] =
+                [(false, false), (true, false), (false, true), (true, true)];
+            fn set_variant(shared: bool, debug: bool) {
+                // SAFETY：env 只在本驱动线程切换；并行段内的子进程只消费
+                // 计划期烘焙好的 args，不回读旋钮 / SAFETY: env toggles
+                // only on this driver thread; children in the parallel
+                // stretches consume only the args baked at plan time and
+                // never read the knobs back
                 unsafe {
-                    if *shared {
+                    if shared {
                         std::env::set_var("FFBUILD_SHARED", "1")
                     } else {
                         std::env::remove_var("FFBUILD_SHARED")
                     }
-                    if *debug {
+                    if debug {
                         std::env::set_var("FFBUILD_DEBUG", "1")
                     } else {
                         std::env::remove_var("FFBUILD_DEBUG")
                     }
                 }
+            }
+            // 阶段 1：共享底座一次——包栈 + extras 前缀四变体同吃一份 /
+            // stage 1: the shared base once — package stack + extras
+            // prefix feed all four variants
+            set_variant(false, false);
+            (p.packages)()?;
+            (p.extras)()?;
+            // 阶段 2：逐变体串行出计划——fetch/resolve/探测皆幂等，四个
+            // ConfJob 各带独立 build_dir/dropped/日志 / stage 2: plan
+            // each variant serially — fetch/resolve/probing are all
+            // idempotent; the four ConfJobs carry their own
+            // build_dir/dropped/logs
+            let mut jobs = Vec::new();
+            for &(s, d) in &VARIANTS {
+                set_variant(s, d);
+                jobs.push((p.ffmpeg_plan)()?);
+            }
+            // 阶段 3：四路并行 configure / stage 3: four-way parallel
+            // configure
+            ffmpeg::configure_all(&jobs)?;
+            // 阶段 4：jobserver 池化编译 / stage 4: jobserver-pooled
+            // compile
+            ffmpeg::compile_all(&jobs, &sys::env().work.join("ffmake-all.log"))?;
+            // 阶段 5：逐变体 install→package / stage 5: per-variant
+            // install->package
+            for (&(s, d), job) in VARIANTS.iter().zip(&jobs) {
+                set_variant(s, d);
                 log::log(&format!(
-                    "=== variant {i}: shared={shared} debug={debug} / 变体 {i} ==="
+                    "=== install+package: shared={s} debug={d} / 安装打包 ==="
                 ));
-                if i == 0 {
-                    (p.build)()?;
-                } else {
-                    (p.ffmpeg)()?;
-                    (p.package)()?;
-                }
+                ffmpeg::install(&job.build_dir, &job.build_log)?;
+                (p.package)()?;
             }
             Ok(())
         })(),

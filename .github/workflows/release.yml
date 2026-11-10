@@ -1,61 +1,72 @@
-# Rust 驱动程序（FFmpeg-Builds-Full）的 CD：master 上 CI 测试成功完成
-# 后，若 Cargo.toml 版本对应的 tag 尚不存在（=版本变化），在全部五
-# 个平台/架构上构建驱动二进制并发布 v<版本> release。手动触发同理，
-# 但同样受"CI 未绿不发布"约束（查本分支最近一次已完成 CI 的结论）。
-# CD for the Rust driver (FFmpeg-Builds-Full): after CI finishes
-# successfully on master, if the tag matching Cargo.toml's version does
-# not exist yet (= the version changed), build the driver on all five
-# platform/architectures and publish a v<version> release. A manual
-# dispatch works the same way — and is bound by the same "no release
-# without green CI" rule (it consults the newest completed CI run on
-# the branch).
-name: Release Driver
+# 发布（驱动 + FFmpeg 产物）：master 上 CI 全绿后由 ci.yml 尾部的
+# release job 发 repository_dispatch 调起。本 workflow 不再重编任何
+# 东西——Driver-v* 与 FFmpeg 日期 release 发布的都是"CI run 里已验
+# 证的产物"（按 run-id 跨 run 拉 Driver-*/ffmpeg-* artifact）。手动触
+# 发同理，但同样受"CI 未绿不发布"约束，且产物取自本分支最近一次成
+# 功 CI run。
+# Publishing (driver + FFmpeg artifacts): invoked via
+# repository_dispatch from ci.yml's tail release job once CI is green
+# on master. Nothing here rebuilds anything — the Driver-v* and dated
+# FFmpeg releases ship exactly what the CI run already verified (the
+# Driver-*/ffmpeg-* artifacts are pulled cross-run by run-id). A manual
+# dispatch works the same way — bound by the same "no release without
+# green CI" rule, and artifacts come from the branch's latest
+# successful CI run.
+name: Release
 
 on:
   # 由 ci.yml 尾部的 release job 发 repository_dispatch 调起——它
-  # needs test/driver/deps 全绿且仅 master push。dispatch 产生独立
-  # run 与独立 artifact 命名空间：workflow_call 曾把本工作流的 job
-  # 内联进 CI run 并共享命名空间，CI/release 两边的 driver-<p>
-  # artifact 撞名导致组装步拿到无 sha256 的 CI 版。CI 红时这里连
-  # "触发但跳过"的条目都不产生（workflow_run 事件没有结论过滤器，
-  # completed 含失败，旧实现永远会留一条全跳过的记录）。
+  # needs test/driver/build/prepare 全绿且仅 master push。dispatch 产
+  # 生独立 run 与独立 artifact 命名空间：workflow_call 曾把本工作流
+  # 的 job 内联进 CI run 并共享命名空间，CI/release 两边的
+  # driver-<p> artifact 撞名导致组装步拿到无 sha256 的 CI 版。CI 红
+  # 时这里连"触发但跳过"的条目都不产生（workflow_run 事件没有结论
+  # 过滤器，completed 含失败，旧实现永远会留一条全跳过的记录）。
   # invoked via repository_dispatch fired by ci.yml's tail release job,
-  # which needs test/driver/deps green and only fires on master pushes.
-  # A dispatch yields its own run with its own artifact namespace —
-  # workflow_call used to inline this workflow's jobs into the CI run
-  # and share the namespace, where CI/release driver-<p> artifacts
-  # collided and the assemble step got CI's sha256-less copy. A red CI
-  # leaves no "triggered but skipped" standalone entry here at all
-  # (the workflow_run event has no conclusion filter — completed
+  # which needs test/driver/build/prepare green and only fires on
+  # master pushes. A dispatch yields its own run with its own artifact
+  # namespace — workflow_call used to inline this workflow's jobs into
+  # the CI run and share the namespace, where CI/release driver-<p>
+  # artifacts collided and the assemble step got CI's sha256-less copy.
+  # A red CI leaves no "triggered but skipped" standalone entry here
+  # at all (the workflow_run event has no conclusion filter — completed
   # includes failures — so the old design always logged a fully-skipped
   # record).
   repository_dispatch:
-    types: [Release Driver]
+    types: [Release]
   workflow_dispatch:
+    inputs:
+      run_id:
+        description: "CI run to lift artifacts from (default: latest successful CI run on this branch)"
+        required: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── 版本变化探测 / Version-change detection ────────────────────────────────
-  # 从 Cargo.toml 读版本号：对应 tag v<版本> 不存在才算"版本变化"——与
-  # 直接在此止步。
-  # Read the version from Cargo.toml: a change means the tag v<version>
-  # Triggers that are not a successful master run stop right here.
+  # ── 版本变化探测 + 产物源解析 / Version-change detection + artifact source
+  # 从 Cargo.toml 读版本号：对应 tag Driver-v<版本> 不存在才算"版本
+  # 变化"——驱动发布按此门控。FFmpeg 产物发布不做版本门：绿 CI 的产
+  # 物照发（日期 tag 按 FFmpeg commit 走，与驱动版本无关）。
+  # Read the version from Cargo.toml: "changed" means the tag
+  # Driver-v<version> does not exist yet — the driver release gates on
+  # it. The FFmpeg product release is ungated: a green CI's products
+  # always ship (date tags track the FFmpeg commit, not the driver
+  # version).
   version:
-    name: Detect version change
+    name: Detect version + artifact run
     runs-on: ubuntu-26.04
     timeout-minutes: 10
-    # 剩下的两个触发源都合法：repository_dispatch 由绿 CI 的调用方
-    # 调起，workflow_dispatch 由下面的门禁步把关——无需再按事件过滤
-    # both remaining triggers are valid: repository_dispatch arrives
-    # via the green-CI caller, workflow_dispatch is gated by the step
-    # below — no per-event filter needed anymore
+    permissions:
+      contents: read # checkout
+      actions: read # gh run list / artifact run resolution
     outputs:
       changed: ${{ steps.v.outputs.changed }}
       tag: ${{ steps.v.outputs.tag }}
       version: ${{ steps.v.outputs.version }}
       sha: ${{ steps.v.outputs.sha }}
+      run_id: ${{ steps.rid.outputs.run_id }}
+      ffmpeg_sha: ${{ steps.ff.outputs.sha }}
     steps:
       # 检出必须是"被 CI 测过的那个 commit"（dispatch 载荷传入），而
       # 不是此刻的 master 头（CI 跑完到发布之间可能有新 push）；手动
@@ -95,6 +106,39 @@ jobs:
           [[ "$sha" == "${{ github.sha }}" ]] \
             || echo "::notice::latest green CI is ${sha:0:10}, dispatched sha is ${GITHUB_SHA:0:10} (paths-ignore drift)"
 
+      # 产物来源 run：dispatch 载荷 → 手动输入 → 本分支最近一次成功
+      # CI run。后续 job 按它跨 run 下载 Driver-*/ffmpeg-* artifact。
+      # Artifact source run: dispatch payload -> manual input -> the
+      # branch's latest successful CI run. Downstream jobs download the
+      # Driver-*/ffmpeg-* artifacts cross-run by this id.
+      - name: Resolve artifact source run
+        id: rid
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          rid="${{ github.event.client_payload.run_id || inputs.run_id }}"
+          if [ -z "$rid" ]; then
+            rid="$(gh run list --workflow ci.yml --branch "${{ github.ref_name }}" \
+              --status success --limit 1 --json databaseId -q '.[0].databaseId')"
+            echo "resolved latest successful CI run: $rid"
+          fi
+          [[ -n "$rid" && "$rid" != "null" ]] \
+            || { echo "::error::no successful CI run to lift artifacts from"; exit 1; }
+          echo "run_id=$rid" >> "$GITHUB_OUTPUT"
+
+      # FFmpeg 源 commit：dispatch 载荷（CI prepare 实解值）优先；手动
+      # 无载荷时留空——ffmpeg-release 从产物包内 BUILDINFO.info 反解，
+      # 那是"实际构建的 commit"的权威出处 / FFmpeg source commit: the
+      # dispatch payload (CI's prepare-resolved value) wins; manual
+      # runs carry none — ffmpeg-release then back-solves it from the
+      # BUILDINFO.info inside a shipped archive, the authoritative
+      # record of the actually-built commit
+      - name: Propagate FFmpeg commit
+        id: ff
+        run: echo "sha=${{ github.event.client_payload.ffmpeg_sha }}" >> "$GITHUB_OUTPUT"
+
       - name: Read version / probe tag
         id: v
         run: |
@@ -108,94 +152,33 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           if git ls-remote --tags origin "Driver-v$ver" | grep -q .; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Tag Driver-v$ver already exists — Driver build skipped."
+            echo "Tag Driver-v$ver already exists — Driver release skipped."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "Version changed to $ver — will build and release."
+            echo "Version changed to $ver — will publish the driver."
           fi
 
-  # ── 构建驱动二进制 / Build the Driver binaries ────────────────────────────
-  # 五平台全覆盖：windows-x86_64、windows-arm64、linux-x86_64、
-  # linux-arm64、macos-arm64——缺任何一个都不发 release。
-  # All five platforms: windows-x86_64, windows-arm64, linux-x86_64,
-  # linux-arm64, macos-arm64 — a release never ships with one missing.
-  build:
-    name: Build Driver (${{ matrix.platform }})
-    needs: version
-    if: needs.version.outputs.changed == 'true'
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: windows-x86_64
-            runner: windows-latest
-            exe: FFmpeg-Builds-Full.exe
-          - platform: windows-arm64
-            runner: windows-11-arm
-            exe: FFmpeg-Builds-Full.exe
-          - platform: linux-x86_64
-            runner: ubuntu-26.04
-            exe: FFmpeg-Builds-Full
-          - platform: linux-arm64
-            runner: ubuntu-26.04-arm
-            exe: FFmpeg-Builds-Full
-          - platform: macos-arm64
-            runner: macos-latest
-            exe: FFmpeg-Builds-Full
-    steps:
-      - name: Checkout tested commit
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.version.outputs.sha }}
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: driver-${{ matrix.platform }}
-
-      - name: Build release binary
-        run: cargo build --release
-
-      - name: Package Driver
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          cp "target/release/${{ matrix.exe }}" "out/"
-          if [[ "${{ matrix.platform }}" == windows-* ]]; then
-            # Windows 驱动产物 = 固实 7z（调用名二进制在包内）+ 覆盖
-            # 它的 sha256 / the windows driver asset = a solid 7z
-            # carrying the invocation-name binary plus its sha256
-            pkg7z="FFmpeg-Builds-Full-${{ matrix.platform }}.7z"
-            (cd out && 7z a -t7z -mx=9 -ms=on "$pkg7z" "${{ matrix.exe }}" >/dev/null \
-              && rm "${{ matrix.exe }}" \
-              && sha256sum -- "$pkg7z" > "$pkg7z.sha256")
-          else
-            (cd out && sha256sum -- "${{ matrix.exe }}" > "${{ matrix.exe }}.sha256")
-          fi
-
-      - name: Upload Driver
-        uses: actions/upload-artifact@v4
-        with:
-          name: driver-${{ matrix.platform }}
-          path: out/*
-          if-no-files-found: error
-          retention-days: 30
-
-  # ── 发布 / Release ────────────────────────────────────────────────────────
-  release:
+  # ── 发布驱动 / Publish the Driver ───────────────────────────────────
+  # 产物直接用 CI driver job 的 Driver-<p> artifact（CI 已验证的
+  # 二进制），这里只做发布形态打包：windows 固实 7z + sha256，posix
+  # 平台名后缀 + sha256——与旧"重编一遍"产物的形态逐位一致。
+  # Ships the CI driver job's Driver-<p> artifacts verbatim (the very
+  # binaries CI verified); this job only rewraps them into release
+  # shape: a solid 7z + sha256 for windows, platform-suffixed name +
+  # sha256 elsewhere — bit-identical to the old rebuild's output.
+  driver-release:
     name: Release Driver
-    needs: [version, build]
+    needs: version
     if: needs.version.outputs.changed == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
       contents: write
+      # download-artifact 跨 run 拉取走 actions API——不显式给读权
+      # 时 job 级 contents: write 会把它收窄成 none / cross-run
+      # artifact downloads go through the actions API — a job-level
+      # contents: write alone narrows it to none
+      actions: read
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ needs.version.outputs.tag }}
@@ -208,14 +191,17 @@ jobs:
           # needed to compute the Full Changelog range
           fetch-depth: 0
 
-      # 逐平台目录下载（不 merge——五个二进制同名，merge 会互相覆盖）
-      # Download per-platform directories (no merge — the five binaries
+      # 按 run-id 跨 run 拉 CI 的 Driver-* artifact（不 merge——五个
+      # 二进制同名，merge 会互相覆盖）/ pull the CI run's Driver-*
+      # artifacts cross-run by run-id (no merge — the five binaries
       # share a name and a merge would clobber them)
-      - name: Download per-platform artifacts
-        uses: actions/download-artifact@v4
+      - name: Download CI driver artifacts
+        uses: actions/download-artifact@v8
         with:
-          pattern: driver-*
+          pattern: Driver-*
           path: dist
+          run-id: ${{ needs.version.outputs.run_id }}
+          github-token: ${{ github.token }}
 
       - name: Assemble release assets
         run: |
@@ -223,20 +209,20 @@ jobs:
           mkdir -p assets
           for p in windows-x86_64 windows-arm64 linux-x86_64 linux-arm64 macos-arm64; do
             if [[ "$p" == windows-* ]]; then
-              # Windows 驱动产物 = 固实 7z（平台后缀名，打包步已附带
-              # sha256）；.7z 内是调用名二进制，下游 7z x 即用 /
-              # windows driver asset = platform-suffixed solid 7z (the
-              # packaging step already ships its sha256); inside is the
-              # invocation-name binary, usable straight after 7z x
+              # Windows 驱动产物 = 固实 7z（平台后缀名）+ 覆盖它的
+              # sha256；.7z 内是调用名二进制，下游 7z x 即用 /
+              # windows driver asset = platform-suffixed solid 7z plus
+              # its sha256; inside is the invocation-name binary,
+              # usable straight after 7z x
+              src="dist/Driver-$p/FFmpeg-Builds-Full.exe"
+              [[ -f "$src" ]] || { echo "::error::missing $src"; exit 1; }
               f="FFmpeg-Builds-Full-$p.7z"
-              src="dist/driver-$p/$f"
-              [[ -f "$src" ]] || { echo "::error::missing $src"; exit 1; }
-              (cd "dist/driver-$p" && sha256sum -c -- "$f.sha256")
-              cp "$src" "$src.sha256" assets/
+              (cd "dist/Driver-$p" && 7z a -t7z -mx=9 -ms=on "$f" "FFmpeg-Builds-Full.exe" >/dev/null \
+                && sha256sum -- "$f" > "$f.sha256")
+              cp "dist/Driver-$p/$f" "dist/Driver-$p/$f.sha256" assets/
             else
-              src="dist/driver-$p/FFmpeg-Builds-Full"
+              src="dist/Driver-$p/FFmpeg-Builds-Full"
               [[ -f "$src" ]] || { echo "::error::missing $src"; exit 1; }
-              (cd "dist/driver-$p" && sha256sum -c -- "FFmpeg-Builds-Full.sha256")
               cp "$src" "assets/FFmpeg-Builds-Full-$p"
               (cd assets && sha256sum -- "FFmpeg-Builds-Full-$p" > "FFmpeg-Builds-Full-$p.sha256")
             fi
@@ -259,9 +245,8 @@ jobs:
           # 条），并补一行 Full Changelog 链接。
           # Fall back when generate-notes fails or returns an empty body:
           # synthesize What's Changed from the git log between Driver-*
-          # tags
-          # (the last 50 commits for a first release) and emit a Full
-          # Changelog link.
+          # tags (the last 50 commits for a first release) and emit a
+          # Full Changelog link.
           if ! gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" "${args[@]}" --jq '.body' > notes.md \
              || [[ ! -s notes.md ]]; then
             echo "::warning::generate-notes unavailable, falling back to git log"
@@ -295,20 +280,20 @@ jobs:
           # nothing to write into wc.md and cp explodes.
           [[ -s wc.md ]] || { echo "## What's Changed"; echo; echo "* _No changes listed._"; } > wc.md
           cp wc.md body.md
-          cat >> body.md <<EOF
+          cat >> body.md <<'EOF'
 
           ## 构建产物 / Artifacts
 
           | 平台 / Platform | 产物 / Artifact |
           |:--|:--|
-          | Windows x86_64 | \`FFmpeg-Builds-Full-windows-x86_64.exe\` |
-          | Windows arm64 | \`FFmpeg-Builds-Full-windows-arm64.exe\` |
-          | Linux x86_64 | \`FFmpeg-Builds-Full-linux-x86_64\` |
-          | Linux arm64 | \`FFmpeg-Builds-Full-linux-arm64\` |
-          | macOS arm64 | \`FFmpeg-Builds-Full-macos-arm64\` |
+          | Windows x86_64 | `FFmpeg-Builds-Full-windows-x86_64.7z` |
+          | Windows arm64 | `FFmpeg-Builds-Full-windows-arm64.7z` |
+          | Linux x86_64 | `FFmpeg-Builds-Full-linux-x86_64` |
+          | Linux arm64 | `FFmpeg-Builds-Full-linux-arm64` |
+          | macOS arm64 | `FFmpeg-Builds-Full-macos-arm64` |
 
-          每个产物附带同名 \`.sha256\` 校验文件（\`sha256sum -c\` 校验）。
-          Every artifact ships a matching \`.sha256\` checksum file (verify with \`sha256sum -c\`).
+          每个产物附带同名 `.sha256` 校验文件（`sha256sum -c` 校验）。
+          Every artifact ships a matching `.sha256` checksum file (verify with `sha256sum -c`).
           EOF
           # 无新贡献者时 notes 没有该节，nc.md 为空则不追加
           # notes lack the section when there are no new contributors;
@@ -325,26 +310,26 @@ jobs:
           name: Driver ${{ needs.version.outputs.version }}
           prerelease: false
           # Latest 徽章永远留给 FFmpeg 的滑动 latest 产物 release——
-          # 驱动 release 戴徽章会抢产品位，且会让 build.yml 的首建门
+          # 驱动 release 戴徽章会抢产品位，且会让 scheduled.yml 的首建门
           # 误判（/releases/latest 查的是徽章不是 tag）
           # the Latest badge belongs to FFmpeg's floating `latest`
           # product release — a badged driver release would both steal
-          # the product slot and fool build.yml's first-build gate
+          # the product slot and fool scheduled.yml's first-build gate
           # (/releases/latest queries the badge, not the tag)
           make_latest: false
           body_path: body.md
           files: assets/*
 
       # 浮动 Driver-Latest 桶：与 FFmpeg 的 latest 同模型——每次发布
-      # 重建指向最新，build.yml 永远从这下载"最新驱动"。正文直接用
+      # 重建指向最新，scheduled.yml 永远从这下载"最新驱动"。正文直接用
       # 版本 release 的 body.md——与最新 tag 的 release 逐字同步。
       # 同样不戴 Latest 徽章（徽章专属于 FFmpeg latest）。
       # Floating Driver-Latest bucket, same model as FFmpeg's `latest`:
       # rebuilt on every publish to point at the newest binaries, and
-      # build.yml always downloads "the newest driver" from it. Its body
-      # reuses the versioned release's body.md — literally in sync with
-      # the newest tag's release. It never wears the Latest badge either
-      # (the badge is FFmpeg-latest-only).
+      # scheduled.yml always downloads "the newest driver" from it. Its
+      # body reuses the versioned release's body.md — literally in sync
+      # with the newest tag's release. It never wears the Latest badge
+      # either (the badge is FFmpeg-latest-only).
       - name: Update floating Driver-Latest release
         run: |
           set -euo pipefail
@@ -367,21 +352,209 @@ jobs:
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/Driver-Latest" \
             -f "sha=${{ needs.version.outputs.sha }}" -F force=true
 
-      # 驱动发布成功 → 链式触发 FFmpeg 构建（repository_dispatch 是
-      # GITHUB_TOKEN 下官方留的工作流链接口；release 事件本身不触发）。
-      # 仅 master 链入：repository_dispatch 的调用方已由
-      # needs+push/master 门约束；在非主分支上手动 dispatch 只是
-      # 验证驱动发布链路，不该顺手点起 FFmpeg 五平台构建。
-      # Driver published -> chain into the FFmpeg build
-      # (repository_dispatch is the sanctioned chaining hook under
-      # GITHUB_TOKEN; the release event itself does not fire). Master
-      # only: the repository_dispatch caller is already gated by
-      # needs+push/master; a manual dispatch on a side branch just
-      # exercises the driver publish path and must not fire the
-      # five-platform FFmpeg build.
-      - name: Kick the FFmpeg pipeline
-        if: ${{ github.event_name != 'workflow_dispatch' || github.ref_name == 'master' }}
+  # ── 发布 FFmpeg 产物 / Publish the FFmpeg products ──────────────────
+  # 绿 CI 的 ffmpeg-<p> artifact 直接发布（verify 腿在干净机冒烟过四
+  # 变体后重传的那份，不是裸 build-*）：日期 tag + latest 滑动桶 +
+  # 旧 release 修剪——原 build.yml release job 的整段逻辑平移，只改产
+  # 物来源（跨 run 拉取）与 FFmpeg commit 解析（payload 优先，包内
+  # BUILDINFO.info 兜底）。
+  # A green CI's ffmpeg-<p> artifacts ship as-is (the copies its verify
+  # legs re-uploaded after smoking all four variants on clean machines —
+  # not the raw build-*): dated tag + floating latest bucket + old-
+  # release pruning — the whole release job lifted from build.yml,
+  # changing only where the artifacts come from (cross-run download) and
+  # how the FFmpeg commit resolves (payload first, the in-archive
+  # BUILDINFO.info as fallback).
+  ffmpeg-release:
+    name: Publish FFmpeg release
+    needs: version
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read # cross-run artifact download
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TARGET_REF: ${{ needs.version.outputs.sha }}
+      BRANCH: ${{ github.ref_name }}
+      # One release every push, so 30 releases is roughly the last month.
+      KEEP_RELEASES: "30"
+    steps:
+      - name: Check out this repository (for .github/scripts/)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - name: Download verified builds (from the CI run)
+        uses: actions/download-artifact@v8
+        with:
+          # ffmpeg-* = CI verify 腿冒烟后重传的产物；build-* 是裸产物
+          # 留档，不作发布源 / ffmpeg-* = the CI verify legs' post-smoke
+          # re-upload; build-* is the raw archive, never the source
+          pattern: ffmpeg-*
+          merge-multiple: true
+          path: artifacts
+          run-id: ${{ needs.version.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      # FFmpeg 源 commit：payload 实解值优先，包内 BUILDINFO.info 兜底
+      # （"实际构建的 commit"的权威出处）/ FFmpeg source commit: the
+      # payload's resolved value wins, falling back to the BUILDINFO.info
+      # inside a shipped archive (the authoritative record of the
+      # actually-built commit)
+      - name: Resolve FFmpeg commit
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/dispatches" \
-            -f "event_type=Build FFmpeg" \
-            -F "client_payload[tag]=${{ needs.version.outputs.tag }}"
+          set -euo pipefail
+          sha="${{ needs.version.outputs.ffmpeg_sha }}"
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            f="$(ls artifacts/ffmpeg-*.tar.xz artifacts/ffmpeg-*.7z 2>/dev/null | head -n1)"
+            [[ -n "$f" ]] || { echo "::error::no product archive to read BUILDINFO from"; exit 1; }
+            case "$f" in
+              *.7z) sha="$(7z x -so "$f" "*/BUILDINFO.info" | sed -n 's|.*/commit/||p' | head -n1)" ;;
+              *)    sha="$(tar -xOf "$f" "*/BUILDINFO.info" | sed -n 's|.*/commit/||p' | head -n1)" ;;
+            esac
+          fi
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::cannot resolve built FFmpeg commit"; exit 1; }
+          echo "FFMPEG_COMMIT=$sha" >> "$GITHUB_ENV"
+          echo "FFMPEG_HASH=${sha:0:10}" >> "$GITHUB_ENV"
+          echo "Built FFmpeg commit $sha"
+
+      # Only FFmpeg's `configure` is used, to list every external library it
+      # knows, for the completeness table in the release notes.
+      - name: Fetch FFmpeg source (for the library list)
+        run: |
+          set -euo pipefail
+          git init -q ffmpeg-src
+          # 仓源顺序与 prepare 同款——官方 git:// 优先，github 兜底 /
+          # same repo order as prepare — official git:// first, github
+          # as fallback
+          fetched=""
+          for repo in git://git.ffmpeg.org/ffmpeg.git https://github.com/FFmpeg/FFmpeg.git; do
+            git -C ffmpeg-src fetch -q --depth 1 "$repo" "$FFMPEG_COMMIT" && { fetched=1; break; }
+          done
+          [[ -n "$fetched" ]] || { echo "::error::fetch $FFMPEG_COMMIT failed on all repos"; exit 1; }
+          git -C ffmpeg-src -c advice.detachedHead=false checkout -q FETCH_HEAD
+          echo "FFMPEG_SRC=$PWD/ffmpeg-src" >> "$GITHUB_ENV"
+
+      - name: Create dated release
+        run: |
+          set -euo pipefail
+          ls -lh artifacts/
+
+          # Belt and braces: refuse to publish unless every platform is present,
+          # built from the pinned commit, with its checksum — all four
+          # variants (static/shared/debug/shared-debug) per platform,
+          # 40 files total.
+          files=()
+          for p in windows-x86_64 windows-arm64 linux-x86_64 linux-arm64 macos-arm64; do
+            ext="tar.xz"
+            [[ "$p" == windows-* ]] && ext="7z"
+            for v in "" "-shared" "-debug" "-shared-debug"; do
+              base="artifacts/ffmpeg-$FFMPEG_HASH-$p$v"
+              for f in "$base.$ext" "$base.$ext.sha256"; do
+                [[ -f "$f" ]] || { echo "::error::missing $f"; exit 1; }
+                files+=("$f")
+              done
+            done
+          done
+          all=(artifacts/*)
+          [[ ${#all[@]} -eq ${#files[@]} ]] || { echo "::error::unexpected files in artifacts/: ${all[*]}"; exit 1; }
+          (cd artifacts && sha256sum -c -- *.sha256)
+
+          if [ "$BRANCH" != "master" ]; then
+            # 非 master 分支：tag 带分支名，发 pre-release / non-master:
+            # branch name in the tag, published as a pre-release
+            safe="$(echo "$BRANCH" | tr -c 'A-Za-z0-9._-' '-')"
+            TAG="$safe-$(date -u +%Y%m%d-%H%M)"
+            PRE="--prerelease"
+            TITLE="FFmpeg $FFMPEG_HASH 预发布构建 / pre-release build ($BRANCH, $(date -u +'%Y-%m-%d %H:%M') UTC)"
+            LATEST="--latest=false"
+          else
+            # 日期 tag（YYYYMMDD）；同日第二次构建加 -HHMM 后缀防撞
+            # date tag (YYYYMMDD); a second same-day build gains a -HHMM
+            # suffix to avoid the collision
+            TAG="$(date -u +%Y%m%d)"
+            gh release view "$TAG" >/dev/null 2>&1 && TAG="$TAG-$(date -u +%H%M)"
+            PRE=""
+            TITLE="FFmpeg $FFMPEG_HASH CI 构建 / CI build $(date -u +'%Y-%m-%d %H:%M') UTC"
+            LATEST="--latest=false"
+          fi
+          bash .github/scripts/release-notes.sh "$TAG" artifacts > notes.md
+
+          gh release create "$TAG" \
+            --target "$TARGET_REF" \
+            --title "$TITLE" \
+            --notes-file notes.md \
+            $PRE $LATEST \
+            "${files[@]}"
+
+      # A floating "latest" release with hash-less file names, so download
+      # links never change (master builds only — pre-releases never touch it):
+      #   https://github.com/<owner>/<repo>/releases/latest/download/ffmpeg-latest-windows-x86_64.7z
+      - name: Update "latest" release
+        if: env.BRANCH == 'master'
+        run: |
+          set -euo pipefail
+          mkdir latest
+          # 四个变体（默认/-shared/-debug/-shared-debug）都进 latest——
+          # URL 名即形态 / all four variants
+          # (default/-shared/-debug/-shared-debug) land in latest — the
+          # URL spells out the shape
+          re='^ffmpeg-[0-9a-f]{10}-(windows-x86_64|windows-arm64|linux-x86_64|linux-arm64|macos-arm64)(-shared|-debug|-shared-debug)?\.(7z|tar\.xz)$'
+          for f in artifacts/*.7z artifacts/*.tar.xz; do
+            name="$(basename "$f")"
+            [[ "$name" =~ $re ]] || { echo "::error::unexpected archive name $name"; exit 1; }
+            p="${BASH_REMATCH[1]}"
+            new="ffmpeg-latest-$p${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+            cp "$f" "latest/$new"
+            # Same-named checksum file; it has to reference the new file name.
+            (cd latest && sha256sum -- "$new" > "$new.sha256")
+          done
+          # 正文与刚发的日期 tag release 逐字同步（同一份 notes.md；
+          # 里面的链接指向日期 tag 资产，永久有效）
+          # body synced verbatim with the just-published dated release
+          # (the same notes.md; its links point at dated-tag assets,
+          # which stay valid forever)
+          gh release delete latest --cleanup-tag --yes || true
+          sleep 10
+          gh release create latest \
+            --target "$TARGET_REF" \
+            --title "Latest" \
+            --notes-file notes.md \
+            --latest \
+            latest/*
+          # 与 deps.rs 同款定针：tag 删除是最终一致的，create 若抢在
+          # 旧 tag 消失前完成会把 release 挂回旧 tag（--target 只在新建
+          # tag 时生效）——PATCH refs 保证 tag 确定指向本趟 commit。
+          # Same pin as deps.rs: tag deletion is eventually consistent —
+          # if create lands before the old tag is gone, the release
+          # attaches to the stale tag (--target only applies to a new
+          # tag). PATCH the ref so the tag deterministically points at
+          # this run's commit.
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/latest" \
+            -f "sha=$TARGET_REF" -F force=true
+
+      - name: Prune old releases
+        run: |
+          set -euo pipefail
+          # 修剪对象：日期 tag（^YYYYMMDD，留最新 KEEP_RELEASES 个）与分支
+          # pre tag（*-\d{8}-\d{4}$，留最新 10 个）；latest/deps/Driver-*
+          # 永远不匹配这两个模式，不会被误删。
+          # prune targets: date tags (^YYYYMMDD, newest KEEP_RELEASES kept)
+          # and branch pre tags (*-\d{8}-\d{4}$, newest 10 kept);
+          # latest/deps/Driver-* match neither pattern and are never
+          # touched.
+          gh release list --limit 200 --json tagName,createdAt \
+            | jq -r --argjson keep "$KEEP_RELEASES" \
+                '[.[] | select(.tagName | test("^[0-9]{8}"))] | sort_by(.createdAt) | reverse | .[$keep:] | .[].tagName' \
+            | while read -r tag; do
+                echo "deleting old release $tag"
+                gh release delete "$tag" --cleanup-tag --yes
+              done
+          gh release list --limit 200 --json tagName,createdAt \
+            | jq -r '[.[] | select(.tagName | test("-[0-9]{8}-[0-9]{4}$"))] | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' \
+            | while read -r tag; do
+                echo "deleting old pre-release $tag"
+                gh release delete "$tag" --cleanup-tag --yes
+              done

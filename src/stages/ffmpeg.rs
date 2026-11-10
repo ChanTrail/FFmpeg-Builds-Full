@@ -10,6 +10,7 @@ use crate::sys;
 use std::path::{Path, PathBuf};
 
 /// 构建产物信息 / build identity
+#[derive(Clone)]
 pub struct Info {
     /// 完整 commit sha / full commit sha
     pub commit: String,
@@ -32,6 +33,21 @@ pub struct Info {
 /// 注意 / note: 不打任何补丁（patches 环节按新方针整体移除）— clean
 /// upstream sources only, per the rewrite policy.
 pub fn fetch(dest: &Path) -> Result<Info, String> {
+    // build-all 四变体的 plan 共享同一棵源码树——无条件 rm_rf+clone
+    // 会一轮网拉四次；src_dir 与钉版（FFMPEG_REF/FFMPEG_SHA）在单
+    // 进程内不变，记忆化等价且零代价 / build-all's four variant
+    // plans share one source tree — an unconditional rm_rf+clone
+    // would pull the network four times; src_dir and the pinned rev
+    // (FFMPEG_REF/FFMPEG_SHA) cannot change inside one process, so
+    // memoization is equivalent and free
+    static INFO: std::sync::OnceLock<Result<Info, String>> = std::sync::OnceLock::new();
+    INFO.get_or_init(|| fetch_inner(dest)).clone()
+}
+
+/// 真实取源体：克隆 + 钉版 + 烤 version.sh（见 fetch 的进程内记忆
+/// 化包装）/ the real fetch body: clone + pin + bake version.sh (see
+/// fetch's in-process memoizing wrapper)
+fn fetch_inner(dest: &Path) -> Result<Info, String> {
     // 仓源唯一事实源是 sources/base.yaml 的 ffmpeg: 键——git: 主仓
     // + mirrors: 顺序兜底；FFMPEG_REPO 显式覆盖则单仓无回退 /
     // the manifest's ffmpeg: key (sources/base.yaml) is the single
@@ -172,6 +188,35 @@ pub fn fetch(dest: &Path) -> Result<Info, String> {
 /// ffconfigure 驱动：在 <build_dir> 跑 FFmpeg configure；某个外部库缺失/损坏导致失败时
 /// 把 --enable-<name> 记进 dropped-file、丢旗标再试——一次运行枚举出
 /// 所有开不了的库，各带 config.log 存档。configure 最终成功后只要有
+/// 一个变体的配置/编译作业：build-all 把四份 args 先算好（串行切
+/// env 期间逐个 plan），configure 随后四路并行、编译经 jobserver
+/// 令牌池化——各自的 build_dir/dropped/build_log 互不干扰
+/// one variant's configure/compile job: build-all plans the four arg
+/// sets up front (one by one while toggling the env knobs), the
+/// configures then run four-way in parallel and compiles share the
+/// jobserver token pool — each job's build_dir/dropped/build_log is
+/// its own
+pub struct ConfJob {
+    /// 变体词（static/shared/debug/shared-debug）——日志标签与错误
+    /// 归属 / the variant word (static/shared/debug/shared-debug) —
+    /// log tag and error attribution
+    pub label: String,
+    /// out-of-tree 构建目录 / the out-of-tree build directory
+    pub build_dir: PathBuf,
+    /// configure 脚本 / the configure script
+    pub configure: PathBuf,
+    /// 完整 configure 参数集 / the full configure argument set
+    pub args: Vec<String>,
+    /// dropped-libs{variant}.txt / the per-variant dropped-libs file
+    pub dropped: PathBuf,
+    /// 必配库清单（FF_REQUIRED 语义，不带 --enable- 前缀）
+    /// required libraries (FF_REQUIRED semantics, without the
+    /// --enable- prefix)
+    pub required: &'static [&'static str],
+    /// per-变体 make 日志 / the per-variant make log
+    pub build_log: PathBuf,
+}
+
 /// 丢包仍返回 Err：被要求开启却悄悄缺库的 ffmpeg 绝不能发布。
 /// Drive FFmpeg configure in <build_dir>; when it fails on a missing/broken external
 /// library, record --enable-<name> in dropped-file, drop the flag and
@@ -187,6 +232,7 @@ pub fn configure(
     args: &[&str],
     dropped_file: &Path,
     required: &[&str],
+    label: &str,
 ) -> Result<(), String> {
     fsx::write(dropped_file, "")?;
     // 清掉残留的 per-library config log——warm/deps 缓存会把它们无限
@@ -206,9 +252,20 @@ pub fn configure(
     // 持久化进度日志：每行都镜像到文件 / persistent progress log
     let fflog = dropped_file.with_extension("fflog.txt");
     fsx::write(&fflog, "")?;
+    // 变体标签插进 [ffconfigure] 前缀——并行配置下四路 note 交错，
+    // 行内标签是唯一的归属线索 / the variant tag rides inside the
+    // [ffconfigure] prefix — under parallel configures the four
+    // note streams interleave and the in-line tag is the only
+    // attribution
+    let tag = if label.is_empty() {
+        String::new()
+    } else {
+        format!(":{label}")
+    };
     let note = |msg: &str| {
+        let msg = msg.replacen("[ffconfigure]", &format!("[ffconfigure{tag}]"), 1);
         println!("{msg}");
-        let _ = fsx::append_line(&fflog, msg);
+        let _ = fsx::append_line(&fflog, &msg);
     };
 
     /// 兼容别名 → 规范名（FFmpeg 接受但 --help 不列出的拼法）
@@ -440,22 +497,126 @@ pub fn configure(
     }
 }
 
-/// 在 <build_dir> 编译并安装 FFmpeg（tee 到 <log_file>）
-/// compile and install FFmpeg in <build_dir> (tee'd to <log_file>)
-pub fn build(build_dir: &Path, log_file: &Path) -> Result<(), String> {
+/// 四路并行跑一批变体的 configure：探针是 fork/链接密集（大头是
+/// 几百个小编译的进程派生开销而非 CPU——MSYS2 上尤甚），四路并行
+/// ≈ 单倍时长；各变体的 dropped/fflog/config-log 分文件落盘，
+/// note 行内带变体标签归属 / run a batch of variant configures
+/// four-way in parallel: probing is fork/link-bound (the cost is the
+/// process spawn of hundreds of tiny compiles, not CPU — doubly so
+/// under MSYS2) so parallel ≈ a single variant's wall time; each
+/// variant's dropped/fflog/config-log lands in its own files and
+/// note lines carry the in-line variant tag
+pub fn configure_all(jobs: &[ConfJob]) -> Result<(), String> {
+    let run_one = |j: &ConfJob| -> Result<(), String> {
+        let refs: Vec<&str> = j.args.iter().map(String::as_str).collect();
+        configure(
+            &j.build_dir,
+            &j.configure,
+            &refs,
+            &j.dropped,
+            j.required,
+            &j.label,
+        )
+    };
+    if jobs.len() == 1 {
+        return run_one(&jobs[0]);
+    }
+    let results = std::thread::scope(|s| {
+        jobs.iter()
+            .map(|j| s.spawn(move || run_one(j)))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| Err("configure thread panicked".into()))
+            })
+            .collect::<Vec<_>>()
+    });
+    // 按变体序归错——并行丢错也要带名字 / attribute failures in
+    // variant order — parallel errors still need a name on them
+    for (j, r) in jobs.iter().zip(results) {
+        r.map_err(|e| format!("{}: {e}", j.label))?;
+    }
+    Ok(())
+}
+
+/// makefile 内的路径形态：Windows 下给 MSYS make POSIX 形式，POSIX
+/// 直出 / the path spelling inside generated makefiles: POSIX form
+/// for MSYS make on Windows, verbatim elsewhere
+fn makefile_path(p: &Path, e: &sys::Env) -> String {
+    if e.os == sys::Os::Windows {
+        sys::win_to_posix(p, &e.msys2_root)
+    } else {
+        p.to_string_lossy().into_owned()
+    }
+}
+
+/// jobserver 池化编译一批变体：包一层聚合 makefile——每变体一个
+/// 目标，recipe 是 $(MAKE) -C 的子 make 调用，自动共享父进程的
+/// jobserver 令牌池：四条变体的全部编译从同一个 -jN 预算里领令牌，
+/// 既不空转（单变体链接/install 尾段的串行空档被其它变体填满）
+/// 也不超订（不是天真的 4×-jN 齐发）/ pool a batch of variant
+/// compiles through the GNU jobserver: wrap them in an aggregate
+/// makefile — one target per variant whose recipe is a $(MAKE) -C
+/// sub-make, which automatically shares the parent's token pool: all
+/// variant compiles draw tokens from a single -jN budget, neither
+/// idling (one variant's link/install tail is backfilled by the
+/// others) nor oversubscribing (not a naive 4×-jN blast)
+pub fn compile_all(jobs: &[ConfJob], log_file: &Path) -> Result<(), String> {
+    let e = sys::env();
+    if jobs.len() == 1 {
+        return compile(&jobs[0].build_dir, log_file);
+    }
+    let mk = e.work.join("ffbuild-all.mk");
+    let mut text = String::new();
+    let mut names = Vec::new();
+    for (i, j) in jobs.iter().enumerate() {
+        let name = format!("ffv{i}");
+        names.push(name.clone());
+        let dir = makefile_path(&j.build_dir, e);
+        // 单行目标 `name: ; recipe`——目标文件永不落盘，天然 phony /
+        // one-line target `name: ; recipe` — no such file ever lands,
+        // so it is naturally phony
+        text.push_str(&format!(
+            "{name}: ; $(MAKE) --no-print-directory -C '{dir}'\n"
+        ));
+    }
+    text.push_str(&format!("all: {}\n", names.join(" ")));
+    fsx::write(&mk, &text)?;
+    let mkp = makefile_path(&mk, e);
+    let nj = e.jobs.to_string();
+    match sys::run_tee("make", &["-f", &mkp, "-j", &nj, "all"], &e.work, log_file)? {
+        0 => Ok(()),
+        rc => {
+            // 同 compile 的失败尾部全量 / same verbatim tail on failure
+            println!("{}", sys::log_tail(log_file, 80));
+            Err(format!("make exited {rc}"))
+        }
+    }
+}
+
+/// 在 <build_dir> 编译 FFmpeg（tee 到 <log_file>）
+/// compile FFmpeg in <build_dir> (tee'd to <log_file>)
+pub fn compile(build_dir: &Path, log_file: &Path) -> Result<(), String> {
     let e = sys::env();
     let jobs = e.jobs.to_string();
     match sys::run_tee("make", &["-j", &jobs], build_dir, log_file)? {
-        0 => {}
+        0 => Ok(()),
         rc => {
             // CI 下 run_tee 不回显子进程输出——失败时把日志尾部全量打到
             // 控制台，否则只剩干巴巴的 "make exited N" / run_tee does
             // not echo child output under CI — print the verbatim log
             // tail on failure, else all we report is "make exited N"
             println!("{}", sys::log_tail(log_file, 80));
-            return Err(format!("make exited {rc}"));
+            Err(format!("make exited {rc}"))
         }
     }
+}
+
+/// `make install`（install-doc 尽力而为，失败退纯 install）
+/// `make install` (install-doc is best-effort, falls back to plain
+/// install)
+pub fn install(build_dir: &Path, log_file: &Path) -> Result<(), String> {
     // install-doc 是锦上添花；失败退回纯 install / install-doc is a nice
     // to have; fall back to plain install
     if sys::run_tee("make", &["install", "install-doc"], build_dir, log_file)? != 0
@@ -466,6 +627,13 @@ pub fn build(build_dir: &Path, log_file: &Path) -> Result<(), String> {
         return Err("make install failed".to_string());
     }
     Ok(())
+}
+
+/// 单变体完整构建 = 编译 + 安装 / a single-variant full build =
+/// compile + install
+pub fn build(build_dir: &Path, log_file: &Path) -> Result<(), String> {
+    compile(build_dir, log_file)?;
+    install(build_dir, log_file)
 }
 
 /// 需要外部资产的特性 → (资产名, 获取地址)。运行时 dlopen 插件或读数据

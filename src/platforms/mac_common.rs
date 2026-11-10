@@ -296,12 +296,15 @@ pub fn save() -> Result<(), String> {
     Ok(())
 }
 
-/// FFmpeg 编排：fetch → features 旗标 + 工具链 → 丢包重试 configure →
-/// make/install。TLS 门槛是 securetransport（Apple 钥匙串，无需 CA
-/// bundle）/ FFmpeg orchestration: fetch -> features flags + toolchain ->
-/// the drop-and-retry configure -> make/install. The TLS gate is
-/// securetransport (Apple keychain, no CA bundle needed)
-pub fn ffmpeg() -> Result<(), String> {
+/// 当前变体的 ffmpeg 配置作业：fetch → features 旗标 + 工具链 → 独立
+/// 构建目录（ffbuild-ffmpeg{variant}）——configure 与编译由调用方统一
+/// 编排（build-all 四变体并行）。TLS 门槛是 securetransport（Apple
+/// 钥匙串，无需 CA bundle）/ the current variant's ffmpeg configure
+/// job: fetch -> features flags + toolchain -> a private build dir
+/// (ffbuild-ffmpeg{variant}) — configure and compile are orchestrated
+/// by the caller (build-all runs the four variants in parallel). The
+/// TLS gate is securetransport (Apple keychain, no CA bundle needed)
+pub fn ffmpeg_plan() -> Result<crate::ffmpeg::ConfJob, String> {
     let e = sys::env();
     const REQUIRED: &[&str] = &[
         "libx264",
@@ -326,7 +329,12 @@ pub fn ffmpeg() -> Result<(), String> {
             info.commit, info.hash, info.version
         ),
     )?;
-    let build = e.work.join("ffbuild-ffmpeg");
+    // 一变体一目录：四变体并行 configure/编译互不干扰 / one dir per
+    // variant: the four-way parallel configure/compile keeps its hands
+    // off the others
+    let build = e
+        .work
+        .join(format!("ffbuild-ffmpeg{}", sys::variant_suffix()));
     fsx::rm_rf(&build);
     fsx::install_d(&build)?;
 
@@ -430,16 +438,37 @@ pub fn ffmpeg() -> Result<(), String> {
     } else {
         args.push("--disable-shared".into());
     }
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let dropped = e.work.join("dropped-libs.txt");
+    let variant = sys::variant_suffix();
+    Ok(crate::ffmpeg::ConfJob {
+        label: sys::variant_word(),
+        build_dir: build,
+        configure: src_dir.join("configure"),
+        args,
+        dropped: e.work.join(format!("dropped-libs{variant}.txt")),
+        required: REQUIRED,
+        build_log: e.work.join(format!("ffmpeg-build{variant}.log")),
+    })
+}
+
+/// FFmpeg 编排：fetch → features 旗标 + 工具链 → 丢包重试 configure →
+/// make/install（单变体路径，与 build-all 共用 plan）。TLS 门槛是
+/// securetransport（Apple 钥匙串，无需 CA bundle）/ FFmpeg
+/// orchestration: fetch -> features flags + toolchain -> the
+/// drop-and-retry configure -> make/install (the single-variant path;
+/// shares the plan with build-all). The TLS gate is securetransport
+/// (Apple keychain, no CA bundle needed)
+pub fn ffmpeg() -> Result<(), String> {
+    let job = ffmpeg_plan()?;
+    let refs: Vec<&str> = job.args.iter().map(String::as_str).collect();
     crate::ffmpeg::configure(
-        &build,
-        &src_dir.join("configure"),
+        &job.build_dir,
+        &job.configure,
         &refs,
-        &dropped,
-        REQUIRED,
+        &job.dropped,
+        job.required,
+        &job.label,
     )?;
-    crate::ffmpeg::build(&build, &e.work.join("ffmpeg-build.log"))
+    crate::ffmpeg::build(&job.build_dir, &job.build_log)
 }
 
 /// package 阶段：收集二进制/文档/man 页/预设 → otool -L 白名单（只允许
@@ -469,11 +498,7 @@ pub fn package() -> Result<(), String> {
     // variant suffixes: shared/debug artifacts would shadow the
     // static one by name — both shapes can coexist under one driver
     // dir, so names must discriminate (fixed order: -shared-debug)
-    let variant = format!(
-        "{}{}",
-        if sys::shared() { "-shared" } else { "" },
-        if sys::debug() { "-debug" } else { "" },
-    );
+    let variant = sys::variant_suffix();
     let name = format!("ffmpeg-{hash}-{platform}{variant}");
     let pkgroot = e.work.join("pkg");
     let pkg = pkgroot.join(&name);
@@ -637,7 +662,7 @@ pub fn package() -> Result<(), String> {
         &e.work,
     )
     .unwrap_or_default();
-    let dropped = fsx::read(&e.work.join("dropped-libs.txt"));
+    let dropped = fsx::read(&e.work.join(format!("dropped-libs{variant}.txt")));
     let status = fsx::read(&prefix().join(".extras/status.txt"));
     let swvers = sys::capture("sw_vers", &["-productVersion"], &e.work)
         .unwrap_or_default()

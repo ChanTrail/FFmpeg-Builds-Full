@@ -12,6 +12,7 @@ pub fn pipeline() -> Pipeline {
         packages: platforms::windows_common::packages,
         extras: platforms::windows_deps::extras_stage,
         ffmpeg: platforms::windows_common::ffmpeg,
+        ffmpeg_plan: platforms::windows_common::ffmpeg_plan,
         package: platforms::windows_common::package,
         save_deps: platforms::windows_deps::save,
     }

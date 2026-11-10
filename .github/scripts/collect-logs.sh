@@ -125,17 +125,23 @@ fi
   echo
 
   echo "## FFmpeg configure 丢包 / configure-dropped libraries"
-  d="$(find "$logs" -name 'dropped-libs.txt' | head -n1)"
-  if [ -n "$d" ] && [ -s "$d" ]; then
+  # dropped-libs{variant}.txt 逐变体枚举——同干 config-log 按
+  # 变体 stem 配对 / enumerate every variant's dropped-libs{variant}
+  # .txt — sibling config-logs pair by the variant stem
+  any=0
+  while IFS= read -r d; do
+    [ -s "$d" ] || continue
+    any=1
+    stem="$(basename "$d" .txt)"
+    echo "### $stem"
     while IFS= read -r line; do
       [ -z "$line" ] && continue
       n="${line%% *}"
-      cl="$(find "$logs" -name "dropped-libs-$n.config-log.txt" | head -n1)"
+      cl="$(find "$logs" -name "$stem-$n.config-log.txt" | head -n1)"
       echo "- $line${cl:+  (config.log: ${cl#"$logs"/})}"
     done < "$d"
-  else
-    echo "(无 / none)"
-  fi
+  done < <(find "$logs" -name 'dropped-libs*.txt' ! -name '*.fflog.txt' ! -name '*.config-log.txt' | sort)
+  [ "$any" -eq 0 ] && echo "(无 / none)"
   echo
 
   echo "## 本包详细日志 / detailed logs in this bundle"

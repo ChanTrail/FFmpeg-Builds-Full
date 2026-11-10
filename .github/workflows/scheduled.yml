@@ -1,14 +1,16 @@
-# FFmpeg 构建：五平台原生构建上游 FFmpeg master 并发布。
-# FFmpeg builds: native builds of upstream FFmpeg master on five platforms.
+# FFmpeg 定时构建：五平台原生构建上游 FFmpeg master 并发布。
+# Scheduled FFmpeg builds: native builds of upstream FFmpeg master on
+# five platforms, published.
+#
+# 职责已收窄为"定期用最新已发布驱动跟一遍上游 master"——驱动与
+# FFmpeg 的发布都归 ci.yml → release.yml 链（绿 CI 的产物直接发布，
+# 这里不再被链入）。
+# Its remit has narrowed to "periodically track upstream master with the
+# newest published driver" — driver and FFmpeg publishing both live in
+# the ci.yml -> release.yml chain (green-CI artifacts ship directly;
+# this workflow is no longer chained into).
 #
 # 触发模型 / trigger model:
-#   - repository_dispatch (Build FFmpeg)：驱动程序成功发布 release 后
-#     由 release.yml 链入——产物以正常 release 发布。release 事件在
-#     GITHUB_TOKEN 下不会触发工作流，dispatch 是官方留的链接口。
-#     Linked in by release.yml once the driver has been successfully
-#     released — artifacts ship as a normal release. The release event
-#     itself does not fire workflows under GITHUB_TOKEN; dispatch is
-#     the sanctioned chaining hook.
 #   - schedule：定时构建只在 master（默认分支）发生——GitHub 的 cron 本来
 #     就只在默认分支求值；且只有完整成功构建过一次（latest release
 #     存在）定时才生效。产物以正常 release 发布。
@@ -24,7 +26,7 @@
 # The driver is always the newest PUBLISHED release binary (prepare
 # resolves the latest v* tag) rather than something compiled in-place —
 # every run provably starts from a released driver.
-name: Build FFmpeg
+name: Scheduled FFmpeg Build
 
 on:
   schedule:
@@ -33,10 +35,6 @@ on:
     # around month ends. Top-of-the-hour crons can be delayed by GitHub at
     # busy times; that is acceptable here.
     - cron: "0 0 */3 * *"
-  # 驱动 release 发布后的链接触发（release.yml 发 dispatches）
-  # the link fired after the driver's release is published
-  repository_dispatch:
-    types: [Build FFmpeg]
   workflow_dispatch:
     inputs:
       publish:
@@ -109,12 +107,12 @@ jobs:
           echo "Building FFmpeg commit $sha"
 
       # 定时门槛：只有完整成功构建过一次（latest release 存在）定时才
-      # 生效——首次成功只能靠 dispatch 链或手动触发，避免没跑通的流水
-      # 线每三天空烧几个小时。
+      # 生效——首次成功只能靠 CI→Release 链或手动触发，避免没跑通的
+      # 流水线每三天空烧几个小时。
       # Schedule gate: the cron only becomes effective after one fully
       # successful build (a `latest` release exists) — the first success
-      # can only come from the dispatch chain or a manual run, so an
-      # unproven pipeline doesn't burn hours every three days.
+      # can only come from the CI -> Release chain or a manual run, so
+      # an unproven pipeline doesn't burn hours every three days.
       - name: Gate the schedule on a first complete build
         id: gate
         env:
@@ -135,11 +133,12 @@ jobs:
             echo "go=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # 驱动用"已发布的最新"：dispatch 载荷带 tag；其余触发取最新 v*
-      # release（gh release list 按创建时间倒序，第一行就是最新的）。
-      # The driver is always the newest PUBLISHED one: the dispatch
-      # payload carries its tag; every other trigger resolves the latest
-      # v* release (`gh release list` is newest-first).
+      # 驱动用"已发布的最新"：取 Driver-Latest 浮动桶（release.yml
+      # 维护），不在时退最新 v* release（gh release list 按创建时间
+      # 倒序，第一行就是最新的）。
+      # The driver is always the newest PUBLISHED one: the Driver-Latest
+      # floating bucket (maintained by release.yml), falling back to the
+      # newest v* release (`gh release list` is newest-first).
       - name: Resolve Driver release
         id: drv
         env:
@@ -154,22 +153,18 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            tag="${{ github.event.client_payload.tag }}"
-          else
-            # Driver-Latest 浮动桶恒定指向最新发布（release.yml 维护）；
-            # 不存在时退到最新版本化 Driver-v* tag。注意 Latest/latest
-            # 都是 FFmpeg 产物的滑动 release，不是驱动桶；版本 tag 带 v
-            # 前缀（Driver-v1.2.3），不是 Driver-数字 / the floating
-            # Driver-Latest bucket (maintained by release.yml) always
-            # points at the newest publish; fall back to the newest
-            # versioned Driver-v* tag when absent. Beware: Latest/latest
-            # is FFmpeg's PRODUCT release, not the driver bucket; version
-            # tags carry a v prefix (Driver-v1.2.3), not Driver-<digit>
-            tag="Driver-Latest"
-            gh release view "$tag" >/dev/null 2>&1 \
-              || tag="$(gh release list --json tagName --limit 50 -q '.[].tagName' | grep -m1 '^Driver-v[0-9]' || true)"
-          fi
+          # Driver-Latest 浮动桶恒定指向最新发布（release.yml 维护）；
+          # 不存在时退到最新版本化 Driver-v* tag。注意 Latest/latest
+          # 都是 FFmpeg 产物的滑动 release，不是驱动桶；版本 tag 带 v
+          # 前缀（Driver-v1.2.3），不是 Driver-数字 / the floating
+          # Driver-Latest bucket (maintained by release.yml) always
+          # points at the newest publish; fall back to the newest
+          # versioned Driver-v* tag when absent. Beware: Latest/latest
+          # is FFmpeg's PRODUCT release, not the driver bucket; version
+          # tags carry a v prefix (Driver-v1.2.3), not Driver-<digit>
+          tag="Driver-Latest"
+          gh release view "$tag" >/dev/null 2>&1 \
+            || tag="$(gh release list --json tagName --limit 50 -q '.[].tagName' | grep -m1 '^Driver-v[0-9]' || true)"
           [[ "$tag" =~ ^Driver- ]] || { echo "::error::no published driver release (Driver-* tag) found"; exit 1; }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Using driver release $tag"
@@ -421,11 +416,16 @@ jobs:
 
       # 自建工具目录（python venv / rustup / cargo-c）走 actions/cache——
       # 装一次 ~1-2 分钟，之后每轮探测到二进制就跳过。apt 包走 Azure 本地
-      # 镜像足够快，缓存 root 拥有的下载目录不值得折腾。
+      # 镜像足够快，缓存 root 拥有的下载目录不值得折腾。key 只哈希
+      # packages/linux-tools.yaml——钉版真源：代码重构不误炸，真改钉版
+      # 才冷装。
       # Self-installed tool dirs (python venv / rustup / cargo-c) ride
       # actions/cache — ~1-2 min once, then binary probes skip the steps.
       # The apt packages come from the Azure-local mirror quickly enough
       # that caching a root-owned download dir is not worth the plumbing.
+      # The key hashes packages/linux-tools.yaml alone — the pin truth
+      # source: code refactors can't bust it, a real pin bump
+      # cold-installs.
       - name: Prepare tool cache dirs (Linux)
         if: matrix.kind == 'linux'
         run: |
@@ -445,15 +445,15 @@ jobs:
             /opt/pyenv
             /opt/cargo
             /opt/rustup
-          # 不给 restore-keys：key 里哈希了驱动的 packages 实现，版本钉
-          # （cargo-c、pip 清单）一改自动冷装；前缀回退反而会把旧版二进
-          # 制恢复回来，而"二进制在场即跳过"探针会把它当成新版。
-          # No restore-keys on purpose: the key hashes the driver's
-          # packages implementation, so a bump of any pinned version
-          # (cargo-c, the pip list) cold-installs; a prefix fallback would
-          # restore the OLD binaries and the "skip if binary exists"
-          # probes would take them for the new version.
-          key: tools-${{ matrix.platform }}-${{ hashFiles('src/platforms/linux_common.rs', 'packages/linux.yaml') }}
+          # 不给 restore-keys：key 里哈希了钉版清单（cargo-c、pip 清单、
+          # rustup channel、.deb URL），一改自动冷装；前缀回退反而会把
+          # 旧版二进制恢复回来，而"二进制在场即跳过"探针会把它当成新版。
+          # No restore-keys on purpose: the key hashes the pin manifest
+          # (cargo-c, the pip list, the rustup channel, the .deb URLs), so
+          # a bump of any pinned version cold-installs; a prefix fallback
+          # would restore the OLD binaries and the "skip if binary
+          # exists" probes would take them for the new version.
+          key: tools-${{ matrix.platform }}-${{ hashFiles('packages/linux-tools.yaml') }}
 
       # ccache 滚动缓存——显式调用模式（驱动按 FFBUILD_CCACHE 给 --cc
       # 加前缀）；ffmpeg 跟 master 但跨 run 大部分文件不变，预处理
@@ -789,7 +789,7 @@ jobs:
   release:
     name: Publish release
     needs: [prepare, verify]
-    if: ${{ success() && (github.event_name == 'schedule' || github.event_name == 'repository_dispatch' || inputs.publish) }}
+    if: ${{ success() && (github.event_name == 'schedule' || inputs.publish) }}
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:

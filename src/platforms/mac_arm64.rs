@@ -13,6 +13,7 @@ pub fn pipeline() -> Pipeline {
         packages: platforms::mac_common::packages,
         extras: platforms::mac_common::extras_stage,
         ffmpeg: platforms::mac_common::ffmpeg,
+        ffmpeg_plan: platforms::mac_common::ffmpeg_plan,
         package: platforms::mac_common::package,
         save_deps: platforms::mac_common::save,
     }
