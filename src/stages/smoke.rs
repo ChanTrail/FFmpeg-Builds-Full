@@ -837,25 +837,7 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
                 .iter()
                 .chain(v_in)
                 .chain(*extra)
-                // CFR 归一输出时间戳——深 lookahead 编码器（vvenc/xavs2）
-                // 按内部重排吐包，muxer 对短输入会报非单调 dts /
-                // CFR-normalize output timestamps — deep-lookahead
-                // encoders (vvenc/xavs2) emit packets reordered, and the
-                // muxer reports non-monotonic dts on short inputs
-                .chain(
-                    [
-                        "-frames:v",
-                        "5",
-                        "-c:v",
-                        comp,
-                        "-fps_mode",
-                        "cfr",
-                        "-f",
-                        "null",
-                        "-",
-                    ]
-                    .iter(),
-                )
+                .chain(["-frames:v", "5", "-c:v", comp, "-f", "null", "-"].iter())
                 .map(|s| s.to_string())
                 .collect(),
             Fkind::AEnc => head
@@ -899,8 +881,12 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
                     .chain(["-t", "1", "-f", comp, &dst_s].iter())
                     .map(|s| s.to_string())
                     .collect();
-                let rc = sys::run(&fm, &a.iter().map(|s| s.as_str()).collect::<Vec<_>>(), bin)
-                    .unwrap_or(1);
+                let rc = sys::run_filtered(
+                    &fm,
+                    &a.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    bin,
+                    |l| l.contains("non monotonically increasing dts"),
+                );
                 if rc != 0 || !dst.is_file() {
                     annotate_error(&format!("exercise '{feat}' ({comp}) failed (exit {rc})"));
                     failed.push(format!("{feat}/{comp}"));
@@ -911,7 +897,14 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
             }
         };
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let rc = sys::run(&fm, &refs, bin).unwrap_or(1);
+        // lookahead 编码器把短输入整批重排吐包——muxer 的非单调 dts
+        // 投诉对 null 输出纯属噪音，按签名滤行，其余原样透出 /
+        // lookahead encoders reorder the short input wholesale — the
+        // muxer's non-monotonic-dts complaint is pure noise on a null
+        // output: filtered by signature, everything else passes through
+        let rc = sys::run_filtered(&fm, &refs, bin, |l| {
+            l.contains("non monotonically increasing dts")
+        });
         if rc == 0 {
             println!("exercise: {feat} -> {comp} ok");
             continue;
@@ -956,8 +949,6 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
             "60",
             "-c:v",
             enc,
-            "-fps_mode",
-            "cfr",
             "-f",
             fmt,
             &tmp_s,
@@ -966,7 +957,9 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
         // 完全不同 / carry the exit code in the report — a signal
         // death (-1/13x) needs a very different fix than a clean
         // error exit
-        let erc = sys::run(&fm, &eargs, bin).unwrap_or(1);
+        let erc = sys::run_filtered(&fm, &eargs, bin, |l| {
+            l.contains("non monotonically increasing dts")
+        });
         if erc != 0 {
             annotate_error(&format!(
                 "roundtrip: {enc} failed to encode {fmt} (exit {erc})"
@@ -1006,7 +999,9 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
             "null",
             "-",
         ];
-        let drc = sys::run(&fm, &dargs, bin).unwrap_or(1);
+        let drc = sys::run_filtered(&fm, &dargs, bin, |l| {
+            l.contains("non monotonically increasing dts")
+        });
         if drc != 0 {
             annotate_error(&format!(
                 "roundtrip: {dec} failed to decode {enc} output (exit {drc})"

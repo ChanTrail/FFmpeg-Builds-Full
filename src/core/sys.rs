@@ -623,6 +623,42 @@ pub fn exit_code(s: &std::process::ExitStatus) -> i32 {
     -1
 }
 
+/// 按签名滤行版 run：捕获 stdout+stderr，逐行剔除 drop_if 命中的
+/// 行（已知无害噪音按字面签名剔除——如 lookahead 编码器重排触发
+/// 的 muxer 非单调 dts 投诉），剩余原样透出；失败时回放尾部完整
+/// 现场（不过滤——失败要看全部上下文）/
+/// signature-filtered run: captures stdout+stderr, drops lines hit
+/// by drop_if (known-harmless noise removed by literal signature —
+/// e.g. the muxer's non-monotonic-dts complaint about lookahead
+/// reordering); on failure the unfiltered tail is replayed (failures
+/// want full context)
+pub fn run_filtered(prog: &str, args: &[&str], dir: &Path, drop_if: impl Fn(&str) -> bool) -> i32 {
+    let mut c = cmd(prog, args);
+    c.current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let out = match c.output() {
+        Ok(o) => o,
+        Err(_) => return 1,
+    };
+    let rc = exit_code(&out.status);
+    let merged = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if rc != 0 {
+        print!("{}", tail_lines(&merged, CI_GATE_TAIL));
+    } else {
+        for l in merged.lines() {
+            if !drop_if(l) {
+                println!("{l}");
+            }
+        }
+    }
+    rc
+}
+
 /// 非零退出视为失败 / Fail on a non-zero exit status
 pub fn run_ok(prog: &str, args: &[&str], dir: &Path) -> Result<(), String> {
     match run(prog, args, dir)? {
