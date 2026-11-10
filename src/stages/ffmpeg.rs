@@ -33,11 +33,11 @@ pub struct Info {
 /// 注意 / note: 不打任何补丁（patches 环节按新方针整体移除）— clean
 /// upstream sources only, per the rewrite policy.
 pub fn fetch(dest: &Path) -> Result<Info, String> {
-    // build-all 四变体的 plan 共享同一棵源码树——无条件 rm_rf+clone
-    // 会一轮网拉四次；src_dir 与钉版（FFMPEG_REF/FFMPEG_SHA）在单
-    // 进程内不变，记忆化等价且零代价 / build-all's four variant
+    // build-all 各变体的 plan 共享同一棵源码树——无条件 rm_rf+clone
+    // 会一轮网拉多次；src_dir 与钉版（FFMPEG_REF/FFMPEG_SHA）在单
+    // 进程内不变，记忆化等价且零代价 / build-all's variant
     // plans share one source tree — an unconditional rm_rf+clone
-    // would pull the network four times; src_dir and the pinned rev
+    // would re-pull the network per variant; src_dir and the pinned rev
     // (FFMPEG_REF/FFMPEG_SHA) cannot change inside one process, so
     // memoization is equivalent and free
     static INFO: std::sync::OnceLock<Result<Info, String>> = std::sync::OnceLock::new();
@@ -188,12 +188,12 @@ fn fetch_inner(dest: &Path) -> Result<Info, String> {
 /// ffconfigure 驱动：在 <build_dir> 跑 FFmpeg configure；某个外部库缺失/损坏导致失败时
 /// 把 --enable-<name> 记进 dropped-file、丢旗标再试——一次运行枚举出
 /// 所有开不了的库，各带 config.log 存档。configure 最终成功后只要有
-/// 一个变体的配置/编译作业：build-all 把四份 args 先算好（串行切
-/// env 期间逐个 plan），configure 随后四路并行、编译经 jobserver
+/// 一个变体的配置/编译作业：build-all 把各份 args 先算好（串行切
+/// env 期间逐个 plan），configure 随后并行、编译经 jobserver
 /// 令牌池化——各自的 build_dir/dropped/build_log 互不干扰
-/// one variant's configure/compile job: build-all plans the four arg
+/// one variant's configure/compile job: build-all plans the arg
 /// sets up front (one by one while toggling the env knobs), the
-/// configures then run four-way in parallel and compiles share the
+/// configures then run in parallel and compiles share the
 /// jobserver token pool — each job's build_dir/dropped/build_log is
 /// its own
 pub struct ConfJob {
@@ -252,9 +252,9 @@ pub fn configure(
     // 持久化进度日志：每行都镜像到文件 / persistent progress log
     let fflog = dropped_file.with_extension("fflog.txt");
     fsx::write(&fflog, "")?;
-    // 变体标签插进 [ffconfigure] 前缀——并行配置下四路 note 交错，
+    // 变体标签插进 [ffconfigure] 前缀——并行配置下多路 note 交错，
     // 行内标签是唯一的归属线索 / the variant tag rides inside the
-    // [ffconfigure] prefix — under parallel configures the four
+    // [ffconfigure] prefix — under parallel configures the
     // note streams interleave and the in-line tag is the only
     // attribution
     let tag = if label.is_empty() {
@@ -497,11 +497,11 @@ pub fn configure(
     }
 }
 
-/// 四路并行跑一批变体的 configure：探针是 fork/链接密集（大头是
-/// 几百个小编译的进程派生开销而非 CPU——MSYS2 上尤甚），四路并行
+/// 并行跑一批变体的 configure：探针是 fork/链接密集（大头是
+/// 几百个小编译的进程派生开销而非 CPU——MSYS2 上尤甚），多路并行
 /// ≈ 单倍时长；各变体的 dropped/fflog/config-log 分文件落盘，
 /// note 行内带变体标签归属 / run a batch of variant configures
-/// four-way in parallel: probing is fork/link-bound (the cost is the
+/// in parallel: probing is fork/link-bound (the cost is the
 /// process spawn of hundreds of tiny compiles, not CPU — doubly so
 /// under MSYS2) so parallel ≈ a single variant's wall time; each
 /// variant's dropped/fflog/config-log lands in its own files and
@@ -553,15 +553,15 @@ fn makefile_path(p: &Path, e: &sys::Env) -> String {
 
 /// jobserver 池化编译一批变体：包一层聚合 makefile——每变体一个
 /// 目标，recipe 是 $(MAKE) -C 的子 make 调用，自动共享父进程的
-/// jobserver 令牌池：四条变体的全部编译从同一个 -jN 预算里领令牌，
+/// jobserver 令牌池：各变体的全部编译从同一个 -jN 预算里领令牌，
 /// 既不空转（单变体链接/install 尾段的串行空档被其它变体填满）
-/// 也不超订（不是天真的 4×-jN 齐发）/ pool a batch of variant
+/// 也不超订（不是天真的 N×-jN 齐发）/ pool a batch of variant
 /// compiles through the GNU jobserver: wrap them in an aggregate
 /// makefile — one target per variant whose recipe is a $(MAKE) -C
 /// sub-make, which automatically shares the parent's token pool: all
 /// variant compiles draw tokens from a single -jN budget, neither
 /// idling (one variant's link/install tail is backfilled by the
-/// others) nor oversubscribing (not a naive 4×-jN blast)
+/// others) nor oversubscribing (not a naive N×-jN blast)
 pub fn compile_all(jobs: &[ConfJob], log_file: &Path) -> Result<(), String> {
     let e = sys::env();
     if jobs.len() == 1 {

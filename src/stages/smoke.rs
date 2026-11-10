@@ -112,10 +112,13 @@ const PRESENCE: &[(&str, L, &[&str])] = &[
     ("libxavs2", L::Enc, &["libxavs2"]),
     ("libsvtjpegxs", L::Enc, &["libsvtjpegxs"]),
     ("libsvtjpegxs", L::Dec, &["libsvtjpegxs"]),
-    // LCEVC 解码器族按解码基名注册（liblcevc_h264 等）——前缀兜底 /
-    // the LCEVC decoder family registers per base codec (liblcevc_h264
-    // ...) — the prefix fallback covers them all
-    ("liblcevc-dec", L::Dec, &["liblcevc_"]),
+    // FFmpeg 8 起 liblcevc_dec 的组件面是 lcevc 滤镜（背后是 lcevc
+    // 解复用/复用/lcevc_merge bsf 一族）——旧的 liblcevc_* 解码器族
+    // 已移除；滤镜是最稳的单一注册名 / since FFmpeg 8, liblcevc_dec's
+    // component face is the `lcevc` filter (backed by the lcevc
+    // demuxer/muxer/lcevc_merge bsf family) — the old liblcevc_*
+    // decoder family is gone; the filter is the stable single name
+    ("liblcevc-dec", L::Filt, &["lcevc"]),
     ("libuavs3d", L::Dec, &["libuavs3d"]),
     (
         "libvpl",
@@ -138,9 +141,13 @@ const PRESENCE: &[(&str, L, &[&str])] = &[
     ("libcodec2", L::Enc, &["libcodec2"]),
     ("libilbc", L::Enc, &["libilbc"]),
     ("libfdk-aac", L::Enc, &["libfdk_aac"]),
-    ("libmodplug", L::Dec, &["libmodplug"]),
-    ("libopenmpt", L::Dec, &["libopenmpt"]),
-    ("libgme", L::Dec, &["libgme"]),
+    // tracker 格式三家是解复用器（libavformat），不是解码器——解码由
+    // 库自带渲染管线产 pcm / the three tracker-format libs are
+    // demuxers (libavformat), not decoders — their own render
+    // pipelines emit pcm
+    ("libmodplug", L::Demux, &["libmodplug"]),
+    ("libopenmpt", L::Demux, &["libopenmpt"]),
+    ("libgme", L::Demux, &["libgme"]),
     ("openal", L::Dev, &["openal"]),
     // ---- 滤镜 / filters ----
     ("libflite", L::Filt, &["flite"]),
@@ -153,7 +160,11 @@ const PRESENCE: &[(&str, L, &[&str])] = &[
     // drawtext only compiles when freetype is present — it IS
     // freetype's component face
     ("libfreetype", L::Filt, &["drawtext"]),
-    ("lcms2", L::Filt, &["icc_transform"]),
+    // lcms2 的滤镜面是 iccdetect/iccgen（configure: *_filter_deps
+    // ="lcms2"）——没有叫 icc_transform 的东西 / lcms2's filter face
+    // is iccdetect/iccgen (configure: *_filter_deps="lcms2") — there
+    // is no such thing as icc_transform
+    ("lcms2", L::Filt, &["iccdetect", "iccgen"]),
     ("cairo", L::Filt, &["drawvg"]),
     ("librsvg", L::Dec, &["librsvg"]),
     ("libzimg", L::Filt, &["zscale"]),
@@ -263,7 +274,11 @@ const PRESENCE: &[(&str, L, &[&str])] = &[
     ("libpulse", L::Dev, &["pulse"]),
     ("libdc1394", L::Dev, &["libdc1394"]),
     ("xlib", L::Dev, &["x11grab"]),
-    ("libxcb", L::Dev, &["xcbgrab"]),
+    // xcbgrab.c 注册的 demuxer 名是 x11grab（xcb 后端顶替 Xlib
+    // 同名 indev——源码 p.name 实锤）/ xcbgrab.c registers the demuxer
+    // name `x11grab` (the xcb backend takes over the Xlib indev's
+    // name — p.name in the source is definitive)
+    ("libxcb", L::Dev, &["x11grab"]),
     ("libdrm", L::Dev, &["kmsgrab"]),
     ("avfoundation", L::Dev, &["avfoundation"]),
     ("decklink", L::Dev, &["decklink"]),
@@ -886,6 +901,13 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
         let tmp = bin.join(format!("smoke-rt-{dec}.{fmt}"));
         let _g = scopeguard(&tmp);
         let tmp_s = tmp.to_string_lossy().to_string();
+        // 60 帧：编码器 lookahead/帧缓冲在吐出首个包前要吃饱——xevd/
+        // xavs2 这类深缓冲编码器只喂几帧会被全吃掉，文件变空，下游
+        // 解码报"no stream"误导成解码器故障 / 60 frames: deep-lookahead
+        // encoders (xevd, xavs2) must fill their frame buffers before
+        // emitting a packet — a handful of frames gets swallowed whole,
+        // lands an empty file, and the decoder side misreports it as a
+        // "no stream" decode failure
         let eargs = [
             "-hide_banner",
             "-loglevel",
@@ -896,7 +918,7 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
             "-i",
             "testsrc2=size=640x360:rate=25",
             "-frames:v",
-            "5",
+            "60",
             "-c:v",
             enc,
             "-f",
@@ -908,10 +930,30 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
             failed.push(format!("{enc}(rt)"));
             continue;
         }
+        // 编码吐空包（lookahead 吃光/悄悄零输出）本身就是故障——在这
+        // 报错比等下游"no stream"误报好诊断 / an encode that emitted
+        // nothing (lookahead ate it all / silent zero output) is
+        // itself the failure — reporting it here beats letting the
+        // downstream "no stream" misreport
+        if std::fs::metadata(&tmp)
+            .map(|m| m.len() == 0)
+            .unwrap_or(true)
+        {
+            annotate_error(&format!("roundtrip: {enc} produced an empty {fmt} stream"));
+            failed.push(format!("{enc}(rt)"));
+            continue;
+        }
+        // 输入端 -f 强指解复用器：裸 ES 容器（evc/avs2/ivf）不保证被
+        // 探针识别——识别失败时解码输入 0 流，报"no stream"而非真因 /
+        // force the demuxer with input -f: bare-ES containers
+        // (evc/avs2/ivf) are not guaranteed to probe — a failed probe
+        // yields a zero-stream input and a misleading "no stream" error
         let dargs = [
             "-hide_banner",
             "-loglevel",
             "error",
+            "-f",
+            fmt,
             "-c:v",
             dec,
             "-i",

@@ -302,7 +302,7 @@ pub fn save() -> Result<(), String> {
 /// 钥匙串，无需 CA bundle）/ the current variant's ffmpeg configure
 /// job: fetch -> features flags + toolchain -> a private build dir
 /// (ffbuild-ffmpeg{variant}) — configure and compile are orchestrated
-/// by the caller (build-all runs the four variants in parallel). The
+/// by the caller (build-all runs the two variants in parallel). The
 /// TLS gate is securetransport (Apple keychain, no CA bundle needed)
 pub fn ffmpeg_plan() -> Result<crate::ffmpeg::ConfJob, String> {
     let e = sys::env();

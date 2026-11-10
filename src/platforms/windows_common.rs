@@ -478,7 +478,7 @@ pub fn packages() -> Result<(), String> {
 /// the current variant's ffmpeg configure job: fetch sources ->
 /// features flags + platform toolchain args -> a private build dir
 /// (ffbuild-ffmpeg{variant}) — configure and compile are orchestrated
-/// by the caller (build-all runs the four variants in parallel)
+/// by the caller (build-all runs the two variants in parallel)
 pub fn ffmpeg_plan() -> Result<crate::ffmpeg::ConfJob, String> {
     let e = sys::env();
     // 必需的库——丢包重试不得丢它们

@@ -583,7 +583,7 @@ fn sanitize_pc() -> Result<(), String> {
 /// variant's ffmpeg configure job: fetch + assemble args + a private
 /// build dir (ffbuild-ffmpeg{variant}) + dropped-libs{variant}.txt —
 /// configure and compile are orchestrated by the caller (build-all
-/// runs the four variants in parallel)
+/// runs the two variants in parallel)
 pub fn ffmpeg_plan() -> Result<crate::ffmpeg::ConfJob, String> {
     let e = sys::env();
     const REQUIRED: &[&str] = &[
@@ -750,7 +750,7 @@ pub fn ffmpeg_plan() -> Result<crate::ffmpeg::ConfJob, String> {
     // Libs.private）；四变体重复跑幂等——token 已折叠的不再变化 /
     // the .pc static-name sanitization must run before configure
     // probing (probe link lines consume Libs.private verbatim);
-    // idempotent across the four variants — folded tokens stay folded
+    // idempotent across the variants — folded tokens stay folded
     sanitize_pc()?;
     let variant = sys::variant_suffix();
     Ok(crate::ffmpeg::ConfJob {

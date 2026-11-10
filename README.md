@@ -2,22 +2,22 @@
 
 [简体中文](README.md) | [English](README.en.md)
 
-全平台 FFmpeg 构建流水线：每 3 天自动构建上游 FFmpeg `master`（五平台同一提交，每平台四个变体——静态/共享/调试/共享+调试），经 GitHub Releases 发布。
+全平台 FFmpeg 构建流水线：每 3 天自动构建上游 FFmpeg `master`（五平台同一提交，每平台两个变体——静态/共享），经 GitHub Releases 发布。
 全部为 **GPLv3、可再分发**构建（fdk-aac 等非自由库被刻意排除），且全部是**原生编译**——各平台在对应架构的 runner 上构建，不交叉编译、不用 Docker。
 
 整条流水线由本仓库的 **Rust 驱动程序**（`FFmpeg-Builds-Full`，见根目录 `Cargo.toml`）执行：库配方、源码获取、FFmpeg configure 编排、deps 缓存与打包校验全部是 Rust 代码。
 
 ## 下载
 
-每次构建产出**四个变体**：静态（默认，无后缀）、共享（`-shared`，可执行文件 + 共享库同目录旁位自解析）、调试（`-debug`，`-O0 -g3` 全符号）、共享+调试（`-shared-debug`，两形态叠加）。文件名：`ffmpeg-<上游提交前10位>-<平台>[-shared|-debug|-shared-debug].<扩展名>`，例如 `ffmpeg-46f23be8b1-windows-x86_64.7z`（静态）或 `ffmpeg-46f23be8b1-linux-x86_64-shared.tar.xz`。
+每次构建产出**两个变体**：静态（默认，无后缀）、共享（`-shared`，可执行文件 + 共享库同目录旁位自解析）。文件名：`ffmpeg-<上游提交前10位>-<平台>[-shared].<扩展名>`，例如 `ffmpeg-46f23be8b1-windows-x86_64.7z`（静态）或 `ffmpeg-46f23be8b1-linux-x86_64-shared.tar.xz`。调试形态不进全量线，需要时可用 `--debug`/`--shared --debug` 单变体手动构建。
 
 **浮动 `latest`（链接固定，适合脚本）**：
 
 ```
-https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-latest-<platform>[-shared|-debug|-shared-debug].<ext>
+https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-latest-<platform>[-shared].<ext>
 ```
 
-`<platform>`：`windows-x86_64`、`windows-arm64`、`linux-x86_64`、`linux-arm64`、`macos-arm64`；Windows 为 `.7z`（固实压缩），其余为 `.tar.xz`。四个变体各有独立的 latest 链接。
+`<platform>`：`windows-x86_64`、`windows-arm64`、`linux-x86_64`、`linux-arm64`、`macos-arm64`；Windows 为 `.7z`（固实压缩），其余为 `.tar.xz`。两个变体各有独立的 latest 链接。
 
 **带日期的 Release**：标签 `YYYYMMDD`（同日多次构建附加 `-HHMM`），保留最近 30 个（约 3 个月）。每个压缩包附带：
 
@@ -195,7 +195,7 @@ Linux 另有：ALSA、PulseAudio、libxcb/X11 全家、V4L2、libdrm；以上均
 FFmpeg-Builds-Full <build|build-all|packages|extras|ffmpeg|package|save-deps|smoke|features|sources>
 ```
 
-`build-all` 一次建完全部产物变体（静态 → shared → debug → shared-debug）：首个变体走完整流水线产出 deps 前缀，后续变体只重跑 `ffmpeg → package`，依赖不重复构建；CI 的三平台构建步用的就是这条命令。
+`build-all` 一次建完全部产物变体（静态 + shared）：共享底座（packages + extras）先跑一遍，随后逐变体出计划、双路并行 configure、jobserver 池化编译、逐变体 install→package——依赖不重复构建，ffmpeg 本体编两遍；CI 的三平台构建步用的就是这条命令。
 
 - **特性开关**（`features/*.yaml`）：FFmpeg configure 旗标的唯一真源。四层合并——`base.yaml`（永远启用）、`common.yaml`（全平台通用）、`misc.yaml`（按平台分节的杂项）、`<os>-<arch>.yaml`（平台特化）；键为特性名，值为 `enable`/`disable`，跨文件重复键直接报错。每个 `enable` 还要过本地探测（pkg-config / 文件存在），探不过自动降级 `disable`。
 - **源码清单**（`sources/*.yaml`）：同构四层合并，值是获取方式——`archive` 固定产物 URL（可带 `sha256` 校验），`git` 仓库地址实时解析：默认分支 HEAD → GitHub/GitLab CI 验证 → 红/无 CI 回退最新版本 tag；`ref:` 可钉分支/tag/commit，`mirrors:` 给出备用仓（主仓克隆失败时按序回退）。下载走 reqwest 异步流式（断点续传+重试退避），构建与预取并发；git 拉取带停滞检测与递增退避重试，无子模块的源在 git 通道全灭时回退主机归档端点（GitHub `/archive/`、GitLab `/-/archive/`、googlesource `+archive` 等）。
@@ -203,8 +203,8 @@ FFmpeg-Builds-Full <build|build-all|packages|extras|ffmpeg|package|save-deps|smo
 - **依赖缓存**：依赖库编好后打成 `deps-<平台>-<哈希>.tar.zst` 存入固定 `deps` Release；之后每次运行还原（约 1–2 分钟）只编 FFmpeg 本体。配方/清单变更 → 新签名 → 自动全量重编；超时自动上传 `partial` 包下次续建。
 - **平台包栈**（`packages/*.yaml`）：Windows 为 pacman 包表（UCRT64/CLANGARM64 双 profile），Linux 为 apt 包表（最新 GCC 降序探测 + pyenv 构建工具 + Rust/cargo-c），macOS 为 brew 包表。
 - **确定性 + 严格的 configure**：五平台均 `--disable-autodetect`——只有清单显式点名的库参与构建，runner 镜像碰巧装上的东西不会悄悄混进二进制；点名库探测失败会被逐个剔除重试以枚举全部问题（各自 config.log 存档），但只要存在剔除就**拒绝构建**；必需库（x264、x265、aom、dav1d、vpx、opus、lame、freetype、libass、webp、zlib + 各平台 TLS）缺失立即报错。
-- **四变体产物**：`build-all` 在每条平台腿内顺序产出四份产物——静态（默认，`--disable-shared`，产物名无后缀）、shared（`--enable-shared --disable-static`，产物名 `-shared` 后缀）、debug（`--enable-debug=3 --disable-optimizations --disable-stripping`，`-O0 -g3` 全符号，产物名 `-debug` 后缀）、shared+debug（两开关叠加，产物名 `-shared-debug` 后缀）；首个变体走完整流水线（packages + extras），随后三个变体只重跑 `ffmpeg → package`——依赖只编一次，ffmpeg 本体编四遍，`dist/` 累积全部产物。依赖快照照常一条 `deps-<平台>` 通道（依赖库一律 `-fPIC` 编译，链进共享库天然合法）。
-- **质量关口**：每平台腿的四份产物在干净 runner 上用驱动的 `smoke` 子命令逐个冒烟（真实编码 + 检查无 `--enable-nonfree` + 动态依赖白名单——shared 变体的旁位解析在此顺带实证）；五条腿全成功才发布，任一失败本次不发布。
+- **两变体产物**：`build-all` 在每条平台腿内产出两份产物——静态（默认，`--disable-shared`，产物名无后缀）、shared（`--enable-shared --disable-static`，产物名 `-shared` 后缀）。debug（`--enable-debug=3 --disable-optimizations --disable-stripping`，`-O0 -g3` 全符号）与 shared+debug 不进全量线，需要时用 `--debug` 单变体手动构建。共享底座（packages + extras）只跑一遍，ffmpeg 本体经"逐变体计划 → 双路并行 configure → jobserver 池化编译 → 逐变体 install→package"编两遍，`dist/` 累积全部产物。依赖快照照常一条 `deps-<平台>` 通道（依赖库一律 `-fPIC` 编译，链进共享库天然合法）。
+- **质量关口**：每平台腿的两份产物在干净 runner 上用驱动的 `smoke` 子命令逐个冒烟（真实编码 + 检查无 `--enable-nonfree` + 动态依赖白名单——shared 变体的旁位解析在此顺带实证）；五条腿全成功才发布，任一失败本次不发布。
 
 ### 驱动程序 CI（`ci.yml`）
 
@@ -214,10 +214,10 @@ FFmpeg-Builds-Full <build|build-all|packages|extras|ffmpeg|package|save-deps|smo
 
 ## 触发与配置
 
-- **驱动发布链**：驱动 release（tag `Driver-<版本>`）成功发布后自动链入一次 FFmpeg 构建（`repository_dispatch`）。构建用的始终是已发布的最新驱动二进制（浮动 `Driver-latest` 桶），不在仓内现编。
-- **FFmpeg 定时构建**：cron `0 0 */3 * *`（每月 1、4、7…日 00:00 UTC / 北京时间 08:00；cron 无法精确表达"每 72 小时"，月末间隔会缩短为 1–2 天；整点任务高峰时 GitHub 可能延迟触发）。定时仅发生在 master（默认分支），且**首次完整成功构建之后才生效**（`latest` tag 存在为凭）。产物发正常日期 tag release 并滑动 `latest`。
-- **非 master 分支**：该分支的驱动 CI 成功完成后自动发起 FFmpeg 构建（`workflow_run`），产物以 **pre-release** 发布，不碰 `latest`。
-- **手动**：Actions → "Build FFmpeg" → "Run workflow"，可选 `publish` 是否发布。
+- **CI→发布链**：`ci.yml` 在 master 全绿（测试 + 五平台驱动二进制 + FFmpeg 构建 + 干净机冒烟）后发 `repository_dispatch` 调起 `release.yml`——直接发布本次 CI 已验证的产物：驱动二进制发 `Driver-<版本>` tag（版本有变化时）+ 滑动 `Driver-latest` 桶，FFmpeg 产物发日期 tag release + 滑动 `latest`。产物只编一次，不重跑构建。
+- **FFmpeg 定时构建**：cron `0 0 */3 * *`（每月 1、4、7…日 00:00 UTC / 北京时间 08:00；cron 无法精确表达"每 72 小时"，月末间隔会缩短为 1–2 天；整点任务高峰时 GitHub 可能延迟触发）。定时仅发生在 master（默认分支），且**首次完整成功构建之后才生效**（`latest` tag 存在为凭）。始终用已发布的最新驱动二进制去构建 FFmpeg，产物发正常日期 tag release 并滑动 `latest`。
+- **非 master 分支**：不自动构建；可手动 dispatch `scheduled.yml`，产物以 **pre-release** 发布，不碰 `latest`。
+- **手动**：Actions → "Scheduled FFmpeg Build" → "Run workflow"，可选 `publish` 是否发布。
 - **驱动命令行选项**（`FFmpeg-Builds-Full <命令> [选项]`，全部支持 `--opt=value` 与 `--opt value` 两种写法）：`--work`/`--dist`/`--msys2`（路径）、`--repo`/`--ref`/`--sha`（钉源码——仓源与 ref 的事实源是 `sources/base.yaml` 的 `ffmpeg:` 键：主仓 `git://git.ffmpeg.org/ffmpeg.git` 失败按 `mirrors:` 顺序兜底，`--repo` 显式指定则单仓无回退）、`--mirror`（pacman 换源：ustc/tuna/aliyun/repo，短写 `-m`）、`--jobs`（并行数）、`--debug`（-g3 + 零优化 + 留符号）、`--shared`（共享构建，见下）、`--ccache`。每个选项透传成同名环境变量（`--work`→`FFBUILD_WORK` 等），CI workflow 直传 env 与命令行等效。
 - **共享构建开关**：`--shared`（或 env `FFBUILD_SHARED` 非空）时产物翻转为共享形态（`--enable-shared --disable-static`）——`bin/` 内多出 `av*.dll`/`lib*.so.N`/`lib*.dylib` 并与可执行文件旁位自解析（Windows 靠 PE 目录搜索、macOS 靠 `@loader_path`、Linux 靠 patchelf 打的 `$ORIGIN`，均无需环境变量）；产物名带 `-shared` 后缀。依赖仍是静态库整体编入共享库，不额外发散 DLL/so。Linux/macOS 的依赖库一律 `-fPIC` 编译（x86_64/arm64 上代价≈0），同一份 deps 快照静态/共享通吃；macOS 产物依旧无法"全共享"——系统框架（VideoToolbox 等）永远是动态依赖。
 - **纯环境变量**：`GITHUB_TOKEN`/`GH_TOKEN` 与 `GITLAB_TOKEN`/`GL_TOKEN`（git 源 CI 查询提额/私有实例，密钥走 env 不进命令行）、`HTTPS_PROXY` 等代理变量（reqwest 原生支持）；`FFBUILD_CHILD`/`FFMPEG_GDB` 为父子进程内部管道变量，非用户旋钮。
@@ -227,7 +227,7 @@ FFmpeg-Builds-Full <build|build-all|packages|extras|ffmpeg|package|save-deps|smo
 - 仓库须保持**公开**——arm/macOS runner 仅对公开仓库免费。
 - 首次运行（或清单/配方变更后首次）需全量编依赖，耗时数小时；单任务上限 6 小时，跑不完靠 `partial` 包续建。
 - `deps` Release 由流水线自动管理，可整体删除，下次重建。
-- 失败排查：对应 `logs-<平台>` artifact（保留 7 天）含各库日志；`build-<平台>` artifact（保留 3 天）含已完成的压缩包（四变体同包）。
+- 失败排查：对应 `logs-<平台>` artifact（保留 7 天）含各库日志；`build-<平台>` artifact（保留 3 天）含已完成的压缩包（两变体同包）。
 - GitHub 会在公开仓库 60 天无活动后停用定时工作流；最稳妥的办法是偶尔提交。
 - 源码实时解析依赖 GitHub/GitLab API；匿名调用限流低，CI 里 GitHub 自动用 `GITHUB_TOKEN` 提额，GitLab 侧可配置 secret/变量 `GITLAB_TOKEN`（含自托管实例）。本地网络不佳时挂代理（`HTTPS_PROXY`）。
 - 需要 fdk-aac 等非自由库须自行构建，此类二进制**不可再分发**。
