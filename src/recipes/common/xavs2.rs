@@ -34,56 +34,35 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         .replace("EGIB", "bss")
         .replace("naidnePF", "bss");
     fsx::write(&cf, &text)?;
-    // asm nasm de 2019 与内部 pool 是静默 SIGSEGV（~0.5s，-11）的两
-    // 个嫌疑面：crash 跨 leg 漂移 = VM CPU 不同 → asm dispatch；4
-    // worker 线程同构挂起 + 主线程崩在派发路径 → pool。asm 全平台
-    // 关；thread 仅 Linux 关——Windows 下 --disable-thread 拆掉
-    // windows.h 的 include 链（xavs2_mdate 编译炸，实证），且
-    // Windows 腿带 pool 通过 / 2019 nasm asm and the internal pool
-    // are the two silent-SIGSEGV suspects (~0.5s, -11): leg-migrating
-    // crash = per-VM CPU asm dispatch; 4 identically-parked worker
-    // threads + main dead inside dispatch = pool. asm off everywhere;
-    // thread off on Linux only — on Windows it removes the windows.h
-    // include chain (xavs2_mdate fails, proven) and the Windows leg
-    // passes with the pool anyway
-    let mut args = vec![
-        "--disable-cli".to_string(),
-        "--enable-static".into(),
-        "--enable-pic".into(),
-        "--disable-asm".into(),
+    // asm nasm de 2019 是静默 SIGSEGV（~0.5s，-11）的嫌疑面：crash
+    // 跨 leg 漂移 = VM CPU 不同 → asm dispatch；asm-off + pool-on 在
+    // Windows 腿实证通过。--disable-thread 不可走——上游该路全线
+    // bitrot（osdep.h 只桩了 3/15 个线程 shim，threadpool.c 无
+    // HAVE_THREAD 守卫，AEC/REC 架构本就长在 worker 上），Windows
+    // 下还会拆掉 windows.h 的 include 链（xavs2_mdate 编译炸）/
+    // 2019-era nasm asm is the silent-SIGSEGV suspect (~0.5s, -11):
+    // leg-migrating crash = per-VM CPU asm dispatch; asm-off + pool-on
+    // is proven on the Windows leg. --disable-thread is a dead end —
+    // upstream bitrotted it everywhere (osdep.h stubs only 3/15 thread
+    // shims, threadpool.c has no HAVE_THREAD guard, the AEC/REC
+    // architecture lives on workers), and on Windows it also removes
+    // the windows.h include chain (xavs2_mdate fails to compile)
+    let args = [
+        "--disable-cli",
+        "--enable-static",
+        "--enable-pic",
+        "--disable-asm",
+        "--disable-avs",
+        "--disable-swscale",
+        "--disable-lavf",
+        "--disable-ffms",
+        "--disable-gpac",
+        "--disable-lsmash",
+        "--extra-asflags=-w-macro-params-legacy",
+        "--extra-cflags=-Wno-error=incompatible-pointer-types",
     ];
-    // Linux 关线程要补 sched.h：cpu.c:358 有一条手写的孤儿
-    // sched_getaffinity 声明（SYS_LINUX 守卫不带 HAVE_CPU_COUNT），
-    // thread=no 时 sched.h 不进场 → cpu_set_t 未声明编译炸；函数体
-    // 内真正的调用点都在 !HAVE_THREAD 早退的死支里，类型补上即过 /
-    // Linux's --disable-thread needs sched.h injected: cpu.c:358 has
-    // an orphaned handwritten sched_getaffinity declaration (the
-    // SYS_LINUX guard lacks HAVE_CPU_COUNT), and with thread=no
-    // sched.h never arrives → undeclared cpu_set_t breaks the build;
-    // the real call sites sit in the !HAVE_THREAD early-return dead
-    // branch — supplying the type is enough
-    let cflags = if e.os == sys::Os::Linux {
-        args.push("--disable-thread".into());
-        "-Wno-error=incompatible-pointer-types -include sched.h"
-    } else {
-        "-Wno-error=incompatible-pointer-types"
-    };
-    args.extend(
-        [
-            "--disable-avs",
-            "--disable-swscale",
-            "--disable-lavf",
-            "--disable-ffms",
-            "--disable-gpac",
-            "--disable-lsmash",
-            "--extra-asflags=-w-macro-params-legacy",
-        ]
-        .iter()
-        .map(|s| s.to_string()),
-    );
-    args.push(format!("--extra-cflags={cflags}"));
-    args.push(format!("--prefix={}", e.prefix));
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let prefix = format!("--prefix={}", e.prefix);
+    let refs: Vec<&str> = args.iter().copied().chain([prefix.as_str()]).collect();
     sys::run_ok("./configure", &refs, &b)?;
     let jobs = e.jobs.to_string();
     sys::run_ok("make", &["-j", &jobs], &b)?;
