@@ -677,7 +677,11 @@ pub fn emit_symbols(work: &Path, variant: &str) {
             continue;
         }
         if let Ok(text) = sys::capture("nm", &["-n", &f.to_string_lossy()], work) {
-            let _ = fsx::write(&work.join(format!("ffmpeg{variant}.nm")), &text);
+            // .nm.txt 扩展名：collect-logs 只收 *.txt/*.log——裸 .nm 会
+            // 被过滤掉（实证）/ the .nm.txt suffix: collect-logs only
+            // gathers *.txt/*.log — a bare .nm gets filtered out
+            // (empirical)
+            let _ = fsx::write(&work.join(format!("ffmpeg{variant}.nm.txt")), &text);
         }
         return;
     }
