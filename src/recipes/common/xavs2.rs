@@ -52,9 +52,22 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         "--enable-pic".into(),
         "--disable-asm".into(),
     ];
-    if e.os == sys::Os::Linux {
+    // Linux 关线程要补 sched.h：cpu.c:358 有一条手写的孤儿
+    // sched_getaffinity 声明（SYS_LINUX 守卫不带 HAVE_CPU_COUNT），
+    // thread=no 时 sched.h 不进场 → cpu_set_t 未声明编译炸；函数体
+    // 内真正的调用点都在 !HAVE_THREAD 早退的死支里，类型补上即过 /
+    // Linux's --disable-thread needs sched.h injected: cpu.c:358 has
+    // an orphaned handwritten sched_getaffinity declaration (the
+    // SYS_LINUX guard lacks HAVE_CPU_COUNT), and with thread=no
+    // sched.h never arrives → undeclared cpu_set_t breaks the build;
+    // the real call sites sit in the !HAVE_THREAD early-return dead
+    // branch — supplying the type is enough
+    let cflags = if e.os == sys::Os::Linux {
         args.push("--disable-thread".into());
-    }
+        "-Wno-error=incompatible-pointer-types -include sched.h"
+    } else {
+        "-Wno-error=incompatible-pointer-types"
+    };
     args.extend(
         [
             "--disable-avs",
@@ -64,11 +77,11 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "--disable-gpac",
             "--disable-lsmash",
             "--extra-asflags=-w-macro-params-legacy",
-            "--extra-cflags=-Wno-error=incompatible-pointer-types",
         ]
         .iter()
         .map(|s| s.to_string()),
     );
+    args.push(format!("--extra-cflags={cflags}"));
     args.push(format!("--prefix={}", e.prefix));
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     sys::run_ok("./configure", &refs, &b)?;
