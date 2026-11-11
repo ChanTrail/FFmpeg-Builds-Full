@@ -825,6 +825,7 @@ pub fn package() -> Result<(), String> {
     // static one by name — both shapes can coexist under one driver
     // dir, so names must discriminate (fixed order: -shared-debug)
     let variant = sys::variant_suffix();
+    crate::ffmpeg::emit_symbols(&e.work, &variant);
     let name = format!("ffmpeg-{hash}-{platform}{variant}");
     let pkgroot = e.work.join("pkg");
     let pkg = pkgroot.join(&name);

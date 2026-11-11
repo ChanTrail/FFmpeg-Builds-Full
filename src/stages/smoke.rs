@@ -504,6 +504,25 @@ fn diagnose_failed_encode(fm: &str, enc: &str, args: &[&str], bin: &Path, rc: i3
         )
         .unwrap_or(1);
         println!("encode test: {enc} retried with -threads 1 -> exit {trc}");
+        // 滤镜线程是独立旋钮：-threads 只拧编码器，-filter_threads
+        // 才拧 ffmpeg 自己的 vf# worker（实证：xavs2 的 SIGSEGV 崩在
+        // vf#0:0 栈而非编码线程）。单独再过一档能区分"ffmpeg MT
+        // 滤镜面"与"编码器本体" / filter threads are a separate knob:
+        // -threads controls the encoder only, -filter_threads controls
+        // ffmpeg's own vf# workers (empirical: xavs2's SIGSEGV lands on
+        // a vf#0:0 stack, not an encode thread). A pass here separates
+        // "ffmpeg's MT filtergraph" from "the encoder itself"
+        if let Some(i) = targs.iter().position(|s| s == "-c:v") {
+            let mut fargs = targs.clone();
+            fargs.splice(i..i, ["-filter_threads".into(), "1".into()]);
+            let frc = sys::run(
+                fm,
+                &fargs.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                bin,
+            )
+            .unwrap_or(1);
+            println!("encode test: {enc} retried with -filter_threads 1 -> exit {frc}");
+        }
     }
     // 崩溃（132=SIGILL，139=SIGSEGV）且无输出时：PATH 上有 gdb 时在
     // gdb 下重跑抓回溯。打包后的 $FFMPEG strip 过——FFMPEG_GDB 指

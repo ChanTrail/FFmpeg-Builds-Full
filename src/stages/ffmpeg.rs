@@ -658,3 +658,27 @@ pub fn external_assets(buildconf: &str) -> String {
     // it verbatim and an empty section takes its separator along
     format!("External Assets\n{out}\n")
 }
+
+/// 把构建目录里未剥离副本（ffmpeg_g[.exe]，回退 ffmpeg[.exe]）的
+/// nm -n 符号表落到 <work>/ffmpeg{variant}.nm——verify 的 gdb 回溯
+/// 全是 ??（strip 后地址不可辨）；此表只随失败日志包上传供离线对
+/// 号，不进发布包。best-effort：文件缺席或 nm 失败都静默略过 /
+/// emit the unstripped twin's (ffmpeg_g[.exe], falling back to
+/// ffmpeg[.exe]) nm -n symbol table to <work>/ffmpeg{variant}.nm —
+/// verify's gdb backtraces are all ?? (stripped addresses
+/// unresolvable); the table rides only the failure log bundle for
+/// offline resolution, never the release package. best-effort: a
+/// missing file or a failed nm is silently skipped
+pub fn emit_symbols(work: &Path, variant: &str) {
+    let bd = work.join(format!("ffbuild-ffmpeg{variant}"));
+    for cand in ["ffmpeg_g", "ffmpeg_g.exe", "ffmpeg", "ffmpeg.exe"] {
+        let f = bd.join(cand);
+        if !f.is_file() {
+            continue;
+        }
+        if let Ok(text) = sys::capture("nm", &["-n", &f.to_string_lossy()], work) {
+            let _ = fsx::write(&work.join(format!("ffmpeg{variant}.nm")), &text);
+        }
+        return;
+    }
+}
