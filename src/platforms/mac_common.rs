@@ -158,7 +158,67 @@ pub fn packages() -> Result<(), String> {
     }
     let _ = sys::run("brew", &["link", "--force", "gettext"], &e.work);
     log::group_end();
+    ensure_metal_toolchain(&e.work);
     Ok(())
+}
+
+/// FFmpeg configure 用 `xcrun -sdk macosx metal -v` 探 metalcc——自
+/// Xcode 16.4 起 Metal 工具链是按需下载的 MobileAsset（cryptex 按需
+/// 挂载）；资产缺席时 xcrun 直接报 "missing Metal Toolchain"，而
+/// build-all 的四变体 configure 是并行起跑的，同刻各探一次——谁撞上
+/// 资产下载的窄窗谁吃 missing（实证：同趟 static 过、shared 丢
+/// --enable-metal）。这里串行预取：先探一次，缺则
+/// `xcodebuild -downloadComponent MetalToolchain` 补票（已装时幂等
+/// 秒回），再带隙重探让 cryptex 挂载收敛；仍缺只 warn——丢落的
+/// --enable-metal 由 dropped-libs 索引与 smoke 的 flag-dropped 呈现，
+/// 与 packages() 的非致命哲学一致 /
+/// FFmpeg's configure probes metalcc via `xcrun -sdk macosx metal -v`
+/// — since Xcode 16.4 the Metal toolchain is an on-demand MobileAsset
+/// (cryptex-mounted); when the asset is absent xcrun plainly reports
+/// "missing Metal Toolchain", and build-all's four variant configures
+/// start in parallel and each probes it at the same moment — whichever
+/// probe hits the asset-download window eats "missing" (empirical: the
+/// same run passed static yet dropped --enable-metal for shared).
+/// Prefetch serially here: probe once, fetch via `xcodebuild
+/// -downloadComponent MetalToolchain` when missing (idempotent, returns
+/// fast when already installed), then re-probe with slack so the cryptex
+/// mount settles; a still-absent toolchain only warns — the dropped
+/// --enable-metal is surfaced by the dropped-libs index and smoke's
+/// flag-dropped check, matching packages()' non-fatal philosophy
+fn ensure_metal_toolchain(dir: &Path) {
+    // 探针与 configure 内同源同文，过不过以退出码为准（-v 走 stdout，
+    // 小输出经 CI 闸门原样透出，日志里能看到 metal 版本行）/
+    // the probe is byte-identical to configure's — verdict by exit code
+    // (-v prints to stdout; the small payload passes the CI gate
+    // verbatim, leaving the metal version line in the log)
+    let probe = |d: &Path| {
+        sys::run("xcrun", &["-sdk", "macosx", "metal", "-v"], d).unwrap_or(1) == 0
+    };
+    if probe(dir) {
+        return;
+    }
+    log::group_begin("Fetch Metal toolchain");
+    if sys::run("xcodebuild", &["-downloadComponent", "MetalToolchain"], dir).unwrap_or(1) != 0 {
+        // Xcode.app root 拥有的镜像走免密 sudo 补位（runner 镜像既定
+        // 前提——上面 /usr/local 的 sudo -n 同款）/ images where
+        // Xcode.app is root-owned retry via passwordless sudo (an
+        // established runner-image assumption — same sudo -n as
+        // /usr/local above)
+        let _ = sys::run(
+            "sudo",
+            &["-n", "xcodebuild", "-downloadComponent", "MetalToolchain"],
+            dir,
+        );
+    }
+    for _ in 0..3 {
+        if probe(dir) {
+            log::group_end();
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+    log::group_end();
+    log::warn("Metal toolchain still missing after download — configure will drop --enable-metal");
 }
 
 /// deps 签名：配方表 + sources/features 清单 + 工具链指纹 / the deps
