@@ -1028,6 +1028,20 @@ pub fn package() -> Result<(), String> {
         ));
     }
 
+    // pkg/bin 里的是 stripped；冒烟测试用构建目录的 ffmpeg_g（未剥离
+    // 兄弟件，symtab 在）做 gdb 诊断——windows 同款 guard，实证过
+    // xavs2 SIGSEGV 回溯全 ?? 只能靠 nm.txt 离线对号 / pkg/bin holds
+    // stripped copies; point the smoke test's gdb diagnostics at the
+    // unstripped sibling ffmpeg_g in the build dir (its symtab survives)
+    // — same guard as windows; empirically an xavs2 SIGSEGV backtrace
+    // came out all ?? and only the nm.txt resolved it offline
+    let _guard = sys::EnvGuard::set(&[(
+        "FFMPEG_GDB",
+        e.work
+            .join(format!("ffbuild-ffmpeg{variant}/ffmpeg_g"))
+            .to_string_lossy()
+            .to_string(),
+    )]);
     log::group_begin("Smoke test");
     let smoke_rc = crate::stages::smoke::smoke_test(&pkg.join("bin"));
     log::group_end();

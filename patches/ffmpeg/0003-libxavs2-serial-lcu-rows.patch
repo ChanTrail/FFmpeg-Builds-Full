@@ -1,0 +1,13 @@
+diff --git a/libavcodec/libxavs2.c b/libavcodec/libxavs2.c
+index 69d8219..1fa74c5 100644
+--- a/libavcodec/libxavs2.c
++++ b/libavcodec/libxavs2.c
+@@ -262,7 +262,7 @@ static av_cold int xavs2_close(AVCodecContext *avctx)
+ #define VE AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_ENCODING_PARAM
+ 
+ static const AVOption options[] = {
+-    { "lcu_row_threads" ,   "number of parallel threads for rows" ,     OFFSET(lcu_row_threads) , AV_OPT_TYPE_INT, {.i64 =  0 },  0, INT_MAX,  VE },
++    { "lcu_row_threads" ,   "number of parallel threads for rows" ,     OFFSET(lcu_row_threads) , AV_OPT_TYPE_INT, {.i64 =  1 },  0, INT_MAX,  VE },
+     { "initial_qp"      ,   "Quantization initial parameter"      ,     OFFSET(initial_qp)      , AV_OPT_TYPE_INT, {.i64 = 34 },  1,      63,  VE },
+     { "qp"              ,   "Quantization parameter"  ,                 OFFSET(qp)              , AV_OPT_TYPE_INT, {.i64 = 34 },  1,      63,  VE },
+     { "max_qp"          ,   "max qp for rate control" ,                 OFFSET(max_qp)          , AV_OPT_TYPE_INT, {.i64 = 55 },  0,      63,  VE },

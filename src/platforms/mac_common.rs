@@ -711,6 +711,20 @@ pub fn package() -> Result<(), String> {
         ));
     }
 
+    // pkg/bin 里的是 stripped；冒烟测试的 gdb 诊断用构建目录的
+    // ffmpeg_g（未剥离兄弟件，symtab 在）——linux/windows 同款
+    // guard；runner 上 gdb 常缺席，缺席时 smoke 的 gdb 段自会跳过 /
+    // pkg/bin holds stripped copies; point the smoke test's gdb
+    // diagnostics at the unstripped sibling ffmpeg_g in the build dir
+    // (its symtab survives) — same guard as linux/windows; gdb is often
+    // absent on the runner, and smoke's gdb leg skips itself then
+    let _guard = sys::EnvGuard::set(&[(
+        "FFMPEG_GDB",
+        e.work
+            .join(format!("ffbuild-ffmpeg{variant}/ffmpeg_g"))
+            .to_string_lossy()
+            .to_string(),
+    )]);
     log::group_begin("Smoke test");
     let smoke_rc = crate::stages::smoke::smoke_test(&pkg.join("bin"));
     log::group_end();
