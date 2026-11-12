@@ -39,11 +39,22 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         .replace("EGIB", "bss")
         .replace("naidnePF", "bss");
     fsx::write(&cf, &text)?;
+    // 与 xavs2 同源 configure：见 GNU 就塞 -mpreferred-stack-boundary=5，
+    // GCC 由此假设入栈已 32B 对齐、给 ALIGN32 局部发 vmovdqa 且不重对齐
+    // rsp——ABI 只保 16B，同款的"按调用路径掷硬币 SIGSEGV"隐患。
+    // -mincoming-stack-boundary=4 拉回真值，需要 32B 的函数补 and $-32 /
+    // same configure DNA as xavs2: it feeds -mpreferred-stack-boundary=5
+    // to GCC, which then assumes a 32B-aligned incoming rsp and emits
+    // vmovdqa on ALIGN32 locals with no realignment — the ABI only
+    // promises 16B, the same call-path-coin-flip SIGSEGV latent defect.
+    // -mincoming-stack-boundary=4 restores the true assumption so GCC
+    // inserts and $-32,%rsp wherever 32B is needed
     sys::run_ok(
         "./configure",
         &[
             "--disable-cli",
             "--enable-pic",
+            "--extra-cflags=-mincoming-stack-boundary=4",
             &format!("--prefix={}", e.prefix),
         ],
         &b,

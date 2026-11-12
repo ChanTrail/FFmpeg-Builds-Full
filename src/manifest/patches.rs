@@ -62,30 +62,6 @@ static TABLE: &[Row] = &[
         body: include_str!("../../patches/ffmpeg/0002-libxavs2-fps-param.patch"),
     },
     Row {
-        name: "ffmpeg",
-        // xavs2 的 ThreadRows=0 是"auto→按核数"——linux 腿实证 WPP 行
-        // 池 worker 在 intra RDO 里 SIGSEGV（dct_32x32_c ← cu_check_intra
-        // ← compress_ctu_intra ← xavs2_lcu_row_write ←
-        // proc_xavs2_threadpool_thread，ffmpeg.nm.txt 离线解析），
-        // -threads 1 只拧 ThreadFrames 救不了行池。上游 2019 弃坑钉死
-        // eae1e8b——把包装器的 lcu_row_threads 默认 0 翻成 1，默认路径
-        // 走串行行编码；用户仍可显式 -lcu_row_threads N 开 WPP 自担风
-        // 险。若串行仍崩，下趟冒烟会证伪"竞态在行池"这一判定 /
-        // xavs2's ThreadRows=0 means "auto→ncores" — the linux leg
-        // empirically SIGSEGVs inside the WPP row pool during intra RDO
-        // (dct_32x32_c ← cu_check_intra ← compress_ctu_intra ←
-        // xavs2_lcu_row_write ← proc_xavs2_threadpool_thread, resolved
-        // offline via ffmpeg.nm.txt); -threads 1 only touches
-        // ThreadFrames and cannot disarm the row pool. Upstream is dead
-        // since 2019 (pinned eae1e8b) — flip the wrapper's lcu_row_threads
-        // default 0→1 so the default path encodes rows serially; users
-        // can still opt into WPP with an explicit -lcu_row_threads N at
-        // their own risk. If serial still crashes, the next smoke run
-        // falsifies the "race lives in the row pool" verdict
-        pin: None,
-        body: include_str!("../../patches/ffmpeg/0003-libxavs2-serial-lcu-rows.patch"),
-    },
-    Row {
         name: "gmp",
         // 对 gmp-6.3.0.tar.xz 钉死 sha256——源一换版本此补丁必须人工复核 /
         // pinned to gmp-6.3.0.tar.xz's sha256 — bumping the source forces a
