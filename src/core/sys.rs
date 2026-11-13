@@ -151,10 +151,18 @@ pub fn smoke_env() {
         prefix: String::new(),
         env_prefix: String::new(),
         prefix_win: PathBuf::new(),
-        // smoke 只派生 .exe/原生二进制，不经 bash；字段留空也不会被用到
-        // smoke only spawns .exe/native binaries, never through bash; the
-        // field stays empty and is never dereferenced
-        bash: PathBuf::new(),
+        // smoke 派生的都是原生二进制——resolve 的 POSIX 直派让 bash
+        // 不再被派生路径引用；/bin/bash 只作 sys::bash 的万一兜底
+        // （干净 runner 上必有），Windows 留空 /
+        // smoke only spawns native binaries — resolve's POSIX direct
+        // spawn keeps bash off the spawn path entirely; /bin/bash is
+        // merely a just-in-case fallback for sys::bash (guaranteed on
+        // clean runners), Windows leaves it empty
+        bash: if os == Os::Windows {
+            PathBuf::new()
+        } else {
+            PathBuf::from("/bin/bash")
+        },
         cc: String::new(),
         cxx: String::new(),
         ar: String::new(),
@@ -358,16 +366,34 @@ pub fn win_to_posix(p: &Path, root: &Path) -> String {
     p
 }
 
-/// 程序的可执行形式：(程序, 完整 argv)。本进程是原生二进制，直接
-/// exec 一个无扩展名脚本（configure/meson/autoreconf/…）会 ENOENT；
-/// 这类程序经 `bash -c 'exec "$@"'` 派生——argv 逐字透传不涉引号。
-/// Executable form of prog: (program, full argv). This process is a native
-/// binary, so exec'ing an extension-less script (configure/meson/
-/// autoreconf/...) would ENOENT; those go through `bash -c 'exec "$@"'`,
-/// which passes argv verbatim with no quoting involved.
-fn resolve(prog: &str, args: &[&str]) -> (String, Vec<String>) {
-    /// 路径解析为可直接派生的原生可执行？/ does the path resolve to a
-    /// directly spawnable native executable?
+/// 程序的可执行形式：(程序, 完整 argv)。只有 Windows 需要经 bash 拐
+/// 无扩展名脚本——CreateProcess 不认 shebang，直接 spawn 一个
+/// configure/meson/autoreconf 脚本会 ENOENT；`bash -c 'exec "$@"'`
+/// 逐字透传 argv 不涉引号。POSIX 一律直派：execve 原生处理 ELF 与
+/// shebang，execvp 对无 shebang 脚本还回落 /bin/sh——"无扩展名"在
+/// 这里不等于"脚本"。绕 bash 不仅多余，在 bash 字段留空的环境
+/// （smoke_env）下更是致命拐弯：pkg/bin/ffmpeg 被路由成
+/// `spawn ""` 报 ENOENT，报错文案却还写着 ffmpeg 的路径（实证：
+/// verify 腿 mac/linux 的 `ffmpeg -version` 全灭于此；Windows 因
+/// .exe 命中直派而幸免）。
+/// Executable form of prog: (program, full argv). Only Windows needs
+/// the bash detour for extension-less scripts — CreateProcess cannot
+/// run shebang scripts, so spawning a configure/meson/autoreconf
+/// script directly would ENOENT; `bash -c 'exec "$@"'` passes argv
+/// verbatim with no quoting involved. On POSIX everything spawns
+/// directly: execve natively handles ELF and shebang, and execvp even
+/// falls back to /bin/sh for shebang-less scripts — "no extension"
+/// does not mean "script" there. The bash detour is not just
+/// redundant but fatal under envs whose bash field is empty
+/// (smoke_env): pkg/bin/ffmpeg got routed into `spawn ""` ENOENT
+/// while the error text still named ffmpeg's path (empirical: every
+/// mac/linux verify-leg `ffmpeg -version` died exactly there;
+/// Windows survived because .exe hits direct spawn).
+fn resolve(prog: &str, args: &[&str], e: &Env) -> (String, Vec<String>) {
+    /// 路径解析为可直接派生的原生可执行？仅 Windows 需要判——POSIX
+    /// 的 execvp 无此区分 / does the path resolve to a directly
+    /// spawnable native executable? A Windows-only question — POSIX
+    /// execvp draws no such line
     fn is_native(p: &std::path::Path) -> bool {
         p.extension()
             .map(|x| {
@@ -376,7 +402,9 @@ fn resolve(prog: &str, args: &[&str]) -> (String, Vec<String>) {
             })
             .unwrap_or(false)
     }
-    let direct = if prog.contains('/') || prog.contains('\\') {
+    let direct = if e.os != Os::Windows {
+        true
+    } else if prog.contains('/') || prog.contains('\\') {
         let p = Path::new(prog);
         p.is_file() && is_native(p)
     } else {
@@ -394,7 +422,6 @@ fn resolve(prog: &str, args: &[&str]) -> (String, Vec<String>) {
             args.iter().map(|s| s.to_string()).collect(),
         )
     } else {
-        let e = env();
         // 经 bash 时路径参数必须是 POSIX 形式（D:\x 在 bash 里不解析）
         // a path argument must be POSIX when routed through bash (D:\x does
         // not resolve there)
@@ -414,7 +441,7 @@ fn resolve(prog: &str, args: &[&str]) -> (String, Vec<String>) {
 /// (scripts are routed through bash automatically)
 pub fn cmd(prog: &str, args: &[&str]) -> Command {
     let e = env();
-    let (p, a) = resolve(prog, args);
+    let (p, a) = resolve(prog, args, e);
     let mut c = Command::new(p);
     c.args(a)
         .env("PATH", &e.child_path)
