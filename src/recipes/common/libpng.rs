@@ -10,7 +10,7 @@ use crate::sys;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("libpng", "mac", "libpng", "-", body);
+    let mut x = r("libpng", "linux,mac", "libpng", "-", body);
     x.src = include_str!("libpng.rs");
     x
 }

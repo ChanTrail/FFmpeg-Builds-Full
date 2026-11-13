@@ -25,6 +25,21 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             let _ = fsx::sed_i("s/shared_library(/library(/g", &f, &src);
         }
     }
+    // test/trace 子目录摘掉：test/dlclose 链 libX11.a 缺 -lxcb
+    // （静态 libX11 的 xcb_* 引用全悬空）；trace 产 LD_PRELOAD 垫片
+    // libvdpau_trace.so——ffmpeg 对 vdpau 只走 dlopen 全用不到 /
+    // drop the test/trace subdirs: test/dlclose links libX11.a
+    // without -lxcb (static libX11's xcb_* refs all dangle); trace
+    // builds an LD_PRELOAD shim libvdpau_trace.so — ffmpeg only
+    // dlopens vdpau and needs neither
+    let top = src.join("meson.build");
+    if top.is_file() {
+        let _ = fsx::sed_i(
+            "s/subdir('test')/# subdir('test') dropped/; s/subdir('trace')/# subdir('trace') dropped/",
+            &top,
+            &src,
+        );
+    }
     buildsys::meson_build(
         &src,
         &["-Ddocumentation=false", "-Dmoduledir=/usr/lib64/vdpau"],

@@ -83,8 +83,10 @@ pub fn replace_in(p: &Path, from: &str, to: &str) -> Result<(), String> {
     fs::write(p, n).map_err(|e| format!("write {p:?}: {e}"))
 }
 
-/// 就地 sed（GNU/BSD 通用 -i.bak 语义；调真实 sed 保证正则语义一致）
-/// In-place sed (GNU/BSD -i.bak semantics; calls real sed for regex parity)
+/// 就地 sed <expr> <file>（GNU/BSD 通用 -i.bak 语义；调真实 sed 保证
+/// 正则语义一致；<dir> 为命令工作目录）
+/// In-place sed <expr> <file> (GNU/BSD -i.bak semantics; calls real sed
+/// for regex parity; <dir> is the command cwd)
 pub fn sed_i(expr: &str, file: &Path, dir: &Path) -> Result<(), String> {
     let f = file.to_string_lossy().to_string();
     crate::sys::run_ok("sed", &["-i.bak", expr, &f], dir)?;
@@ -92,9 +94,10 @@ pub fn sed_i(expr: &str, file: &Path, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 就地 sed -E（ERE 变体；(...) 分组、| 选择、? 量词裸写，GNU/BSD 通用）
-/// In-place sed -E (ERE variant; bare (...) groups, | alternation,
-/// ? quantifier, GNU/BSD portable)
+/// 就地 sed -E <expr> <file>（ERE 变体；(...) 分组、| 选择、? 量词裸写，
+/// GNU/BSD 通用）
+/// In-place sed -E <expr> <file> (ERE variant; bare (...) groups,
+/// | alternation, ? quantifier, GNU/BSD portable)
 pub fn sed_i_ere(expr: &str, file: &Path, dir: &Path) -> Result<(), String> {
     let f = file.to_string_lossy().to_string();
     crate::sys::run_ok("sed", &["-i.bak", "-E", expr, &f], dir)?;

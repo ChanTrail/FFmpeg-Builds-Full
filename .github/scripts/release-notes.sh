@@ -46,49 +46,50 @@ human_size() {
 COMMIT_LINE_ZH="每个文件名中包含其构建所用的上游提交的前 10 位哈希。"
 COMMIT_LINE_EN="The first 10 digits of the upstream commit each file was built from are part of its name."
 if [[ -n "${FFMPEG_COMMIT:-}" ]]; then
-  COMMIT_LINE_ZH="构建所用的上游提交：[\`${FFMPEG_COMMIT:0:10}\`](https://github.com/FFmpeg/FFmpeg/commit/$FFMPEG_COMMIT)，文件名中包含其前 10 位哈希。"
-  COMMIT_LINE_EN="Built from upstream commit [\`${FFMPEG_COMMIT:0:10}\`](https://github.com/FFmpeg/FFmpeg/commit/$FFMPEG_COMMIT); its first 10 digits are part of every file name."
+  COMMIT_LINE_ZH="构建所用的上游提交：[\`${FFMPEG_COMMIT:0:10}\`](https://git.ffmpeg.org/gitweb/ffmpeg.git/commit/$FFMPEG_COMMIT)，文件名中包含其前 10 位哈希。"
+  COMMIT_LINE_EN="Built from upstream commit [\`${FFMPEG_COMMIT:0:10}\`](https://git.ffmpeg.org/gitweb/ffmpeg.git/commit/$FFMPEG_COMMIT); its first 10 digits are part of every file name."
 fi
 
 cat <<EOF
 # FFmpeg master 自动构建 / auto-build
 
-自动构建上游 [FFmpeg](https://github.com/FFmpeg/FFmpeg) \`master\` 分支。$COMMIT_LINE_ZH
-<br>Automated build of upstream [FFmpeg](https://github.com/FFmpeg/FFmpeg) \`master\`. $COMMIT_LINE_EN
+自动构建上游 [FFmpeg](https://git.ffmpeg.org/gitweb/ffmpeg.git) \`master\` 分支。$COMMIT_LINE_ZH
+<br>Automated build of upstream [FFmpeg](https://git.ffmpeg.org/gitweb/ffmpeg.git) \`master\`. $COMMIT_LINE_EN
 EOF
 
-# 平台名作为表格列；行是产物种类。单元格把每个产物名链接到它的下载——
-# 与 deps 发布同布局。
-# Platform names as table columns; rows are the artifact kinds. Cells link
-# each artifact name to its download — same layout as the deps release.
-header="| 产物 Artifact |" sep="|" arow="| **压缩包 Archive** |"
-srow="| **校验 SHA-256** |" brow="| **构建报告 Build report** |"
+# 平台名作为表格列；行是四个产物变体（静态/共享/调试/共享+调试）。
+# 单元格内嵌压缩包与校验双链接——与 deps 发布同布局。
+# Platform names as table columns; rows are the four artifact variants
+# (static/shared/debug/shared+debug). Each cell carries both the
+# archive and the checksum links — same layout as the deps release.
+header="| 产物 Artifact |" sep="|"
+declare -A ROWS=()
+# (变体后缀, 行标签) / (variant suffix, row label)
+VARIANTS=("" "-shared" "-debug" "-shared-debug")
+LABELS=("**静态 Static**" "**共享 Shared**" "**调试 Debug**" "**共享+调试 Shared+Debug**")
+for vi in "${!VARIANTS[@]}"; do ROWS[$vi]="| ${LABELS[$vi]} |"; done
 for p in "${PLATFORMS[@]}"; do
-  found=("$DIR"/*-"$p".zip "$DIR"/*-"$p".tar.xz)
-  if [[ ${#found[@]} -ne 1 ]]; then
-    echo "::error::expected exactly one archive for platform '$p' in $DIR, found ${#found[@]}" >&2
-    exit 1
-  fi
-  f="${found[0]}"
-  name="$(basename "$f")"
-  base="${name%.zip}"
-  base="${base%.tar.xz}"
-  size="$(human_size "$(wc -c <"$f" | tr -d ' ')")"
   header="$header $p |"; sep="$sep---|"
-  arow="$arow [$name]($BASE/$name)<br>$size |"
-  srow="$srow [$name.sha256]($BASE/$name.sha256) |"
-  if [[ -f "$DIR/$base.buildinfo.txt" ]]; then
-    brow="$brow [$base.buildinfo.txt]($BASE/$base.buildinfo.txt) |"
-  else
-    brow="$brow — |"
-  fi
+  for vi in "${!VARIANTS[@]}"; do
+    v="${VARIANTS[$vi]}"
+    found=("$DIR"/*-"$p$v".7z "$DIR"/*-"$p$v".tar.xz)
+    if [[ ${#found[@]} -ne 1 ]]; then
+      echo "::error::expected exactly one archive for platform '$p' variant '$v' in $DIR, found ${#found[@]}" >&2
+      exit 1
+    fi
+    f="${found[0]}"
+    name="$(basename "$f")"
+    size="$(human_size "$(wc -c <"$f" | tr -d ' ')")"
+    ROWS[$vi]="${ROWS[$vi]} [$name]($BASE/$name)<br>$size<br>[$name.sha256]($BASE/$name.sha256) |"
+  done
 done
-printf '%s\n%s\n%s\n%s\n%s\n' "$header" "$sep" "$arow" "$srow" "$brow"
+printf '%s\n%s\n' "$header" "$sep"
+for vi in "${!VARIANTS[@]}"; do printf '%s\n' "${ROWS[$vi]}"; done
 
 cat <<'EOF'
 
-每个压缩包都有同名的 `.sha256` 文件：把两者放在同一目录，执行 `sha256sum -c <压缩包>.sha256` 即可校验（macOS：`shasum -a 256 -c <压缩包>.sha256`）。构建报告列出了该平台启用的全部配置选项，以及构建失败或被放弃的库。
-<br>Every archive has a same-named `.sha256` file; put both in one folder and run `sha256sum -c <archive>.sha256` (macOS: `shasum -a 256 -c <archive>.sha256`). The build report lists every configure option of that platform and the libraries that failed or were dropped.
+每个压缩包都有同名的 `.sha256` 文件：把两者放在同一目录，执行 `sha256sum -c <压缩包>.sha256` 即可校验（macOS：`shasum -a 256 -c <压缩包>.sha256`）。包内的 `BUILDINFO.info` 列出了该平台启用的全部配置选项，以及构建失败或被放弃的库。
+<br>Every archive has a same-named `.sha256` file; put both in one folder and run `sha256sum -c <archive>.sha256` (macOS: `shasum -a 256 -c <archive>.sha256`). `BUILDINFO.info` inside the archive lists every configure option of that platform and the libraries that failed or were dropped.
 
 ## 关于这些构建 / About these builds
 
@@ -99,8 +100,8 @@ cat <<'EOF'
   - Windows x86_64：MSYS2 UCRT64；Windows arm64：MSYS2 CLANGARM64。要求 Windows 10 及以上。 / Windows 10 or newer.
   - Linux：Ubuntu（x86_64 与 arm64 runner），库配方为本仓 Rust 驱动内置配方。要求 glibc >= 2.39。 / Library recipes are this repo's Rust-driver built-ins. Needs glibc >= 2.39.
   - macOS：同一 Rust 驱动构建，最低 macOS 14。二进制文件为 ad-hoc 签名，未经公证：下载后请执行 `xattr -dr com.apple.quarantine <解压目录>`。 / Built by the same Rust driver, minimum macOS 14. The binaries are ad-hoc signed but not notarized: after downloading, run `xattr -dr com.apple.quarantine <extracted folder>`.
-- **链接方式 Linking**：静态链接，无需安装任何共享库。
-  <br>Static, no shared libraries to install.
+- **链接方式 Linking**：静态变体无共享库依赖；shared 变体的共享库就放在二进制旁边（旁位自解析），无需安装。
+  <br>The static variants need no shared libraries; shared variants carry their libs beside the binaries (sibling resolution) — nothing to install.
 - **发布条件 Publishing**：只有五个平台全部构建并通过冒烟测试后才会发布。
   <br>A release is only published when all five platforms were built and passed the smoke test.
 

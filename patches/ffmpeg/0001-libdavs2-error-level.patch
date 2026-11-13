@@ -1,0 +1,12 @@
+diff --git a/libavcodec/libdavs2.c b/libavcodec/libdavs2.c
+--- a/libavcodec/libdavs2.c
++++ b/libavcodec/libdavs2.c
+@@ -48,7 +48,7 @@ static av_cold int davs2_init(AVCodecContext *avctx)
+ 
+     /* init the decoder */
+     cad->param.threads      = avctx->thread_count;
+-    cad->param.info_level   = 0;
++    cad->param.info_level   = DAVS2_LOG_ERROR;
+     cad->param.disable_avx  = !(cpu_flags & AV_CPU_FLAG_AVX &&
+                                 cpu_flags & AV_CPU_FLAG_AVX2);
+     cad->decoder            = davs2_decoder_open(&cad->param);

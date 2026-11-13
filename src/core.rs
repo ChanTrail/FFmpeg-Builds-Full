@@ -6,6 +6,7 @@
 
 pub mod ar;
 pub mod buildsys;
+pub mod coff;
 pub mod fsx;
 pub mod json;
 pub mod log;

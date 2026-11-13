@@ -49,6 +49,12 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     ] {
         fsx::sed_i(pat, &cm, &src)?;
     }
+    // M_PI 在严格 -std=c++20 + mingw 头文件下要 _USE_MATH_DEFINES 才
+    // 现身（baseapi.cpp:2284 裸用它）；其它平台定义了也不碍事 /
+    // M_PI only appears with _USE_MATH_DEFINES under strict -std=c++20
+    // + mingw headers (baseapi.cpp:2284 uses it bare); harmless where
+    // it's already defined
+    let _g = sys::EnvGuard::append(&[("CXXFLAGS", "-D_USE_MATH_DEFINES")]);
     buildsys::cmake_build(
         &src,
         &[

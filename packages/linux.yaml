@@ -2,12 +2,17 @@
 # Linux apt package stack (Debian/Ubuntu).
 #
 # 每行一个包名；{GCCV} 占位符替换成探测到的最新 GCC 主版本（16→15→14 降序）。
-# 配方假定这些工具存在：fftw3 的 codelet 生成器要 OCaml、glib 要
-# gtk-doc/introspection、若干配方 autoreconf 时要 /usr/share/aclocal 的 pkg.m4。
+# 配方假定这些工具存在：glib 要 gtk-doc/introspection、若干配方 autoreconf
+# 时要 /usr/share/aclocal 的 pkg.m4。（曾随 fftw3 配方入驻的 OCaml 栈、
+# 无人消费的 subversion/mercurial、以及纯 gcc 工具链用不上的
+# clang/llvm/lld/mold 已随实测瘦身——单是它们就占走 apt 下载量的大头）
 # One package name per entry; {GCCV} expands to the newest probed GCC major
-# (16 -> 15 -> 14). Recipes assume these tools exist: fftw3's codelet
-# generator wants OCaml, glib wants gtk-doc/introspection, several recipes
-# autoreconf against /usr/share/aclocal's pkg.m4.
+# (16 -> 15 -> 14). Recipes assume these tools exist: glib wants
+# gtk-doc/introspection, several recipes autoreconf against
+# /usr/share/aclocal's pkg.m4. (The OCaml stack that arrived with the
+# long-gone fftw3 recipe, the unused subversion/mercurial, and
+# clang/llvm/lld/mold — useless under a pure-gcc toolchain — were trimmed
+# after auditing; they alone accounted for most of the apt download)
 - build-essential
 - gcc-{GCCV}
 - g++-{GCCV}
@@ -24,6 +29,10 @@
 - unzip
 - zstd
 - ccache
+# 冒烟诊断链末段要 gdb 抓崩溃回溯——缺了就只剩裸信号码 /
+# the smoke diagnostic chain's last tier needs gdb for crash
+# backtraces — without it only the bare signal code remains
+- gdb
 - git
 - curl
 - wget
@@ -34,7 +43,6 @@
 - gettext
 - autopoint
 - texinfo
-- texi2html
 - help2man
 - flex
 - bison
@@ -42,19 +50,14 @@
 - m4
 - nasm
 - yasm
-- subversion
-- mercurial
 - python3
 - python3-venv
 - python3-dev
-- clang
-- llvm
-- lld
-- mold
 - ragel
 - itstool
 - xxd
 - autoconf
+- autoconf-archive
 - automake
 - libtool
 - libtool-bin
@@ -69,17 +72,28 @@
 - gobject-introspection
 - zlib1g-dev
 - libssl-dev
-- ocaml
-- ocaml-findlib
-- ocamlbuild
-- libnum-ocaml-dev
 - libasound2-dev
 - linux-libc-dev
 - ladspa-sdk
-# X11：vdpau meson 探 x11+xext；libxcb 由 libx11-dev 拉入
-# X11: vdpau's meson probes x11+xext; libxcb rides in via libx11-dev
+# X11/xcb/平台栈现由自家静态配方产出（src/recipes/linux/）——系统
+# -dev 包退居二线：一为未覆盖库的 .pc 兜底（PKG_CONFIG_LIBDIR 前缀
+# 优先、系统垫后），二为不产 .a 的探针/头文件场合留活路；同目录下
+# ld 恒优先 .so，靠系统包静态链是死路，已实证 / the X11/xcb/platform
+# stack now comes from our own static recipes (src/recipes/linux/) —
+# system -dev packages are demoted to two roles: a .pc fallback for
+# libraries we don't cover (PKG_CONFIG_LIBDIR puts the prefix first,
+# system last) and a header/probe fallback where no .a exists; ld
+# always prefers .so in the same directory, so static linking via
+# system packages was proven a dead end
 - libx11-dev
 - libxext-dev
+- libxv-dev
+- libxcb-shm0-dev
+- libxcb-shape0-dev
+- libxcb-xfixes0-dev
+- libdrm-dev
+- libva-dev
+- libpulse-dev
 # Vulkan：whisper 的 ggml 后端要头+加载库+glslc+SPIRV-Headers cmake
 # 包+glslangValidator / Vulkan: whisper's ggml backend wants
 # headers+loader+glslc+the SPIRV-Headers cmake package+glslangValidator

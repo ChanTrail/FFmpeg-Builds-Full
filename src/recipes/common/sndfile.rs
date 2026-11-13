@@ -32,6 +32,13 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-DENABLE_BOW_DOCS=OFF",
             "-DINSTALL_PKGCONFIG_MODULE=ON",
             "-DENABLE_EXTERNAL_LIBS=OFF",
+            // 显式补刀 MPEG：实证 overlay 旧归档带着 lame/mpg123/id3tag
+            // 引用骑 .ok 跨轮，pulseaudio 的静态链测全灭；陌生选项
+            // cmake 只警告不报错 / explicit MPEG kill: an old overlay
+            // archive empirically rode .ok across runs carrying
+            // lame/mpg123/id3tag refs that massacred pulseaudio's
+            // static link test; an unknown option only warns in cmake
+            "-DENABLE_MPEG=OFF",
         ],
     )?;
     let pc = e.prefix_win.join("lib/pkgconfig/sndfile.pc");

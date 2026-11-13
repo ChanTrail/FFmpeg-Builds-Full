@@ -1,12 +1,12 @@
-# macOS arm64 特化：仅本平台×架构的启用项（键不得与其他文件重复）。
-# ladspa/securetransport/libpulse 等杂项请改 features/misc.yaml 的本平台分节。
-# macOS arm64 specifics: enable entries for this platform+arch only.
-# ladspa/securetransport/libpulse live in this platform's misc.yaml section.
+# macOS arm64 特化：本平台独有的启用项（键不得与其他文件重复）。
+# 多平台共享项请改 features/common.yaml，杂项请改 features/misc.yaml。
+# macOS arm64 specifics: enable entries exclusive to this platform
+# (keys must not duplicate other files). Multi-platform shared items
+# belong in features/common.yaml; misc items in features/misc.yaml.
 videotoolbox: enable
 avfoundation: enable
 audiotoolbox: enable
 appkit: enable
 coreimage: enable
 metal: enable
-liblcevc-dec: enable
-libuavs3d: enable
+securetransport: enable    # Apple 系统 TLS：钥匙串/系统 CA / Apple system TLS: keychain + system CA store

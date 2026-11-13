@@ -10,7 +10,7 @@ use crate::sys;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("zlib", "mac", "zlib", "-", body);
+    let mut x = r("zlib", "linux,mac", "zlib", "-", body);
     x.src = include_str!("zlib.rs");
     x
 }
@@ -23,11 +23,16 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     // zlib 的 CMakeLists 无条件同产 shared+static（BUILD_SHARED_LIBS=OFF
     // 在 UNIX 上无效）——dylib 落进前缀后 -lz 全解析到 @rpath 的
     // libz.1.dylib，运行时找不到直接崩（libcurl 探测/librsvg 的
-    // cargo-cbuild 连环死因）。删到只剩静态归档 / zlib's CMakeLists
-    // emits shared+static unconditionally (BUILD_SHARED_LIBS=OFF is a
-    // no-op on UNIX) — the dylib in the prefix makes every -lz resolve to
-    // an @rpath libz.1.dylib that dyld can't find at run time (the
-    // libcurl probe / librsvg's cargo-cbuild chain). Keep the archive only.
+    // cargo-cbuild 连环死因）；linux 侧同病的 libz*.so* 让 ffmpeg 直出
+    // libz.so.1 动态 NEEDED（实证 ldd 白名单抓到）。删到只剩静态归档 /
+    // zlib's CMakeLists emits shared+static unconditionally
+    // (BUILD_SHARED_LIBS=OFF is a no-op on UNIX) — the dylib in the
+    // prefix makes every -lz resolve to an @rpath libz.1.dylib that dyld
+    // can't find at run time (the libcurl probe / librsvg cargo-cbuild
+    // chain); the same libz*.so* on linux gave ffmpeg a dynamic
+    // libz.so.1 NEEDED (empirical ldd allowlist catch). Keep the
+    // archive only.
     fsx::rm_glob(&e.prefix_win.join("lib"), "libz*.dylib*");
+    fsx::rm_glob(&e.prefix_win.join("lib"), "libz*.so*");
     Ok(())
 }

@@ -54,6 +54,7 @@ xevd:
   git: https://github.com/mpeg5/xevd.git
 xeve:
   git: https://github.com/mpeg5/xeve.git
+  ref: v0.7.1   # 与配方 version.txt 同钉；spec 参与 .ok 哈希——顺带失效携带上古 xeve_ 改名毒的 overlay 归档 / pinned in step with the recipe's version.txt; the spec feeds the .ok hash — this also retires the overlay archive carrying the legacy xeve_ rename poison
 vvenc:
   git: https://github.com/fraunhoferhhi/vvenc.git
 theora:
@@ -68,17 +69,46 @@ libjxl:
   submodules: true
 libwebp:
   git: https://chromium.googlesource.com/webm/libwebp
+# x86-only（features/common.yaml 同节）/ x86-only (same section in
+# features/common.yaml)
+libvpl:
+  git: https://github.com/intel/libvpl.git
+svtjpegxs:
+  git: https://github.com/OpenVisualCloud/SVT-JPEG-XS.git
+davs2:
+  git: https://github.com/pkuvcl/davs2.git
+  ref: b41cf117452e2d73d827f02d3e30aa20f1c721ac   # 上游停滞，固化末次提交（2022-09）/ upstream stalled, pinned at last commit
+xavs2:
+  git: https://github.com/pkuvcl/xavs2.git
+  ref: eae1e8b9d12468059bdd7dee893508e470fa83d8   # 上游停滞，固化末次提交（2019-04）/ upstream stalled, pinned at last commit
+# 除 windows-arm64 全平台（无汇编）/ all but windows-arm64 (no asm)
+lcevcdec:
+  git: https://github.com/v-novaltd/LCEVCdec.git
+uavs3d:
+  git: https://github.com/uavs3/uavs3d.git
 
 # ================= 音频编解码 / audio codecs =================
 lame:
   archive: https://downloads.sourceforge.net/project/lame/lame/4.0/lame-4.0.tar.gz
   sha256: 3df5124d5ad3a98312ffd7ba6a9b36230e4f8a3e66d3ce0f425e336c32d216eb
+# lame 的 decoder 半边要 libmpg123 >=1.26——缺了 configure 直接报错 /
+# lame's decoder half wants libmpg123 >=1.26 — configure errors out
+# without it
+mpg123:
+  archive: https://downloads.sourceforge.net/project/mpg123/mpg123/1.33.7/mpg123-1.33.7.tar.bz2
+  sha256: 31d0e35a4ca567ec9b5ebda6c3062bb4435d6d3eacd6ef0d95cadd7854dc03ee
 ogg:
   git: https://github.com/xiph/ogg.git
 vorbis:
   git: https://github.com/xiph/vorbis.git
 opus:
   git: https://gitlab.xiph.org/xiph/opus.git
+  ref: v1.6.1   # get-version.py 靠 git describe 取版本——浅克隆必须落在 tag 上 / get-version.py derives the version from git describe — the shallow clone must land on a tag
+  # dnn/*_data.{c,h} 不是 submodule——模型权重在 media.xiph.org 的
+  # opus_data-<sha>.tar.gz，配方里跑 download_model.sh 落地 /
+  # the dnn/*_data.{c,h} files aren't a submodule — model weights ship
+  # as opus_data-<sha>.tar.gz on media.xiph.org; the recipe runs
+  # download_model.sh to land them
 speex:
   git: https://gitlab.xiph.org/xiph/speex.git         # downloads.xiph.org 不可达，走仓库
 shine:
@@ -106,7 +136,10 @@ vo-amrwbenc:
   archive: https://downloads.sourceforge.net/project/opencore-amr/vo-amrwbenc/vo-amrwbenc-0.1.3.tar.gz
   sha256: 5652b391e0f0e296417b841b02987d3fd33e6c0af342c69542cbb016a71d9d4e
 opencore-amr:
-  archive: https://downloads.sourceforge.net/opencore-amr/opencore-amr-0.1.6.tar.gz
+  # 裸 SF 直链会落 HTML 中间页（CI 抓到 141KB 页面而非 939KB 真包）/
+  # the bare-SF link lands on an HTML interstitial (CI got a 141KB page
+  # instead of the real 939KB tarball)
+  archive: https://downloads.sourceforge.net/project/opencore-amr/opencore-amr/opencore-amr-0.1.6.tar.gz
   sha256: 483eb4061088e2b34b358e47540b5d495a96cd468e361050fae615b1809dc4a1
 mysofa:
   git: https://github.com/hoene/libmysofa.git
@@ -115,7 +148,7 @@ flite:
 pocketsphinx:
   git: https://github.com/cmusphinx/pocketsphinx.git
 twolame:
-  archive: https://downloads.sourceforge.net/twolame/twolame-0.4.0.tar.gz
+  archive: https://downloads.sourceforge.net/project/twolame/twolame/0.4.0/twolame-0.4.0.tar.gz
   sha256: cc35424f6019a88c6f52570b63e1baf50f62963a3eac52a03a800bb070d7c87d
 soxr:
   archive: https://downloads.sourceforge.net/project/soxr/soxr-0.1.3-Source.tar.xz
@@ -124,8 +157,10 @@ rubberband:
   git: https://github.com/breakfastquay/rubberband.git
 chromaprint:
   git: https://github.com/acoustid/chromaprint.git
+  submodules: true   # kissfft 以 submodule 随仓携带 / kissfft rides as a submodule
 openal:
   git: https://github.com/kcat/openal-soft.git
+  ref: 1.25.2   # master 上 gsl 转 vendored 的迁移期曾短暂缺窄化头（上游已修）——钉稳定 tag / master briefly shipped an incomplete vendored gsl mid-migration (fixed upstream since) — pin the stable tag
 gme:
   git: https://github.com/libgme/game-music-emu.git
 openmpt:
@@ -139,8 +174,14 @@ harfbuzz:
   git: https://github.com/harfbuzz/harfbuzz.git
 fribidi:
   git: https://github.com/fribidi/fribidi.git
+# libpng 原来只在 macos-arm64.yaml——linux 的 zvbi/selftest 也需要 /
+# libpng used to live only in macos-arm64.yaml — linux's zvbi/selftest
+# need it too
+libpng:
+  git: https://github.com/pnggroup/libpng.git
 fontconfig:
   git: https://gitlab.freedesktop.org/fontconfig/fontconfig.git
+  ref: 2.18.3   # pango 1.58 的 dependency() 硬要求 >=2.17.0 / pango 1.58's dependency() hard-requires >=2.17.0
 libass:
   git: https://github.com/libass/libass.git
 lcms2:
@@ -159,12 +200,14 @@ librsvg:
   sha256: 31f07d9350dad3f8964fd613c31309ac160fdef13dfac59df6fd082de78d6e8f
 zimg:
   git: https://github.com/sekrit-twc/zimg.git
+  submodules: true   # graphengine 以 submodule 随仓携带 / graphengine rides as a submodule
 vidstab:
   git: https://github.com/georgmartius/vid.stab.git
 vmaf:
   git: https://github.com/Netflix/vmaf.git
 frei0r:
-  git: https://codeberg.org/frei0r/frei0r.git
+  git: https://github.com/dyne/frei0r.git   # codeberg 仓已消失，此为活跃镜像 / the codeberg repo vanished — this is the live mirror
+  ref: v3.7.0
 aribb24:
   git: https://github.com/nkoriyama/aribb24.git
   ref: 5e9be272f96e00f15a2f3c5f8ba7e124862aec38   # 上游停滞，固化末次提交（2016-02）/ upstream stalled, pinned at last commit
@@ -174,6 +217,7 @@ zvbi:
   git: https://github.com/zapping-vbi/zvbi.git   # 上游已迁 GitHub；SF 仅到 0.2.35 / upstream moved to GitHub; SF caps at 0.2.35
 vapoursynth:
   git: https://github.com/vapoursynth/vapoursynth.git
+  ref: R82   # 浮动解析会捡 R70.11（无点号的 R82 不算"版本样式"tag——尚无 meson.build）；钉死到首个 meson 发布代 / floating resolution picks R70.11 (dot-less R82 isn't a "version-looking" tag — and R70.11 predates meson.build); pin the meson-era release line
 avisynth:
   git: https://github.com/AviSynth/AviSynthPlus.git
 qrencode:
@@ -220,6 +264,8 @@ rabbitmq:
   git: https://github.com/alanxz/rabbitmq-c.git
 libbluray:
   git: https://code.videolan.org/videolan/libbluray.git
+  ref: 1.5.1   # ≥1.5 纯 meson；master 的 configure.ac 已删 → 钉 tag / meson-only ≥1.5; master's configure.ac is gone → pin a tag
+  submodules: true   # libudfread 以 submodule 随仓携带 / libudfread rides as a submodule
 libdvdcss:
   archive: https://download.videolan.org/pub/libdvdcss/1.6.0/libdvdcss-1.6.0.tar.xz
   sha256: 7ea556c846b7bfc32d47b41cae56d1863a6b6d5f706bb162778d6f298490977c
@@ -250,3 +296,130 @@ amf:
   git: https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git
 nv-codec-headers:
   git: https://github.com/FFmpeg/nv-codec-headers.git
+
+# ---- xz/lzma（base.yaml 恒启；win 走 msys 包）/ lzma is a base lib — msys on win ----
+xz:
+  # git 仓 autogen.sh 强制要 po4a 生翻译 man——发行 tar 自带 configure /
+  # the git repo's autogen.sh insists on po4a for translated man pages —
+  # the release tarball ships a ready-made configure
+  archive: https://github.com/tukaani-project/xz/releases/download/v5.8.4/xz-5.8.4.tar.gz
+  sha256: 0014c7886930454fe8bd4228665b51af55eeae560ea135c9c4cd33f55b2591d9
+
+# ---- mbedtls（libssh 的 crypto 后端——openssl 是动态库链不得）/ libssh's crypto backend (openssl is dynamic) ----
+mbedtls:
+  # 发行 tar 包已随带 framework/ 等子模块内容——git+submodule 路径在
+  # mac 上没把 framework 拉下来 / the release tarball bundles the
+  # framework/ submodule contents — the git+submodule route left
+  # framework/ empty on mac
+  archive: https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.5/mbedtls-3.6.5.tar.bz2
+  sha256: 4a11f1777bb95bf4ad96721cac945a26e04bf19f57d905f241fe77ebeddf46d8
+
+# ---- vulkan 头 + shim 加载器（linux/windows；静态 dlopen 派发，系统
+#      驱动运行时才加载）/ headers + shim loader (linux/windows — a
+#      static dlopen dispatcher; the real driver loads at runtime) ----
+vulkan-headers:
+  git: https://github.com/KhronosGroup/Vulkan-Headers.git
+vulkan-shim:
+  git: https://github.com/BtbN/Vulkan-Shim-Loader.git
+
+# ---- opencl 头 + ICD 静态加载器（同上 dlopen 派发）/ headers + static
+#      ICD loader (same dlopen dispatch) ----
+opencl-headers:
+  git: https://github.com/KhronosGroup/OpenCL-Headers.git
+opencl-icd:
+  git: https://github.com/KhronosGroup/OpenCL-ICD-Loader.git
+
+# ---- LV2/lilv 栈（lilv 配方全平台）/ the LV2/lilv stack (lilv recipe
+#      on every platform) ----
+lv2:
+  git: https://github.com/lv2/lv2.git                  # 仅头文件+pc / headers + pc only
+  ref: 0bcde338db1c63bbc503b4d1f6d7b55ed43154af
+zix:
+  git: https://github.com/drobilla/zix.git
+  ref: 17d632393f5addb6fa24dda2927b96515407cca7
+serd:
+  git: https://github.com/drobilla/serd.git
+  ref: b621b0bc790d1e8102d3138ead16b974ddda8432
+sord:
+  git: https://github.com/drobilla/sord.git
+  ref: 4b5232bb91e7f2f1b84df384494d073fabbcd312
+sratom:
+  git: https://github.com/lv2/sratom.git
+  ref: 9e8ee84eed502e6030ce8bb49694fd28542b08fc
+lilv:
+  git: https://github.com/lv2/lilv.git
+  ref: 4b8f30055fa5cb4134a2eb45fc1555bc04289314
+
+# LADSPA 插件 API 头文件——配方只取 ladspa.h，运行时 dlopen 插件 /
+# LADSPA plugin API header — the recipe only lifts ladspa.h; plugins
+# are dlopened at runtime
+ladspa:
+  archive: https://www.ladspa.org/download/ladspa_sdk_1.17.tgz
+  sha256: 27d24f279e4b81bd17ecbdcc38e4c42991bb388826c0b200067ce0eb59d3da5b
+
+# ================= Linux 平台栈（linux 双架构同一批源；其他平台配方表
+#      不含这些键，源躺在这里也无人来取）/ Linux platform stack (both
+#      linux arches share these; other platforms' recipe tables never
+#      reference the keys, so the entries simply sit unused) ==========
+alsa:
+  archive: https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.16.1.tar.bz2
+  sha256: f740db7f488255944ffd4428416ee3390a96742856916433df468c281436480e
+libva:
+  git: https://github.com/intel/libva.git
+  # 钉版本：仓库混着 48 个 ww53.4-video 式内部周构建 tag——latest_tag
+  # 的 vkey 排序被它们碾压性压过 2.x（实证回退检出抓到 0.31.1）/
+  # pinned: the repo mixes in 48 internal weekly-build tags like
+  # ww53.4-video whose vkey ordering crushes real 2.x tags (the
+  # fallback checkout empirically fetched 0.31.1)
+  ref: "2.24.1"
+vdpau:
+  git: https://gitlab.freedesktop.org/vdpau/libvdpau.git
+libdrm:
+  git: https://gitlab.freedesktop.org/mesa/drm.git
+v4l-utils:
+  git: https://git.linuxtv.org/v4l-utils.git
+raw1394:
+  archive: https://www.kernel.org/pub/linux/libs/ieee1394/libraw1394-2.1.2.tar.xz
+  sha256: 03ccc69761d22c7deb1127fc301010dd13e70e44bb7134b8ff0d07590259a55e
+dc1394:
+  archive: https://downloads.sourceforge.net/project/libdc1394/libdc1394-2/2.2.6/libdc1394-2.2.6.tar.gz
+  sha256: 2b905fc9aa4eec6bdcf6a2ae5f5ba021232739f5be047dec8fe8dd6049c10fed
+lz4:
+  git: https://github.com/lz4/lz4.git
+pulseaudio:                # libpulse 特性对应 / matches the libpulse feature
+  git: https://gitlab.freedesktop.org/pulseaudio/pulseaudio.git
+  ref: v17.0   # git-version-gen 靠 git describe 取版本——浅克隆必须落在 tag 上，否则 meson.build 的 version.split()[1] 越界 / git-version-gen derives the version from git describe — the shallow clone must land on a tag or meson.build's version.split()[1] goes out of bounds
+
+# ---- X11 / xcb 栈 / the X11/xcb stack ----
+xcb-proto:
+  git: https://gitlab.freedesktop.org/xorg/proto/xcbproto.git
+libxcb:
+  git: https://gitlab.freedesktop.org/xorg/lib/libxcb.git
+xorgproto:
+  git: https://gitlab.freedesktop.org/xorg/proto/xorgproto.git
+libx11:
+  git: https://gitlab.freedesktop.org/xorg/lib/libx11.git
+libxext:
+  git: https://gitlab.freedesktop.org/xorg/lib/libxext.git
+libxau:
+  git: https://gitlab.freedesktop.org/xorg/lib/libxau.git
+libxdmcp:
+  git: https://gitlab.freedesktop.org/xorg/lib/libxdmcp.git
+xtrans:
+  git: https://gitlab.freedesktop.org/xorg/lib/libxtrans.git
+xorg-macros:
+  git: https://gitlab.freedesktop.org/xorg/util/macros.git
+libxv:                     # xlib 特性三件套之一（Xvlib.h）/ one of the xlib trio (Xvlib.h)
+  git: https://gitlab.freedesktop.org/xorg/lib/libXv.git
+libxfixes:                 # libva-x11 后端要求 / required by the libva-x11 backend
+  git: https://gitlab.freedesktop.org/xorg/lib/libXfixes.git
+
+# ================= Windows 平台栈（windows 双架构同一批源）/ Windows
+#      platform stack (shared by both windows arches) =================
+vulkan-loader:             # 备用加载器（spirv-cross/libplacebo 链）/ spare loader (spirv-cross/libplacebo chain)
+  git: https://github.com/KhronosGroup/Vulkan-Loader.git
+spirv-cross:
+  git: https://github.com/KhronosGroup/SPIRV-Cross.git
+libplacebo:
+  git: https://code.videolan.org/videolan/libplacebo.git
+  submodules: true

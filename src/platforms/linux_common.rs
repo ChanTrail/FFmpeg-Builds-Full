@@ -21,7 +21,8 @@ pub const PREFIX: &str = "/opt/ffbuild";
 /// `make install` lands here as root)
 pub const USRLOCAL: &str = "/usr/local";
 
-/// 探测并安装全局环境 / probe and install the global Env
+/// 探测并安装目标架构 <arch> 的全局环境
+/// probe and install the global Env for the target <arch>
 pub fn init_env(arch: Arch) -> Result<(), String> {
     let bash = ["/usr/bin/bash", "/bin/bash"]
         .iter()
@@ -29,16 +30,11 @@ pub fn init_env(arch: Arch) -> Result<(), String> {
         .find(|p| p.is_file())
         .ok_or("bash not found")?;
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let work = std::env::var("FFBUILD_WORK")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("/ffmpeg-linux-{}", arch.name())));
-    let dist = std::env::var("FFBUILD_DIST")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| repo_root.join("artifacts"));
+    let work = sys::env_dir(
+        "FFBUILD_WORK",
+        PathBuf::from(format!("/ffmpeg-linux-{}", arch.name())),
+    );
+    let dist = sys::env_dir("FFBUILD_DIST", repo_root.join("artifacts"));
     let jobs = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
@@ -87,6 +83,82 @@ fn package_rows(gccv: u32) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// packages/linux-tools.yaml 的钉版表：rustup channel/profile、cargo-c
+/// 版号、pyenv 里的 pip 包、发行版快照 .deb——CI tool-cache key 唯一
+/// 哈希这个文件，钉版改动冷装一次，代码重构不再误炸 / the pin table
+/// from packages/linux-tools.yaml: the rustup channel/profile, the
+/// cargo-c version, the pyenv pip list and the distro snapshot .debs —
+/// the CI tool-cache key hashes only this file, so pin bumps
+/// cold-install once while code refactors stop busting it
+struct ToolPins {
+    /// rustup-init --default-toolchain / rustup channel
+    rustup_channel: String,
+    /// rustup-init --profile / rustup profile
+    rustup_profile: String,
+    /// cargo-c 发布版号（不带 v 前缀）/ cargo-c release version (no v prefix)
+    cargo_c: String,
+    /// /opt/pyenv venv 里的 pip 包 / pip packages for the /opt/pyenv venv
+    pip: Vec<String>,
+    /// 发行版快照 .deb：(名字, URL) / distro snapshot .debs: (name, URL)
+    debs: Vec<(String, String)>,
+}
+
+/// 载入 packages/linux-tools.yaml；全部字段必填——缺了哪根钉都是
+/// 钉版真源自己出毛病，早败比拿错版本强 / load
+/// packages/linux-tools.yaml; every field is required — a missing pin
+/// is the truth source itself being broken, so failing early beats
+/// picking a wrong version
+fn tool_pins() -> Result<ToolPins, String> {
+    use yaml_rust2::{Yaml, YamlLoader};
+    let p = sys::env().repo_root.join("packages/linux-tools.yaml");
+    let text = fsx::read(&p);
+    let docs = YamlLoader::load_from_str(&text)
+        .map_err(|e| format!("{}: YAML parse error: {e}", p.display()))?;
+    let doc = docs
+        .first()
+        .ok_or_else(|| format!("{}: empty tool manifest", p.display()))?;
+    // 字段读取助手：缺键/类型错都带清单名定位 / field readers: a
+    // missing key or a wrong type is reported with the manifest name
+    let str_at = |y: &Yaml, key: &str| -> Result<String, String> {
+        y[key]
+            .as_str()
+            .map(|s| s.trim().to_string())
+            .ok_or_else(|| format!("{}: '{key}' must be a string", p.display()))
+    };
+    let arr_at = |y: &Yaml, key: &str| -> Result<Vec<String>, String> {
+        y[key]
+            .as_vec()
+            .map(|v| {
+                v.iter()
+                    .filter_map(|i| i.as_str().map(|s| s.trim().to_string()))
+                    .collect()
+            })
+            .ok_or_else(|| format!("{}: '{key}' must be a string array", p.display()))
+    };
+    let mut debs = Vec::new();
+    if let Some(h) = doc["debs"].as_hash() {
+        for (k, v) in h {
+            let name = k
+                .as_str()
+                .ok_or_else(|| format!("{}: deb key must be a string", p.display()))?;
+            let url = v
+                .as_str()
+                .ok_or_else(|| format!("{}: 'debs.{name}' must be a string", p.display()))?;
+            debs.push((name.to_string(), url.trim().to_string()));
+        }
+    }
+    if debs.is_empty() {
+        return Err(format!("{}: 'debs' must be a non-empty map", p.display()));
+    }
+    Ok(ToolPins {
+        rustup_channel: str_at(&doc["rustup"], "channel")?,
+        rustup_profile: str_at(&doc["rustup"], "profile")?,
+        cargo_c: str_at(doc, "cargo_c")?,
+        pip: arr_at(doc, "pip")?,
+        debs,
+    })
+}
+
 /// packages 阶段：apt 包装（整表批量 + 逐包回退）→ 最新 GCC 设为默认
 /// 编译器（/usr/local/bin 遮蔽 + update-alternatives）→ pyenv 里的
 /// meson/ninja/cmake → autoconf 2.73/automake 1.18 快照 .deb 直解进 /
@@ -110,15 +182,59 @@ pub fn packages() -> Result<(), String> {
         return Err("apt-get not found — the Linux pipeline targets Debian/Ubuntu".into());
     }
     log::group_begin("Install build tools");
-    let _guard = sys::EnvGuard::set(&[("DEBIAN_FRONTEND", "noninteractive".to_string())]);
-    sys::run_ok("apt-get", &["update"], &e.work)?;
+    // needrestart 双闸：MODE=a 让它不问即重启、SUSPEND=1 干脆整段不跑——
+    // ubuntu-24.04 镜像自带 needrestart，postinst 的服务重启问答是
+    // apt-get 批量装挂死的头号嫌疑（实证 ~600s 无声）/ double gate on
+    // needrestart: MODE=a makes it restart without asking, SUSPEND=1
+    // skips it outright — ubuntu-24.04 images ship it and its
+    // service-restart prompt is the prime suspect for batch installs
+    // hanging silently (~600s observed)
+    let _guard = sys::EnvGuard::set(&[
+        ("DEBIAN_FRONTEND", "noninteractive".to_string()),
+        ("NEEDRESTART_MODE", "a".to_string()),
+        ("NEEDRESTART_SUSPEND", "1".to_string()),
+    ]);
+    // apt 三闸：断流连接 60s 超时 ×3 重试（镜像中途挂死不再等一辈子）、
+    // dpkg 锁等待封顶 300s（开机的 apt-daily 持锁）/ three apt gates:
+    // stalled connections time out at 60s with 3 retries (no more
+    // waiting forever on a wedged mirror), the dpkg lock wait caps at
+    // 300s (boot-time apt-daily holds it)
+    let apt_o: Vec<&str> = [
+        "-o",
+        "Acquire::Retries=3",
+        "-o",
+        "Acquire::http::Timeout=60",
+        "-o",
+        "Acquire::https::Timeout=60",
+        "-o",
+        "DPkg::Lock::Timeout=300",
+    ]
+    .into_iter()
+    .collect();
+    let apt = |args: &[&str], cwd: &Path| -> Result<i32, String> {
+        let mut a: Vec<&str> = apt_o.clone();
+        a.extend_from_slice(args);
+        sys::run("apt-get", &a, cwd)
+    };
+    if apt(&["update"], &e.work)? != 0 {
+        return Err("apt-get update failed".to_string());
+    }
 
-    // 降序探测最新 GCC 主版本——runner 镜像还没跟上时留活路
-    // probe the newest GCC major descending — leaves room on runners whose
-    // image has not caught up yet
+    // 摘掉 man-db 的 auto-update 印记：它的 postinst 触发器在大批量安装
+    // 时会全量重建 mandb，runner 上白烧 30-60s——构建容器不看 man 页
+    // drop man-db's auto-update stamp: its postinst trigger rebuilds all of
+    // mandb during bulk installs, burning 30-60s on runners — build
+    // containers never read man pages
+    let _ = std::fs::remove_file("/var/lib/man-db/auto-update");
+
+    // 降序探测最新 GCC 主版本——runner 镜像还没跟上时留活路（用
+    // capture 而非 run：show 会把整包记录打进日志，这里只要退出码）
+    // probe the newest GCC major descending — leaves room on runners
+    // whose image has not caught up yet (capture, not run: `show` dumps
+    // the whole package record into the log; only the status is needed)
     let mut gccv = 16;
     loop {
-        if sys::run("apt-cache", &["show", &format!("gcc-{gccv}")], &e.work).unwrap_or(1) == 0 {
+        if sys::capture("apt-cache", &["show", &format!("gcc-{gccv}")], &e.work).is_ok() {
             break;
         }
         gccv -= 1;
@@ -129,20 +245,29 @@ pub fn packages() -> Result<(), String> {
     log::log(&format!("gcc slot: gcc-{gccv}"));
 
     let pkgs = package_rows(gccv)?;
-    let refs: Vec<&str> = pkgs.iter().map(String::as_str).collect();
-    // 整列表装；缺包逐个回退——某个发行版没有的包不拖死整个构建
-    // install the whole list; fall back one-by-one so a package missing on
-    // this release never stops the build
+    // 先 apt-cache 全表预筛：缺席名点名剔除再整批装——某个发行版没有的
+    // 包不再把批量装拖垮后靠 ~90 次逐包 spawn 收场（逐包回退保留为
+    // 末档兜底）/ prefilter the whole list through apt-cache first:
+    // absent names get named and dropped before the batch — a package
+    // missing on this release can no longer sink the batch and leave a
+    // ~90-spawn per-package grind as the only path forward (per-package
+    // stays as the last-resort fallback)
+    let mut installable: Vec<&str> = Vec::new();
+    for p in &pkgs {
+        // 静默探测——apt-cache show 的整包记录（~90 条 × ~2KB）不该进
+        // 日志 / silent probe — `apt-cache show` dumps the whole package
+        // record (~90 × ~2KB) and none of it belongs in the log
+        if sys::capture("apt-cache", &["show", p], &e.work).is_ok() {
+            installable.push(p.as_str());
+        } else {
+            log::warn(&format!("apt package {p} not offered — skipping"));
+        }
+    }
     let mut args = vec!["install", "-y", "--no-install-recommends"];
-    args.extend(&refs);
-    if sys::run("apt-get", &args, &e.work)? != 0 {
-        for p in &refs {
-            if sys::run(
-                "apt-get",
-                &["install", "-y", "--no-install-recommends", p],
-                &e.work,
-            )? != 0
-            {
+    args.extend(&installable);
+    if apt(&args, &e.work)? != 0 {
+        for p in &installable {
+            if apt(&["install", "-y", "--no-install-recommends", p], &e.work)? != 0 {
                 log::warn(&format!("apt package {p} could not be installed"));
             }
         }
@@ -196,30 +321,27 @@ pub fn packages() -> Result<(), String> {
     }
     let _ = sys::bash("hash -r; gcc --version | head -n1", &e.work);
 
+    // 自建工具的全部钉版集中在 packages/linux-tools.yaml——CI
+    // tool-cache key 唯一哈希它：重构本文件不再误炸缓存，真改钉版才
+    // 冷装 / every pin for the self-installed tools lives in
+    // packages/linux-tools.yaml — the CI tool-cache key hashes only that
+    // file: refactoring this file stops busting the cache, a real pin
+    // bump is what cold-installs
+    let pins = tool_pins()?;
+
     // meson/ninja/cmake 装进 virtualenv（系统 Python 是 "externally
-    // managed"）；/opt/pyenv 随 deps 快照走：二进制在场即跳过
+    // managed"）；/opt/pyenv 走 CI tool-cache：二进制在场即跳过
     // meson, ninja, cmake & co. live in a virtualenv (the system Python is
-    // externally managed); /opt/pyenv rides the deps snapshot: present
+    // externally managed); /opt/pyenv rides the CI tool-cache: present
     // binaries skip creation + pip
     if !(Path::new("/opt/pyenv/bin/meson").is_file()
         && Path::new("/opt/pyenv/bin/ninja").is_file()
         && Path::new("/opt/pyenv/bin/cmake").is_file())
     {
         sys::run_ok("python3", &["-m", "venv", "/opt/pyenv"], &e.work)?;
-        sys::run_ok(
-            "/opt/pyenv/bin/pip",
-            &[
-                "install",
-                "--quiet",
-                "meson",
-                "ninja",
-                "cmake",
-                "jinja2",
-                "jsonschema",
-                "setuptools",
-            ],
-            &e.work,
-        )?;
+        let mut args = vec!["install", "--quiet"];
+        args.extend(pins.pip.iter().map(String::as_str));
+        sys::run_ok("/opt/pyenv/bin/pip", &args, &e.work)?;
     } else {
         log::log("python build-tool venv restored from cache");
     }
@@ -235,16 +357,7 @@ pub fn packages() -> Result<(), String> {
     // -f, even removed libltdl-dev. lame demands AC_PREREQ(2.73) which no
     // released tarball provides; libiconv's autogen wants aclocal-1.18
     // specifically
-    for (name, url) in [
-        (
-            "autoconf",
-            "https://archive.ubuntu.com/ubuntu/pool/main/a/autoconf/autoconf_2.73-2_all.deb",
-        ),
-        (
-            "automake",
-            "https://archive.ubuntu.com/ubuntu/pool/main/a/automake/automake_1.18.1-4_all.deb",
-        ),
-    ] {
+    for (name, url) in &pins.debs {
         let deb = e.work.join(format!("{name}.deb"));
         crate::net::download_sync(url, &deb)?;
         sys::run_ok("dpkg", &["-x", &deb.to_string_lossy(), "/"], &e.work)?;
@@ -263,7 +376,10 @@ pub fn packages() -> Result<(), String> {
     if !(Path::new("/opt/cargo/bin/cargo").is_file() && Path::new("/opt/cargo/bin/rustc").is_file())
     {
         sys::bash_ok(
-            "curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable",
+            &format!(
+                "curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile {} --default-toolchain {}",
+                pins.rustup_profile, pins.rustup_channel
+            ),
             &e.work,
         )?;
     } else {
@@ -276,7 +392,8 @@ pub fn packages() -> Result<(), String> {
         };
         sys::bash_ok(
             &format!(
-                "curl -fsSL https://github.com/lu-zero/cargo-c/releases/download/v0.10.26/cargo-c-{cc_arch}-unknown-linux-musl.tar.gz | tar -xz -C /opt/cargo/bin"
+                "curl -fsSL https://github.com/lu-zero/cargo-c/releases/download/v{}/cargo-c-{cc_arch}-unknown-linux-musl.tar.gz | tar -xz -C /opt/cargo/bin",
+                pins.cargo_c
             ),
             &e.work,
         )?;
@@ -429,7 +546,91 @@ pub fn save() -> Result<(), String> {
 /// drop-and-retry configure -> make/install. No --prefix on Linux —
 /// running as root, `make install` lands in /usr/local which is where
 /// the package stage collects from
-pub fn ffmpeg() -> Result<(), String> {
+/// 逐 token 重写 .pc 文本里的运行时库 -l 名。返回是否改动 /
+/// Rewrite runtime -l names in .pc text token by token; returns whether
+/// anything changed
+fn sanitize_pc_text(text: &str) -> (String, bool) {
+    let mut out = String::with_capacity(text.len());
+    let mut tok = String::new();
+    let mut changed = false;
+    let flush = |tok: &mut String, out: &mut String, changed: &mut bool| {
+        if let Some(orig) = tok.strip_prefix("-l") {
+            // -l<name>_asneeded → -l<name>：Ubuntu/Debian gcc 的 as-needed
+            // 包装名只有 .so/链接脚本无 .a（libgcc_s_asneeded、
+            // libatomic_asneeded 等）；gcc_s_asneeded 先折叠出 gcc_s
+            // 再进下一条规则 / -l<name>_asneeded → -l<name>: Ubuntu/Debian
+            // gcc's as-needed wrapper names exist only as .so/linker
+            // scripts, never as .a (libgcc_s_asneeded, libatomic_asneeded
+            // ...); gcc_s_asneeded collapses to gcc_s first, then the rule
+            // below finishes it
+            let name = orig.strip_suffix("_asneeded").unwrap_or(orig);
+            // -lgcc_s → -lgcc：共享版 libgcc 同样只有 .so，全静态下必须
+            // 落到 libgcc.a / -lgcc_s → -lgcc: the shared libgcc name
+            // resolves only to .so; under -static it must fall back to
+            // libgcc.a
+            let name = if name == "gcc_s" { "gcc" } else { name };
+            *changed |= name != orig;
+            out.push_str("-l");
+            out.push_str(name);
+        } else {
+            out.push_str(tok);
+        }
+        tok.clear();
+    };
+    for ch in text.chars() {
+        if ch.is_ascii_whitespace() {
+            flush(&mut tok, &mut out, &mut changed);
+            out.push(ch);
+        } else {
+            tok.push(ch);
+        }
+    }
+    flush(&mut tok, &mut out, &mut changed);
+    (out, changed)
+}
+
+/// 全静态化前的 pkg-config 消毒：配方产出的 .pc 其 Libs.private 带着发行
+/// 版工具链的运行时库共享名（rav1e/x265/srt/librsvg 的 -lgcc_s，whisper
+/// 的 -lgcc_s_asneeded/-latomic_asneeded）——--pkg-config-flags=--static
+/// 会把它们原样吐进 configure 探测链接行，而 -static 下根本没有
+/// libgcc_s.a/libatomic_asneeded.a。Libs.private 只在 --static 查询展开，
+/// shared 变体改了也无伤 / pkg-config sanitization ahead of full-static:
+/// recipe-produced .pc Libs.private carry distro-toolchain shared runtime
+/// names (-lgcc_s from rav1e/x265/srt/librsvg, -lgcc_s_asneeded /
+/// -latomic_asneeded from whisper) — --pkg-config-flags=--static expands
+/// them verbatim into configure probe link lines, and no libgcc_s.a /
+/// libatomic_asneeded.a exists under -static. Libs.private only expands
+/// for --static queries, so the rewrite is harmless for the shared variant
+fn sanitize_pc() -> Result<(), String> {
+    let mut n = 0usize;
+    for sub in ["lib/pkgconfig", "share/pkgconfig"] {
+        let dir = Path::new(PREFIX).join(sub);
+        for f in fsx::walk(&dir) {
+            if f.extension().and_then(|x| x.to_str()) != Some("pc") {
+                continue;
+            }
+            let text = fsx::read(&f);
+            let (fixed, changed) = sanitize_pc_text(&text);
+            if changed {
+                fsx::write(&f, &fixed)?;
+                n += 1;
+            }
+        }
+    }
+    if n > 0 {
+        println!("[pkgconfig] sanitized runtime -l names in {n} .pc file(s)");
+    }
+    Ok(())
+}
+
+/// 当前变体的 ffmpeg 配置作业：取源 + 组装 args + 建独立构建目录
+/// （ffbuild-ffmpeg{variant}）+ dropped-libs{variant}.txt——configure
+/// 与编译由调用方统一编排（build-all 四变体并行）/ the current
+/// variant's ffmpeg configure job: fetch + assemble args + a private
+/// build dir (ffbuild-ffmpeg{variant}) + dropped-libs{variant}.txt —
+/// configure and compile are orchestrated by the caller (build-all
+/// runs the four variants in parallel)
+pub fn ffmpeg_plan() -> Result<crate::ffmpeg::ConfJob, String> {
     let e = sys::env();
     const REQUIRED: &[&str] = &[
         "libx264",
@@ -454,7 +655,12 @@ pub fn ffmpeg() -> Result<(), String> {
             info.commit, info.hash, info.version
         ),
     )?;
-    let build = e.work.join("ffbuild-ffmpeg");
+    // 一变体一目录：四变体并行 configure/编译互不干扰 / one dir per
+    // variant: the four-way parallel configure/compile keeps its hands
+    // off the others
+    let build = e
+        .work
+        .join(format!("ffbuild-ffmpeg{}", sys::variant_suffix()));
     fsx::rm_rf(&build);
     fsx::install_d(&build)?;
 
@@ -462,6 +668,9 @@ pub fn ffmpeg() -> Result<(), String> {
     if !r.enabled.iter().any(|n| n == "gnutls") {
         return Err("gnutls is not enabled; the build would have no TLS backend".into());
     }
+    // 必填库探测阶段缺席就点名早败 / fail early on required libs already
+    // absent at probe time
+    r.require(REQUIRED)?;
     let mut args: Vec<String> = vec![
         "--pkg-config-flags=--static".into(),
         "--enable-gpl".into(),
@@ -471,36 +680,152 @@ pub fn ffmpeg() -> Result<(), String> {
     ];
     args.extend(r.flags);
     args.extend([
-        format!("--cc={}", e.cc),
-        format!("--cxx={}", e.cxx),
+        // ccache 前缀由 FFBUILD_CCACHE 控制（显式调用模式，非
+        // masquerade）；configure 的探针编译同样命中缓存 / the ccache
+        // prefix is gated by FFBUILD_CCACHE (explicit invocation, not
+        // masquerade); configure's probe compiles hit the cache too
+        format!("--cc={}", sys::ccache(&e.cc)),
+        format!("--cxx={}", sys::ccache(&e.cxx)),
         format!("--ar={}", e.ar),
         format!("--ranlib={}", e.ranlib),
         format!("--nm={}", e.nm),
         format!("--strip={}", e.strip),
     ]);
-    // glibc 不能整体 -static（getpwnam/iconv/NSS 全靠 dlopen）——运行时
-    // 用 -static-libgcc/-static-libstdc++ 兜 C++ 依赖，其余靠 extras 全
-    // 静态归档 + ldd 白名单兜底 / glibc cannot be fully -static (getpwnam,
-    // iconv and NSS all dlopen) — the C++ runtime rides
-    // -static-libgcc/-static-libstdc++, the rest is covered by the extras'
-    // static archives plus the ldd allowlist at package time
+    // 整个二进制 -static 全静态（旧顾虑——getpwnam/iconv/NSS 全靠
+    // dlopen——已不成立：iconv 是自编 libiconv，getaddrinfo 有内置
+    // files/dns，dlopen 在 glibc≥2.34 的静态二进制里合法）；C++ 运行
+    // 时的兜底仍是 -lstdc++ 尾巴（见下）/ the whole binary goes
+    // -static (the old objection — getpwnam/iconv/NSS dlopening — no
+    // longer applies: iconv is our own libiconv, getaddrinfo has
+    // built-in files/dns, and dlopen is legal in static binaries on
+    // glibc≥2.34); the C++ runtime still rides the -lstdc++ tail below
     let gomp = e.gomp.read().unwrap().clone();
     args.extend([
         "--extra-cflags=-DLIBTWOLAME_STATIC".into(),
-        "--extra-ldflags=-static-libgcc -static-libstdc++".into(),
-        format!("--extra-libs={gomp} -lm -lpthread -lz"),
-        "--disable-stripping".into(),
+        // xevd/xeve 同族源码撞名（padding/prefetch_for_mc 等共享 mc/recon
+        // 非 static 符号），静态归档同链必 multiple definition——windows
+        // 在 fixup 改名去重，这里用 GNU ld 的宽容开关兜底 / xevd and
+        // xeve share source files whose non-static symbols collide
+        // (padding, prefetch_for_mc, ... mc/recon helpers) — statically
+        // archiving both into one link is a guaranteed multiple
+        // definition; windows dedupes by renaming in fixup, here GNU
+        // ld's tolerant switch is the umbrella
+        // -static 全静态：连 glibc 家族也打进二进制（-static-libgcc/
+        // -static-libstdc++ 是 -static 的子集，删掉）。前缀库全是 .a，
+        // 剩余 -l 只剩 libc/libm/libpthread/libdl/librt/libresolv/
+        // libatomic/libgcc——glibc dev 与 gcc 都带 .a。运行时行为差异：
+        // getaddrinfo 回落内置 files/dns NSS（正常 DNS 不受影响，mDNS
+        // 这类插件式解析器失效）；dlopen 在 glibc≥2.34 的静态二进制里
+        // 照常工作（vaapi/vdpau/nvenc/opencl/vulkan 驱动按需载入不受
+        // 影响）；iconv 是自编 libiconv 不走 gconv——三大静态化雷区都
+        // 不涉及 / -static all the way: even the glibc family goes into
+        // the binary (-static-libgcc/-static-libstdc++ are subsets of
+        // -static, dropped). Every prefix lib is a .a already; the only
+        // -l's left are libc/libm/libpthread/libdl/librt/libresolv/
+        // libatomic/libgcc — all shipped as .a by libc dev + gcc.
+        // Runtime deltas: getaddrinfo falls back to the built-in
+        // files/dns NSS (normal DNS unaffected, plugin resolvers like
+        // mDNS won't load); dlopen keeps working in static binaries on
+        // glibc≥2.34 (vaapi/vdpau/nvenc/opencl/vulkan driver loading is
+        // untouched); iconv is our own libiconv, not gconv — the three
+        // classic static-linking pitfalls are all non-issues
+        {
+            // shared 模式 -static 与 --enable-shared 互斥（.so 无法
+            // -static）——只摘全 -static，保留 gcc/C++ 运行时静态化 /
+            // -static and --enable-shared are mutually exclusive
+            // (shared objects can't be -static) — drop only the blanket
+            // -static and keep the gcc/C++ runtimes static
+            if sys::shared() {
+                "--extra-ldflags=-static-libgcc -static-libstdc++ -Wl,--allow-multiple-definition"
+            } else {
+                "--extra-ldflags=-static -Wl,--allow-multiple-definition"
+            }
+        }
+        .into(),
+        // -lstdc++ 放 extra-libs 尾部：check_lib 型链测（openh264 除外
+        // 全走 .pc）不查 .pc，C++ 归档的 operator delete/vtable 引用只有
+        // 全局尾巴能兜底——openal/裸 -l 检查全靠它（实证：libjxl 修复后
+        // configure 走通，才暴露出 openal -lopenal 检查缺 C++ 运行时）。
+        // -lm 必须比 -lstdc++ 更靠后：GCC≥13 的 libstdc++.a 里
+        // __floating_to_chars 引用 fegetround/fesetround，静态归档按序
+        // 扫描不回拉——-lm 在前则 openal 探测直接 undefined / -lstdc++
+        // sits in extra-libs' tail: check_lib-style link probes (every
+        // pkg-config check except openh264) never consult a .pc, and a C++
+        // archive's operator delete/vtable references only a global tail
+        // can satisfy — the bare -lopenal check depends on it entirely
+        // (empirical: once libjxl stopped aborting configure, the -lopenal
+        // check surfaced missing its C++ runtime). -lm must trail -lstdc++:
+        // GCC≥13's libstdc++.a __floating_to_chars references
+        // fegetround/fesetround, and static archives scan in order without
+        // backtracking — -lm earlier leaves the openal probe undefined
+        format!("--extra-libs={gomp} -lpthread -lz -lstdc++ -lm"),
     ]);
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let dropped = e.work.join("dropped-libs.txt");
+    // FFBUILD_DEBUG 非空 = 真·调试构建：--enable-debug=3 全开调试
+    // 信息、--disable-optimizations 关掉全部优化、--disable-stripping
+    // 保留符号表——替换掉头部参数里的 --disable-debug；默认发布态无
+    // 这些旗标，install 自动 strip / a non-empty FFBUILD_DEBUG means
+    // a real debug build: --enable-debug=3 for full debug info,
+    // --disable-optimizations to kill all optimizations, and
+    // --disable-stripping to keep the symbol table — replacing the
+    // --disable-debug in the head args; the release default carries
+    // none of them and install strips automatically
+    if sys::debug() {
+        args.retain(|a| a != "--disable-debug");
+        args.extend([
+            "--enable-debug=3".into(),
+            "--disable-optimizations".into(),
+            "--disable-stripping".into(),
+        ]);
+    }
+    // FFBUILD_SHARED：--enable-rpath 把 install 树的 libdir 烙进
+    // 程序（usrlocal/bin 即装即用）；package 再把包内副本重打成
+    // $ORIGIN（flat bin/ 布局见 package）/ FFBUILD_SHARED:
+    // --enable-rpath bakes the install tree's libdir into the programs
+    // (usrlocal/bin works in place); package() then rewrites the
+    // shipped copies to $ORIGIN for the flat bin/ layout
+    if sys::shared() {
+        args.extend([
+            "--enable-shared".into(),
+            "--disable-static".into(),
+            "--enable-rpath".into(),
+        ]);
+    } else {
+        args.push("--disable-shared".into());
+    }
+    // .pc 静态名消毒必须在 configure 探测之前（探测链接行直接消费
+    // Libs.private）；四变体重复跑幂等——token 已折叠的不再变化 /
+    // the .pc static-name sanitization must run before configure
+    // probing (probe link lines consume Libs.private verbatim);
+    // idempotent across the variants — folded tokens stay folded
+    sanitize_pc()?;
+    let variant = sys::variant_suffix();
+    Ok(crate::ffmpeg::ConfJob {
+        label: sys::variant_word(),
+        build_dir: build,
+        configure: src_dir.join("configure"),
+        args,
+        dropped: e.work.join(format!("dropped-libs{variant}.txt")),
+        required: REQUIRED,
+        build_log: e.work.join(format!("ffmpeg-build{variant}.log")),
+    })
+}
+
+pub fn ffmpeg() -> Result<(), String> {
+    // 单变体路径：计划 → configure → 编译安装（与 build-all 共用
+    // plan，行为不变）/ the single-variant path: plan -> configure ->
+    // compile+install (shares the plan with build-all, unchanged
+    // behavior)
+    let job = ffmpeg_plan()?;
+    let refs: Vec<&str> = job.args.iter().map(String::as_str).collect();
     crate::ffmpeg::configure(
-        &build,
-        &src_dir.join("configure"),
+        &job.build_dir,
+        &job.configure,
         &refs,
-        &dropped,
-        REQUIRED,
+        &job.dropped,
+        job.required,
+        &job.label,
     )?;
-    crate::ffmpeg::build(&build, &e.work.join("ffmpeg-build.log"))
+    crate::ffmpeg::build(&job.build_dir, &job.build_log)
 }
 
 /// package 阶段：收集二进制/文档/man 页/预设 → ldd 白名单（仅 glibc
@@ -524,7 +849,14 @@ pub fn package() -> Result<(), String> {
         }
     }
     let platform = e.plat();
-    let name = format!("ffmpeg-{hash}-{platform}");
+    // 变体后缀：shared/debug 产物与静态版同名互踩——同一驱动目录下
+    // 两种形态并存，名字必须可分辨（顺序固定 -shared-debug）/
+    // variant suffixes: shared/debug artifacts would shadow the
+    // static one by name — both shapes can coexist under one driver
+    // dir, so names must discriminate (fixed order: -shared-debug)
+    let variant = sys::variant_suffix();
+    crate::ffmpeg::emit_symbols(&e.work, &variant);
+    let name = format!("ffmpeg-{hash}-{platform}{variant}");
     let pkgroot = e.work.join("pkg");
     let pkg = pkgroot.join(&name);
     fsx::rm_rf(&pkgroot);
@@ -537,12 +869,74 @@ pub fn package() -> Result<(), String> {
             fsx::install(&src, &pkg.join(format!("bin/{exe}")))?;
         }
     }
-    for f in fsx::walk(&pkg.join("bin")) {
-        let _ = sys::run(
-            &e.strip,
-            &["--strip-unneeded", &f.to_string_lossy()],
-            &e.work,
-        );
+    // shared 构建：lib*.so.N 真文件平收进 bin/（前缀里只有 ffmpeg
+    // 自己的 .so——依赖全是 .a）；收完给整层打 $ORIGIN rpath：
+    // exe 与互引的 .so 一律同目录解析，包拎到任何路径即跑 /
+    // shared build: collect the real lib*.so.N files flat into bin/
+    // (the prefix only has ffmpeg's own .so — deps are all .a), then
+    // stamp $ORIGIN on the whole bin layer: exes and their mutual .so
+    // references all resolve sibling-wise, so the package runs from
+    // any path
+    if sys::shared() {
+        if let Ok(rd) = std::fs::read_dir(usrlocal.join("lib")) {
+            for ent in rd.flatten() {
+                let p = ent.path();
+                let n = ent.file_name().to_string_lossy().to_string();
+                if n.contains(".so.")
+                    && p.is_file()
+                    && !p
+                        .symlink_metadata()
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false)
+                {
+                    fsx::install(&p, &pkg.join(format!("bin/{n}")))?;
+                }
+            }
+        }
+        // SONAME 链接别名收第二趟：exe/.so 的 NEEDED 记的是短名
+        // （libavcodec.so.63——真文件是 .so.63.28.100 全版本），只收
+        // 真文件 ld.so 按名找不到、ldd 白名单同判；别名以实体副本入
+        // 包（fs::copy 随链接取目标字节），不带版本段的 .so dev 链接
+        // 跳过 / second pass for the SONAME aliases: the exes'/.sos'
+        // NEEDED entries record the short name (libavcodec.so.63 —
+        // the real file is the fully-versioned .so.63.28.100), so
+        // real files alone leave ld.so — and the ldd allowlist —
+        // resolving a name that isn't there. Aliases ship as real
+        // copies (fs::copy follows the link for identical bytes);
+        // the unversioned .so dev links are skipped
+        if let Ok(rd) = std::fs::read_dir(usrlocal.join("lib")) {
+            for ent in rd.flatten() {
+                let p = ent.path();
+                let n = ent.file_name().to_string_lossy().to_string();
+                if n.contains(".so.")
+                    && p.symlink_metadata()
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false)
+                {
+                    fsx::install(&p, &pkg.join(format!("bin/{n}")))?;
+                }
+            }
+        }
+        for f in fsx::walk(&pkg.join("bin")) {
+            sys::run(
+                "patchelf",
+                &["--set-rpath", "$ORIGIN", &f.to_string_lossy()],
+                &e.work,
+            )?;
+        }
+    }
+    // 打包剥符号——FFBUILD_DEBUG 下跳过（configure 那道已把
+    // --disable-stripping 传给 install，这层再剥就白留了）/
+    // package-time strip — skipped under FFBUILD_DEBUG (the configure
+    // flag already kept symbols at install; this pass would undo it)
+    if !sys::debug() {
+        for f in fsx::walk(&pkg.join("bin")) {
+            let _ = sys::run(
+                &e.strip,
+                &["--strip-unneeded", &f.to_string_lossy()],
+                &e.work,
+            );
+        }
     }
     for (src, dst) in [
         (usrlocal.join("share/doc/ffmpeg"), "doc"),
@@ -572,17 +966,21 @@ pub fn package() -> Result<(), String> {
     }
     let license = e.work.join("ffmpeg/COPYING.GPLv3");
     if license.is_file() {
-        fsx::install(&license, &pkg.join("LICENSE.txt"))?;
+        fsx::install(&license, &pkg.join("LICENSE"))?;
     }
 
-    // 运行时依赖白名单：只有 glibc 家族可动态出现。libmvec.so.1 被
-    // Ubuntu 的 libm.so 链接脚本无条件拖入（glibc 2.35 起的 GROUP），
-    // libgcc_s 是编译器运行时——两者随 glibc 走，和 libm 一样可移植
-    // runtime-dependency allowlist: only the glibc family may appear
-    // dynamically. libmvec.so.1 is dragged in unconditionally by Ubuntu's
-    // libm.so linker script (a GROUP() since glibc 2.35) and libgcc_s is
-    // the compiler runtime — both ship wherever glibc does, as portable
-    // as libm itself
+    // 运行时依赖白名单：默认全静态产物的 ldd 输出是 "not a dynamic
+    // executable"（首词 "not" 在白名单里天然放行）；shared 变体才真
+    // 有动态依赖——glibc 家族照旧放行 + 随包同行的 lib*.so.N（上方
+    // shipped 判断）。libmvec.so.1 被 Ubuntu 的 libm.so 链接脚本无条
+    // 件拖入（glibc 2.35 起的 GROUP），libgcc_s 是编译器运行时 /
+    // runtime-dependency allowlist: the default all-static binary's
+    // ldd says "not a dynamic executable" (the "not" token is already
+    // allowlisted); only the shared variant has real dynamic deps —
+    // the glibc family stays allowed plus sonames shipped in the
+    // package (the shipped check above). libmvec.so.1 is dragged in by
+    // Ubuntu's libm.so linker script (a GROUP() since glibc 2.35) and
+    // libgcc_s is the compiler runtime
     log::group_begin("Dynamic dependencies");
     let allowed = [
         "linux-vdso",
@@ -607,12 +1005,19 @@ pub fn package() -> Result<(), String> {
         let out = sys::capture("ldd", &[&b.to_string_lossy()], &e.work).unwrap_or_default();
         for l in out.lines() {
             let dep = l.split_whitespace().next().unwrap_or("");
-            if !dep.is_empty() && !allowed.iter().any(|a| dep.starts_with(a)) {
-                bad.push(format!(
-                    "{}:{dep}",
-                    b.file_name().unwrap().to_string_lossy()
-                ));
+            if dep.is_empty() {
+                continue;
             }
+            // 随包同行的 soname（shared 模式的 lib*.so.N）合法 /
+            // a soname shipped beside the binary is fine (shared mode's
+            // lib*.so.N)
+            if allowed.iter().any(|a| dep.starts_with(a)) || pkg.join("bin").join(dep).exists() {
+                continue;
+            }
+            bad.push(format!(
+                "{}:{dep}",
+                b.file_name().unwrap().to_string_lossy()
+            ));
         }
     }
     log::group_end();
@@ -623,11 +1028,26 @@ pub fn package() -> Result<(), String> {
         ));
     }
 
+    // pkg/bin 里的是 stripped；冒烟测试用构建目录的 ffmpeg_g（未剥离
+    // 兄弟件，symtab 在）做 gdb 诊断——windows 同款 guard，实证过
+    // xavs2 SIGSEGV 回溯全 ?? 只能靠 nm.txt 离线对号 / pkg/bin holds
+    // stripped copies; point the smoke test's gdb diagnostics at the
+    // unstripped sibling ffmpeg_g in the build dir (its symtab survives)
+    // — same guard as windows; empirically an xavs2 SIGSEGV backtrace
+    // came out all ?? and only the nm.txt resolved it offline
+    let _guard = sys::EnvGuard::set(&[(
+        "FFMPEG_GDB",
+        e.work
+            .join(format!("ffbuild-ffmpeg{variant}/ffmpeg_g"))
+            .to_string_lossy()
+            .to_string(),
+    )]);
     log::group_begin("Smoke test");
     let smoke_rc = crate::stages::smoke::smoke_test(&pkg.join("bin"));
     log::group_end();
     smoke_rc?;
 
+    // BUILDINFO 收集 + tar.xz 打包 + sha256 校验和
     // BUILDINFO + tar.xz + sha256
     let buildconf = sys::capture(
         &pkg.join("bin/ffmpeg").to_string_lossy(),
@@ -635,7 +1055,7 @@ pub fn package() -> Result<(), String> {
         &e.work,
     )
     .unwrap_or_default();
-    let dropped = fsx::read(&e.work.join("dropped-libs.txt"));
+    let dropped = fsx::read(&e.work.join(format!("dropped-libs{variant}.txt")));
     let status = fsx::read(&Path::new(PREFIX).join(".extras/status.txt"));
     let ccid = sys::capture(&e.cc, &["-dumpmachine"], &e.work)
         .unwrap_or_default()
@@ -647,8 +1067,43 @@ pub fn package() -> Result<(), String> {
         .next()
         .and_then(|l| l.split_whitespace().last().map(|s| s.to_string()))
         .unwrap_or_default();
+    // BUILDINFO.info 版式向发行样例靠齐：品牌头（变体词随产物）→
+    // Version/License/Source Code → External Assets → "<变体> build
+    // configuration:" 领起 -buildconf 原文；dropped/extras 附尾 /
+    // the BUILDINFO.info layout follows the release sample: a branded
+    // header (variant word follows the artifact) ->
+    // Version/License/Source Code -> External Assets -> "<variant>
+    // build configuration:" introducing the verbatim -buildconf dump;
+    // dropped/extras trail at the end
+    let vword = if variant.is_empty() {
+        "static"
+    } else {
+        variant.trim_start_matches('-')
+    };
+    // External Assets 按本二进制 -buildconf 里的实际启用旗标生成——
+    // 需要运行时 dlopen 插件/数据文件的特性才有资产可列（windows-
+    // arm64 的 tesseract 缺席自动不列）/ the External Assets section
+    // is generated from the flags actually enabled in this binary's
+    // -buildconf — only features needing runtime-dlopen plugins or
+    // data files get an asset entry (windows-arm64's absent tesseract
+    // drops out by itself)
+    let assets = crate::ffmpeg::external_assets(&buildconf);
     let info = format!(
-        "FFmpeg version : {version}\nFFmpeg commit  : {commit}\nPlatform       : {platform} ({ccid}, glibc {libc})\nDropped by configure : {}\nExtras         :\n{}\n{buildconf}",
+        "FFmpeg 64-bit {vword} Linux build from www.chantrail.com\n\
+        \n\
+        Version: {version}\n\
+        \n\
+        License: GPL v3\n\
+        \n\
+        Source Code: https://git.ffmpeg.org/gitweb/ffmpeg.git/commit/{commit}\n\
+        \n\
+        {assets}\
+        {vword} build configuration: \n\
+        \n\
+        {buildconf}\n\
+        Platform             : {platform} ({ccid}, glibc {libc})\n\
+        Dropped by configure : {}\n\
+        Extras               :\n{}\n",
         dropped.replace('\n', " ").trim(),
         status
             .lines()
@@ -656,8 +1111,7 @@ pub fn package() -> Result<(), String> {
             .collect::<Vec<_>>()
             .join("\n"),
     );
-    fsx::write(&pkg.join("BUILDINFO.txt"), &info)?;
-    fsx::write(&e.dist.join(format!("{name}.buildinfo.txt")), &info)?;
+    fsx::write(&pkg.join("BUILDINFO.info"), &info)?;
 
     fsx::install_d(&e.dist)?;
     let tarname = format!("{name}.tar.xz");

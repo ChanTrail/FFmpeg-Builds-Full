@@ -9,7 +9,7 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("harfbuzz", "mac", "harfbuzz", "-", body);
+    let mut x = r("harfbuzz", "linux,mac", "harfbuzz", "-", body);
     x.src = include_str!("harfbuzz.rs");
     x
 }

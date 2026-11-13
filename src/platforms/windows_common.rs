@@ -73,7 +73,8 @@ fn msys2_root() -> Result<PathBuf, String> {
     Err("MSYS2 root not found (set FFBUILD_MSYS2)".to_string())
 }
 
-/// 探测并安装全局环境 / probe and install the global Env
+/// 探测并安装目标架构 <arch> 的全局环境
+/// probe and install the global Env for the target <arch>
 pub fn init_env(arch: Arch) -> Result<(), String> {
     let pr = profile(arch);
     let root = msys2_root()?;
@@ -119,12 +120,11 @@ pub fn init_env(arch: Arch) -> Result<(), String> {
         child_path.push_str(&ghdir.to_string_lossy());
     }
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let work = std::env::var("FFBUILD_WORK")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| repo_root.join(format!("ffmpeg-windows-{}", arch.name())));
-    let dist = std::env::var("FFBUILD_DIST")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| repo_root.join("artifacts"));
+    let work = sys::env_dir(
+        "FFBUILD_WORK",
+        repo_root.join(format!("ffmpeg-windows-{}", arch.name())),
+    );
+    let dist = sys::env_dir("FFBUILD_DIST", repo_root.join("artifacts"));
     let jobs = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
@@ -171,11 +171,117 @@ fn package_rows() -> Result<Vec<crate::manifest::packages::Pkg>, String> {
 /// --overwrite '*' / pacman -S retry wrapper: idempotent --needed
 /// installs; pacover carries --overwrite '*' when recovering a
 /// half-installed env
+/// pacman 本地库条目目录的版本比较：`<name>-<ver>-<rel>` 先比 `<ver>`
+/// 再比 `<rel>`——pkgver 按规范禁含 '-'，末个 '-' 恒为 ver/rel 分界。
+/// 单串比较：数字段按数值（去前导零后比长度再比字典序）、字母段按字
+/// 典序、数字段恒胜字母段、等长前缀短者负。libalpm vercmp 的近似实
+/// 现，够"同包两条目留新"用。
+/// Version compare for pacman local-db entry dirs: compare `<ver>`
+/// first, then `<rel>` — pkgver may not contain '-', so the last dash
+/// always separates ver from rel. Per-string comparison: numeric
+/// chunks by value (leading zeros stripped, then length, then
+/// lexicographic), alpha chunks lexicographically, numeric always
+/// beats alpha, a shorter equal prefix loses. A libalpm vercmp
+/// approximation, enough for "keep the newer of two entries".
+fn alpm_vercmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    // 条目 → (ver, rel)：剥包名（反向剥末尾两段）后末个 '-' 分 ver/rel /
+    // entry -> (ver, rel): peel the name (last two segments from the
+    // back), then the final '-' splits ver from rel
+    fn vr(d: &str) -> (&str, &str) {
+        let mut idx = d.len();
+        for _ in 0..2 {
+            match d[..idx].rfind('-') {
+                Some(i) => idx = i,
+                None => return (d, ""),
+            }
+        }
+        match d[idx + 1..].rfind('-') {
+            Some(i) => {
+                let t = &d[idx + 1..];
+                (&t[..i], &t[i + 1..])
+            }
+            None => (&d[idx + 1..], ""),
+        }
+    }
+    // 单版本串比较 / compare one version string
+    fn chunkcmp(a: &str, b: &str) -> Ordering {
+        let (mut ca, mut cb) = (a.chars().peekable(), b.chars().peekable());
+        loop {
+            // 跳过分隔符 / skip separators
+            while matches!(ca.peek(), Some(c) if !c.is_alphanumeric()) {
+                ca.next();
+            }
+            while matches!(cb.peek(), Some(c) if !c.is_alphanumeric()) {
+                cb.next();
+            }
+            match (ca.peek(), cb.peek()) {
+                (None, None) => return Ordering::Equal,
+                (None, Some(_)) => return Ordering::Less,
+                (Some(_), None) => return Ordering::Greater,
+                (Some(x), Some(y)) => {
+                    let na = x.is_ascii_digit();
+                    let nb = y.is_ascii_digit();
+                    if na != nb {
+                        return if na {
+                            Ordering::Greater
+                        } else {
+                            Ordering::Less
+                        };
+                    }
+                    let mut sa = String::new();
+                    while matches!(ca.peek(), Some(c) if c.is_ascii_digit() == na && c.is_alphanumeric())
+                    {
+                        sa.push(ca.next().unwrap());
+                    }
+                    let mut sb = String::new();
+                    while matches!(cb.peek(), Some(c) if c.is_ascii_digit() == nb && c.is_alphanumeric())
+                    {
+                        sb.push(cb.next().unwrap());
+                    }
+                    let ord = if na {
+                        let (ta, tb) = (sa.trim_start_matches('0'), sb.trim_start_matches('0'));
+                        ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb))
+                    } else {
+                        sa.cmp(&sb)
+                    };
+                    if ord != Ordering::Equal {
+                        return ord;
+                    }
+                }
+            }
+        }
+    }
+    let (va, ra) = vr(a);
+    let (vb, rb) = vr(b);
+    chunkcmp(va, vb).then_with(|| chunkcmp(ra, rb))
+}
+
 fn pacman_install(e: &Env, over: &[&str], pkgs: &[&str], tries: u32) -> Result<(), String> {
     let mut args: Vec<&str> = vec!["-S", "--needed", "--noconfirm", "--noprogressbar"];
     args.extend_from_slice(over);
     args.extend_from_slice(pkgs);
-    sys::retry(tries, || sys::run_ok("pacman", &args, &e.work))
+    sys::retry(tries, || sys::run_ok("pacman", &args, &e.work))?;
+    // 文件在位验证：pacman local DB 随 env cache 恢复，/usr 树却由
+    // setup-msys2 每轮重建——DB 声称已装但文件缺失的包会被 --needed
+    // 放鸽子（"up to date -- skipping"，然后 configure 报 command
+    // not found）。-Qkq 只列问题项，不干净就去掉 --needed 整批强
+    // 重装 / file-presence verification: the pacman local DB rides
+    // the env cache while the /usr tree is rebuilt by setup-msys2
+    // every run — a package whose files are missing still reads
+    // "installed" to --needed ("up to date -- skipping", then
+    // configure reports command not found). -Qkq lists only problem
+    // entries; anything short of clean force-reinstalls the batch
+    // without --needed
+    let mut qk: Vec<&str> = vec!["-Qkq"];
+    qk.extend_from_slice(pkgs);
+    if sys::run("pacman", &qk, &e.work)? != 0 {
+        let mut force: Vec<&str> = vec!["-S", "--noconfirm", "--noprogressbar"];
+        force.extend_from_slice(over);
+        force.extend_from_slice(pkgs);
+        sys::retry(tries, || sys::run_ok("pacman", &force, &e.work))?;
+    }
+    Ok(())
 }
 
 /// 换 pacman 源：重写 mirrorlist.* 里每个 URL 的 scheme://host 段，
@@ -301,6 +407,58 @@ pub fn packages() -> Result<(), String> {
     // mid-install as healthy
     let _ = std::fs::remove_file(&envstamp);
 
+    // env 缓存是覆盖解包：setup-msys2 基线已写进本地库的核心包条目与
+    // 缓存条目撞名 → 同包多版本目录，pacman 每跑刷一屏 "duplicated
+    // database entry"。按包名归组只留较新版本：基线恒新（它现拉仓库），
+    // 核心包保持与盘上文件一致；mingw 包只有缓存单份不撞。
+    // The env cache extracts over the baseline: core-package entries the
+    // setup-msys2 baseline already wrote collide with the cached copies,
+    // leaving two versioned dirs per package — pacman spams "duplicated
+    // database entry" on every invocation. Group by name and keep only
+    // the newer version: the baseline is always newest (it pulls the
+    // live repo), so core entries stay consistent with on-disk files;
+    // mingw entries exist only in the cache and never collide.
+    {
+        let mut byname: std::collections::HashMap<String, Vec<(String, PathBuf)>> =
+            std::collections::HashMap::new();
+        if let Ok(rd) = std::fs::read_dir(&db) {
+            for ent in rd.flatten() {
+                let path = ent.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let dname = ent.file_name().to_string_lossy().to_string();
+                // 条目目录形如 <name>-<ver>-<rel>：末尾两段是版本 / entry
+                // dirs look like <name>-<ver>-<rel>: the last two dash
+                // segments are the version
+                if let Some(pkg) = dname.rsplitn(3, '-').nth(2) {
+                    byname
+                        .entry(pkg.to_string())
+                        .or_default()
+                        .push((dname, path));
+                }
+            }
+        }
+        let mut deduped = 0usize;
+        for (_pkg, mut vers) in byname {
+            if vers.len() < 2 {
+                continue;
+            }
+            vers.sort_by(|a, b| alpm_vercmp(&a.0, &b.0));
+            let keep = vers.pop().map(|v| v.0).unwrap_or_default();
+            for (dname, path) in vers {
+                log::log(&format!("pacman db dedupe: {dname} -> keep {keep}"));
+                fsx::rm_rf(&path);
+                deduped += 1;
+            }
+        }
+        if deduped > 0 {
+            log::log(&format!(
+                "pacman db dedupe: dropped {deduped} stale entr(ies)"
+            ));
+        }
+    }
+
     // 住在纯 MSYS 仓库里的工具（不是 mingw-w64-*）。
     // Tools living in the plain MSYS repo (not mingw-w64-*).
     pacman_install(
@@ -311,14 +469,13 @@ pub fn packages() -> Result<(), String> {
             "git",
             "patch",
             "diffutils",
-            "zip",
+            "p7zip",
             "unzip",
             "tar",
             "gawk",
             "perl",
             "texinfo",
             "zstd",
-            "ccache",
         ],
         3,
     )?;
@@ -341,6 +498,12 @@ pub fn packages() -> Result<(), String> {
             "windows-default-manifest",
             "llvm-openmp",
             "gdb",
+            // 原生 aarch64 ccache——不走 x86 仿真，WoA 的 rdrand 雷
+            // 对它不适用；装上备用，FFBUILD_CCACHE 翻 env 即开 /
+            // native aarch64 ccache — no x86 emulation, so the WoA
+            // rdrand landmine does not apply; installed and ready —
+            // FFBUILD_CCACHE is a pure env flip away
+            "ccache",
         ]
         .iter()
         .map(|p| format!("{}-{}", e.pkgprefix, p))
@@ -348,6 +511,19 @@ pub fn packages() -> Result<(), String> {
         _ => vec![
             format!("{}-toolchain", e.pkgprefix),
             format!("{}-gdb", e.pkgprefix),
+            // 用原生 mingw 版 ccache 而非 MSYS POSIX 版——后者是
+            // cygwin 链接二进制，在驱动 spawn 的环境里会零输出
+            // 静默退出（实证：文件在位、configure 报 C compiler
+            // test failed 且 config.log 无 stderr）；原生版没有
+            // cygwin DLL 依赖，整个失败类被连根除掉 /
+            // the native mingw ccache instead of the MSYS POSIX one —
+            // the latter is a cygwin-linked binary that exits
+            // silently with zero output under the driver's spawned
+            // env (empirical: the file was present yet configure
+            // reported C compiler test failed with no stderr in
+            // config.log); the native one has no cygwin DLL
+            // dependency and the whole failure class disappears
+            format!("{}-ccache", e.pkgprefix),
         ],
     };
     {
@@ -434,11 +610,14 @@ pub fn packages() -> Result<(), String> {
     Ok(())
 }
 
-/// FFmpeg 阶段：取源码 → features 旗标 + 平台工具链参数 → 丢包重试
-/// configure → 编译安装
-/// The FFmpeg stage: fetch sources → features flags + platform toolchain
-/// args → drop-and-retry configure → compile+install
-pub fn ffmpeg() -> Result<(), String> {
+/// 当前变体的 ffmpeg 配置作业：取源码 → features 旗标 + 平台工具链
+/// 参数 → 独立构建目录（ffbuild-ffmpeg{variant}）——configure 与编译
+/// 由调用方统一编排（build-all 四变体并行）
+/// the current variant's ffmpeg configure job: fetch sources ->
+/// features flags + platform toolchain args -> a private build dir
+/// (ffbuild-ffmpeg{variant}) — configure and compile are orchestrated
+/// by the caller (build-all runs the four variants in parallel)
+pub fn ffmpeg_plan() -> Result<crate::ffmpeg::ConfJob, String> {
     let e = sys::env();
     // 必需的库——丢包重试不得丢它们
     // required libraries — the drop-and-retry loop must never drop them
@@ -469,7 +648,12 @@ pub fn ffmpeg() -> Result<(), String> {
             info.commit, info.hash, info.version
         ),
     )?;
-    let build = e.work.join("ffbuild-ffmpeg");
+    // 一变体一目录：四变体并行 configure/编译互不干扰 / one dir per
+    // variant: the four-way parallel configure/compile keeps its hands
+    // off the others
+    let build = e
+        .work
+        .join(format!("ffbuild-ffmpeg{}", sys::variant_suffix()));
     fsx::rm_rf(&build);
     fsx::install_d(&build)?;
 
@@ -480,6 +664,9 @@ pub fn ffmpeg() -> Result<(), String> {
     if !r.enabled.iter().any(|n| n == "gnutls") {
         return Err("gnutls is not enabled; the build would have no TLS backend".into());
     }
+    // 必填库探测阶段缺席就点名早败 / fail early on required libs already
+    // absent at probe time
+    r.require(REQUIRED)?;
     let mut args: Vec<String> = vec![
         "--pkg-config-flags=--static".into(),
         "--enable-gpl".into(),
@@ -491,8 +678,14 @@ pub fn ffmpeg() -> Result<(), String> {
     // 工具链直通：configure 用它们做全部探测 / toolchain passthrough:
     // configure probes everything with these
     args.extend([
-        format!("--cc={}", e.cc),
-        format!("--cxx={}", e.cxx),
+        // ccache 前缀由 FFBUILD_CCACHE 控制（显式调用模式，非
+        // masquerade——档案记载的 libexec 雷只在 masquerade 下炸）；
+        // configure 的探针编译同样命中缓存 / the ccache prefix is gated
+        // by FFBUILD_CCACHE (explicit invocation, not masquerade — the
+        // documented libexec landmine only triggers in masquerade mode);
+        // configure's probe compiles hit the cache too
+        format!("--cc={}", sys::ccache(&e.cc)),
+        format!("--cxx={}", sys::ccache(&e.cxx)),
         format!("--ar={}", e.ar),
         format!("--ranlib={}", e.ranlib),
         format!("--nm={}", e.nm),
@@ -500,6 +693,16 @@ pub fn ffmpeg() -> Result<(), String> {
     ]);
     if sys::which("llvm-windres").is_some() {
         args.push("--windres=llvm-windres".into());
+    }
+    // ARM64 runner 的 bash 本身是 x64 仿真——uname/MACHTYPE 报
+    // x86_64，configure 不点 --arch 就会默认 x86_64 并因缺 nasm
+    // 直接 die（实证）/ the ARM64 runner's bash is itself emulated
+    // x64 — uname/MACHTYPE report x86_64, so without --arch
+    // configure defaults to x86_64 and dies on missing nasm
+    // (empirical)
+    if e.arch == sys::Arch::Arm64 {
+        args.push("--arch=aarch64".into());
+        args.push("--target-os=mingw32".into());
     }
     // -lhwy 放在链接最尾巴：libjxl_cms.a 引用 __imp_hwy_*，链接器只有
     // 见到真归档才自动导入；放最后也顺带修任何 pc 顺序问题。
@@ -519,6 +722,15 @@ pub fn ffmpeg() -> Result<(), String> {
     // ($GOMP, empty on CLANGARM64) and flite's cst_socket.o on __imp_accept
     // (-lws2_32); twolame's header needs its static define in every
     // compile.
+    // e.gomp 是进程内 RwLock：本阶段是独立进程，fixup 里探到的运行时
+    // 带不过进程边界——自己再探一次，否则 {gomp} 恒空、libsoxr 的裸
+    // -lsoxr 链测死在 omp_*（实证：ucrt64 extra-libs 该位是双空格）
+    // / e.gomp is an in-process RwLock: this stage is a separate
+    // process and the runtime probed inside fixup cannot cross the
+    // process boundary — probe again here, else {gomp} stays empty and
+    // libsoxr's bare -lsoxr link test dies on omp_* (empirical: the
+    // ucrt64 extra-libs slot showed a double space)
+    crate::platforms::windows_deps::ensure_gomp_probe();
     let gomp = e.gomp.read().unwrap().clone();
     args.extend([
         "--extra-cflags=-DLIBTWOLAME_STATIC".into(),
@@ -527,24 +739,67 @@ pub fn ffmpeg() -> Result<(), String> {
             "--extra-libs={}{} {} -lws2_32 -liconv -lz",
             e.cxxrt, hwytail, gomp
         ),
-        "--disable-stripping".into(),
     ]);
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let dropped = e.work.join("dropped-libs.txt");
+    // FFBUILD_DEBUG 非空 = 真·调试构建：--enable-debug=3 全开调试
+    // 信息、--disable-optimizations 关优化、--disable-stripping 留符
+    // 号表——替换头部参数里的 --disable-debug；默认发布态无这些旗标，
+    // install 自动 strip / a non-empty FFBUILD_DEBUG means a real
+    // debug build: --enable-debug=3, --disable-optimizations,
+    // --disable-stripping — replacing --disable-debug in the head
+    // args; the release default carries none and install strips
+    if sys::debug() {
+        args.retain(|a| a != "--disable-debug");
+        args.extend([
+            "--enable-debug=3".into(),
+            "--disable-optimizations".into(),
+            "--disable-stripping".into(),
+        ]);
+    }
+    // FFBUILD_SHARED：共享构建出 av*.dll + 导入库，PE 无 PIC 概念、
+    // -static 旗标（gcc/mingw 运行时静态化）照旧——产物形态见 package
+    // / FFBUILD_SHARED: shared build produces av*.dll + import libs;
+    // PE has no PIC concept and the -static flag (static gcc/mingw
+    // runtimes) stays — the artifact layout lives in package()
+    if sys::shared() {
+        args.extend(["--enable-shared".into(), "--disable-static".into()]);
+    } else {
+        args.push("--disable-shared".into());
+    }
+    let variant = sys::variant_suffix();
+    Ok(crate::ffmpeg::ConfJob {
+        label: sys::variant_word(),
+        build_dir: build,
+        configure: src_dir.join("configure"),
+        args,
+        dropped: e.work.join(format!("dropped-libs{variant}.txt")),
+        required: REQUIRED,
+        build_log: e.work.join(format!("ffmpeg-build{variant}.log")),
+    })
+}
+
+/// FFmpeg 阶段：取源码 → features 旗标 + 平台工具链参数 → 丢包重试
+/// configure → 编译安装（单变体路径，与 build-all 共用 plan）
+/// The FFmpeg stage: fetch sources -> features flags + platform toolchain
+/// args -> drop-and-retry configure -> compile+install (the
+/// single-variant path; shares the plan with build-all)
+pub fn ffmpeg() -> Result<(), String> {
+    let job = ffmpeg_plan()?;
+    let refs: Vec<&str> = job.args.iter().map(String::as_str).collect();
     crate::ffmpeg::configure(
-        &build,
-        &src_dir.join("configure"),
+        &job.build_dir,
+        &job.configure,
         &refs,
-        &dropped,
-        REQUIRED,
+        &job.dropped,
+        job.required,
+        &job.label,
     )?;
-    crate::ffmpeg::build(&build, &e.work.join("ffmpeg-build.log"))
+    crate::ffmpeg::build(&job.build_dir, &job.build_log)
 }
 
 /// package 阶段：收集二进制/文档/预设 → DLL 导入白名单 → 冒烟测试 →
-/// BUILDINFO → zip + sha256
+/// BUILDINFO → 7z + sha256
 /// Package stage: collect binaries/docs/presets -> DLL import allowlist ->
-/// smoke test -> BUILDINFO -> zip + sha256
+/// smoke test -> BUILDINFO -> 7z + sha256
 pub fn package() -> Result<(), String> {
     let e = sys::env();
     // 源码身份（ffmpeg() 落的盘；独立调用 package 时凭它命名）
@@ -564,7 +819,14 @@ pub fn package() -> Result<(), String> {
         }
     }
     let platform = e.plat();
-    let name = format!("ffmpeg-{hash}-{platform}");
+    // 变体后缀：shared/debug 产物与静态版同名互踩——同一驱动目录下
+    // 两种形态并存，名字必须可分辨（顺序固定 -shared-debug）/
+    // variant suffixes: shared/debug artifacts would shadow the
+    // static one by name — both shapes can coexist under one driver
+    // dir, so names must discriminate (fixed order: -shared-debug)
+    let variant = sys::variant_suffix();
+    crate::ffmpeg::emit_symbols(&e.work, &variant);
+    let name = format!("ffmpeg-{hash}-{platform}{variant}");
     let pkgroot = e.work.join("pkg");
     let pkg = pkgroot.join(&name);
     fsx::rm_rf(&pkgroot);
@@ -579,12 +841,32 @@ pub fn package() -> Result<(), String> {
             fsx::install(&src, &pkg.join(format!("bin/{exe}.exe")))?;
         }
     }
-    for f in fsx::walk(&pkg.join("bin")) {
-        let _ = sys::run(
-            &e.strip,
-            &["--strip-unneeded", &f.to_string_lossy()],
-            &e.work,
-        );
+    // shared 构建：av*.dll 随 exe 同在 bindir——平收进包（PE 从 exe
+    // 目录解析 DLL，零额外配置）/ shared build: the av*.dll install
+    // next to the exes in bindir — collect them flat (PE resolves DLLs
+    // from the exe dir with zero extra plumbing)
+    if sys::shared()
+        && let Ok(rd) = std::fs::read_dir(usrlocal.join("bin"))
+    {
+        for ent in rd.flatten() {
+            let n = ent.file_name().to_string_lossy().to_string();
+            if n.to_ascii_lowercase().ends_with(".dll") && ent.path().is_file() {
+                fsx::install(&ent.path(), &pkg.join(format!("bin/{n}")))?;
+            }
+        }
+    }
+    // 打包剥符号——FFBUILD_DEBUG 下跳过（configure 那道已把
+    // --disable-stripping 传给 install）/ package-time strip —
+    // skipped under FFBUILD_DEBUG (the configure flag already kept
+    // symbols at install)
+    if !sys::debug() {
+        for f in fsx::walk(&pkg.join("bin")) {
+            let _ = sys::run(
+                &e.strip,
+                &["--strip-unneeded", &f.to_string_lossy()],
+                &e.work,
+            );
+        }
     }
     let docs = usrlocal.join("share/doc/ffmpeg");
     if docs.is_dir() {
@@ -613,7 +895,7 @@ pub fn package() -> Result<(), String> {
     }
     let license = e.work.join("ffmpeg/COPYING.GPLv3");
     if license.is_file() {
-        fsx::install(&license, &pkg.join("LICENSE.txt"))?;
+        fsx::install(&license, &pkg.join("LICENSE"))?;
     }
 
     // 可执行文件必须能在裸 Windows 上跑：只许导入系统 DLL——绝不许导入
@@ -637,7 +919,11 @@ pub fn package() -> Result<(), String> {
                 if let Some(dll) = l.strip_prefix("DLL Name:") {
                     let dll = dll.trim();
                     log::log(&format!("  {dll}"));
-                    if prefixbin.join(dll).exists() {
+                    if pkg.join("bin").join(dll).exists() {
+                        // 随包同行的 DLL（shared 模式的 av*.dll）合法 /
+                        // a DLL shipped beside the exe is fine (shared
+                        // mode's av*.dll)
+                    } else if prefixbin.join(dll).exists() {
                         bad.push(format!(
                             "{}:{dll}",
                             exe.file_name().unwrap().to_string_lossy()
@@ -678,7 +964,8 @@ pub fn package() -> Result<(), String> {
     log::group_end();
     smoke_rc?;
 
-    // BUILDINFO + zip + sha256
+    // BUILDINFO 收集 + 7z 打包 + sha256 校验和
+    // BUILDINFO + 7z + sha256
     let buildconf = sys::capture(
         &pkg.join("bin/ffmpeg.exe").to_string_lossy(),
         &["-hide_banner", "-buildconf"],
@@ -686,7 +973,7 @@ pub fn package() -> Result<(), String> {
     )
     .unwrap_or_default();
     let missing = fsx::read(&e.work.join("missing-packages.txt"));
-    let dropped = fsx::read(&e.work.join("dropped-libs.txt"));
+    let dropped = fsx::read(&e.work.join(format!("dropped-libs{variant}.txt")));
     let status = fsx::read(&e.prefix_win.join(".extras/status.txt"));
     let ccid = sys::capture(&e.cc, &["-dumpmachine"], &e.work)
         .unwrap_or_default()
@@ -698,8 +985,36 @@ pub fn package() -> Result<(), String> {
         .next()
         .unwrap_or("")
         .to_string();
+    // BUILDINFO.info 版式向发行样例靠齐（结构与 linux_common 同款注
+    // 释）；MSYS2 缺包清单随平台信息附尾 / the BUILDINFO.info layout
+    // follows the release sample (same structure as linux_common); the
+    // MSYS2 missing-package list trails with the platform info
+    let vword = if variant.is_empty() {
+        "static"
+    } else {
+        variant.trim_start_matches('-')
+    };
+    // External Assets 按实际启用旗标生成（同 linux_common 注释）/
+    // the External Assets section follows the actually-enabled flags
+    // (same note as linux_common)
+    let assets = crate::ffmpeg::external_assets(&buildconf);
     let info = format!(
-        "FFmpeg version : {version}\nFFmpeg commit  : {commit}\nPlatform       : {platform} ({ccid}, {ccv})\nMSYS2 packages not available/installed : {}\nDropped by configure : {}\nExtras         :\n{}\n{buildconf}",
+        "FFmpeg 64-bit {vword} Windows build from www.chantrail.com\n\
+        \n\
+        Version: {version}\n\
+        \n\
+        License: GPL v3\n\
+        \n\
+        Source Code: https://git.ffmpeg.org/gitweb/ffmpeg.git/commit/{commit}\n\
+        \n\
+        {assets}\
+        {vword} build configuration: \n\
+        \n\
+        {buildconf}\n\
+        Platform                               : {platform} ({ccid}, {ccv})\n\
+        MSYS2 packages not available/installed : {}\n\
+        Dropped by configure                   : {}\n\
+        Extras                                 :\n{}\n",
         missing.replace('\n', " ").trim(),
         dropped.replace('\n', " ").trim(),
         status
@@ -708,21 +1023,26 @@ pub fn package() -> Result<(), String> {
             .collect::<Vec<_>>()
             .join("\n"),
     );
-    fsx::write(&pkg.join("BUILDINFO.txt"), &info)?;
-    fsx::write(&e.dist.join(format!("{name}.buildinfo.txt")), &info)?;
+    fsx::write(&pkg.join("BUILDINFO.info"), &info)?;
 
     fsx::install_d(&e.dist)?;
-    let zipname = format!("{name}.zip");
+    // 固实 7z（-ms=on 全档一个 solid block，压缩率最优）；msys zip 包
+    // 在 arm64 runner 上缺席（spawn zip 实证），7z 双保险：MSYS2
+    // 包 + GHA 镜像自带 / solid 7z (-ms=on puts the whole archive in
+    // one solid block, best ratio); the msys zip package is absent on
+    // the arm64 runner (spawn zip empirical) — 7z has a double source:
+    // the MSYS2 package and the GHA image
+    let zipname = format!("{name}.7z");
     let zippath = e.dist.join(&zipname);
     fsx::rm_rf(&zippath);
     sys::run_ok(
-        "zip",
+        &sys::sevenz()?,
         &[
-            "-q",
-            "-r",
-            "-9",
-            "-X",
-            &sys::win_to_posix(&zippath, &e.msys2_root),
+            "a",
+            "-t7z",
+            "-mx=9",
+            "-ms=on",
+            &zippath.to_string_lossy(),
             &name,
         ],
         &pkgroot,

@@ -151,10 +151,18 @@ pub fn smoke_env() {
         prefix: String::new(),
         env_prefix: String::new(),
         prefix_win: PathBuf::new(),
-        // smoke 只派生 .exe/原生二进制，不经 bash；字段留空也不会被用到
-        // smoke only spawns .exe/native binaries, never through bash; the
-        // field stays empty and is never dereferenced
-        bash: PathBuf::new(),
+        // smoke 派生的都是原生二进制——resolve 的 POSIX 直派让 bash
+        // 不再被派生路径引用；/bin/bash 只作 sys::bash 的万一兜底
+        // （干净 runner 上必有），Windows 留空 /
+        // smoke only spawns native binaries — resolve's POSIX direct
+        // spawn keeps bash off the spawn path entirely; /bin/bash is
+        // merely a just-in-case fallback for sys::bash (guaranteed on
+        // clean runners), Windows leaves it empty
+        bash: if os == Os::Windows {
+            PathBuf::new()
+        } else {
+            PathBuf::from("/bin/bash")
+        },
         cc: String::new(),
         cxx: String::new(),
         ar: String::new(),
@@ -164,8 +172,15 @@ pub fn smoke_env() {
         objdump: String::new(),
         cxxrt: String::new(),
         gomp: RwLock::new(String::new()),
-        jobs: std::thread::available_parallelism()
-            .map(|n| n.get())
+        // FFBUILD_JOBS 可超订/限核——MSYS2 的 fork+I/O 停顿多，
+        // -j6 超订常比核数更快；缺省探测逻辑核，兜底 4 /
+        // FFBUILD_JOBS can oversubscribe or cap the core count —
+        // MSYS2's fork+I/O stalls often make -j6 faster than the
+        // core count; default is detected logical cores, fallback 4
+        jobs: std::env::var("FFBUILD_JOBS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or_else(|| std::thread::available_parallelism().map(|n| n.get()).ok())
             .unwrap_or(4),
         work,
         dist: std::env::temp_dir(),
@@ -178,6 +193,107 @@ pub fn smoke_env() {
 /// 取全局环境 / Access the global environment
 pub fn env() -> &'static Env {
     G.get().expect("env not initialised")
+}
+
+/// 读目录型环境变量：空串当作未设；相对路径落到进程 cwd 上——传给
+/// `current_dir(其它目录)` 的子进程参数必须是绝对路径，否则相对串在
+/// 子进程的工作目录下查无此目录（实证：CI 的 `FFBUILD_DIST: dist`
+/// 让 p7zip 在 pkgroot 里找 dist/ 报 cannot open file）/ read a
+/// directory env var: an empty string counts as unset, and a relative
+/// value resolves against the process cwd — an argument handed to a
+/// child whose current_dir sits elsewhere must be absolute, or the
+/// relative string finds no such directory there (empirical: CI's
+/// `FFBUILD_DIST: dist` sent p7zip hunting dist/ under pkgroot and it
+/// reported 'cannot open file')
+pub fn env_dir(var: &str, default: PathBuf) -> PathBuf {
+    std::env::var(var)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .map(|p| {
+            if p.is_absolute() {
+                p
+            } else {
+                std::env::current_dir().unwrap_or_default().join(p)
+            }
+        })
+        .unwrap_or(default)
+}
+
+/// FFBUILD_CCACHE 非空时给编译器名加 "ccache " 前缀——显式调用模式，
+/// 不是 symlink masquerade：档案里记载的 MSYS2 雷（冒名 shim 弄坏
+/// gcc libexec 推导）只在 masquerade 下炸；WoA 仿真的 rdrand 崩溃是
+/// arm64 专属，那边的工作流不设此变量 / prepend "ccache " to the
+/// compiler name when FFBUILD_CCACHE is set non-empty — explicit
+/// invocation mode, not symlink masquerade: the documented MSYS2
+/// landmine (masquerade shims breaking gcc's libexec derivation) only
+/// triggers in masquerade mode, and the WoA-emulation rdrand crash is
+/// arm64-only — that leg's workflow simply never sets the variable
+pub fn ccache(tool: &str) -> String {
+    match std::env::var("FFBUILD_CCACHE") {
+        Ok(v) if !v.is_empty() => format!("ccache {tool}"),
+        _ => tool.to_string(),
+    }
+}
+
+/// FFBUILD_SHARED 非空 = 共享构建：ffmpeg 走 --enable-shared
+/// --disable-static，产物形态变成 可执行文件 + 共享库（共享库在包内
+/// 平放 bin/ 旁位解析——windows PE 自动搜 exe 目录、mac @loader_path
+/// rpath、linux patchelf $ORIGIN）；ELF .so 要求依赖归档是 PIC——
+/// extras 的 CFLAGS 通道在 linux/mac 一律注入 -fPIC（代价≈0，静态
+/// 产物通吃，recipe_sum 的 :pic 盐逼旧非 PIC 快照重建一轮）/ a
+/// non-empty FFBUILD_SHARED selects a shared build: ffmpeg takes
+/// --enable-shared --disable-static and the artifact becomes binaries
+/// plus shared libs (libs land flat in bin/ beside the exes — Windows
+/// PE searches the exe dir natively, macOS resolves @loader_path
+/// rpaths, Linux gets a patchelf'd $ORIGIN); ELF .so files require PIC
+/// dep archives — the extras CFLAGS channel injects -fPIC
+/// unconditionally on linux/mac (~free, static products fine with it
+/// too, and recipe_sum's :pic salt forces one rebuild of pre-PIC
+/// snapshots)
+pub fn shared() -> bool {
+    std::env::var("FFBUILD_SHARED")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
+/// FFBUILD_DEBUG 非空 = 真·调试构建：ffmpeg 走 --enable-debug=3
+/// --disable-optimizations --disable-stripping，产物 -O0 全符号
+/// （package 的剥符号循环同步跳过）/ a non-empty FFBUILD_DEBUG selects
+/// a real debug build: ffmpeg takes --enable-debug=3
+/// --disable-optimizations --disable-stripping for -O0 + full symbols
+/// (the package-time strip loop is skipped in lockstep)
+pub fn debug() -> bool {
+    std::env::var("FFBUILD_DEBUG")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
+/// 变体后缀：static → ""，其余 "-shared"/"-debug"/"-shared-debug"——
+/// 产物名、构建目录、dropped-libs 文件名的统一拼接件（固定顺序
+/// shared 在前）/ variant suffix: "" for static, otherwise
+/// "-shared"/"-debug"/"-shared-debug" — the shared suffix piece for
+/// artifact names, build dirs and dropped-libs filenames (shared
+/// always leads)
+pub fn variant_suffix() -> String {
+    format!(
+        "{}{}",
+        if shared() { "-shared" } else { "" },
+        if debug() { "-debug" } else { "" },
+    )
+}
+
+/// 变体词："static"/"shared"/"debug"/"shared-debug"——日志与
+/// BUILDINFO 的人类可读名 / the variant word —
+/// "static"/"shared"/"debug"/"shared-debug": the human-readable name
+/// used in logs and BUILDINFO
+pub fn variant_word() -> String {
+    let s = variant_suffix();
+    if s.is_empty() {
+        "static".into()
+    } else {
+        s.trim_start_matches('-').to_string()
+    }
 }
 
 /// 系统 pkg-config 的编译期默认搜索路径——读 `pkg-config --variable
@@ -208,9 +324,9 @@ pub fn child_path(msys2_root: &Path, env_prefix: &str) -> String {
     format!("{};{};{}", prefix_bin.display(), usr_bin.display(), old)
 }
 
-/// POSIX 路径 → Windows 路径（cygpath -w 的等价物，覆盖 MSYS2 挂载与
-/// cygdrive）/ POSIX → Windows path (cygpath -w equivalent for the MSYS2
-/// mounts and cygdrive)
+/// POSIX 路径 → Windows 路径（cygpath -w 的等价物，覆盖 <root> MSYS2 根
+/// 的挂载与 cygdrive）/ POSIX → Windows path (cygpath -w equivalent for
+/// the mounts under the MSYS2 <root> and cygdrive)
 pub fn posix_to_win(p: &str, root: &Path) -> PathBuf {
     let p = p.replace('\\', "/");
     // /cygdrive 与裸 /d/ 两种写法 / both /cygdrive and bare /d/ spellings
@@ -234,8 +350,9 @@ pub fn win_to_mixed(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
-/// Windows 路径 → POSIX 形式（cygpath -u；根内先折成 /x，其余按盘符）
-/// Windows → POSIX (cygpath -u: inside-root collapses to /x, else /drive/x)
+/// Windows 路径 → POSIX 形式（cygpath -u；<root> MSYS2 根内先折成 /x，
+/// 其余按盘符）/ Windows → POSIX (cygpath -u: paths inside the MSYS2
+/// <root> collapse to /x, others map to /drive/x)
 pub fn win_to_posix(p: &Path, root: &Path) -> String {
     let p = win_to_mixed(p);
     let r = win_to_mixed(root);
@@ -249,16 +366,34 @@ pub fn win_to_posix(p: &Path, root: &Path) -> String {
     p
 }
 
-/// 程序的可执行形式：(程序, 完整 argv)。本进程是原生二进制，直接
-/// exec 一个无扩展名脚本（configure/meson/autoreconf/…）会 ENOENT；
-/// 这类程序经 `bash -c 'exec "$@"'` 派生——argv 逐字透传不涉引号。
-/// Executable form of prog: (program, full argv). This process is a native
-/// binary, so exec'ing an extension-less script (configure/meson/
-/// autoreconf/...) would ENOENT; those go through `bash -c 'exec "$@"'`,
-/// which passes argv verbatim with no quoting involved.
-fn resolve(prog: &str, args: &[&str]) -> (String, Vec<String>) {
-    /// 路径解析为可直接派生的原生可执行？/ does the path resolve to a
-    /// directly spawnable native executable?
+/// 程序的可执行形式：(程序, 完整 argv)。只有 Windows 需要经 bash 拐
+/// 无扩展名脚本——CreateProcess 不认 shebang，直接 spawn 一个
+/// configure/meson/autoreconf 脚本会 ENOENT；`bash -c 'exec "$@"'`
+/// 逐字透传 argv 不涉引号。POSIX 一律直派：execve 原生处理 ELF 与
+/// shebang，execvp 对无 shebang 脚本还回落 /bin/sh——"无扩展名"在
+/// 这里不等于"脚本"。绕 bash 不仅多余，在 bash 字段留空的环境
+/// （smoke_env）下更是致命拐弯：pkg/bin/ffmpeg 被路由成
+/// `spawn ""` 报 ENOENT，报错文案却还写着 ffmpeg 的路径（实证：
+/// verify 腿 mac/linux 的 `ffmpeg -version` 全灭于此；Windows 因
+/// .exe 命中直派而幸免）。
+/// Executable form of prog: (program, full argv). Only Windows needs
+/// the bash detour for extension-less scripts — CreateProcess cannot
+/// run shebang scripts, so spawning a configure/meson/autoreconf
+/// script directly would ENOENT; `bash -c 'exec "$@"'` passes argv
+/// verbatim with no quoting involved. On POSIX everything spawns
+/// directly: execve natively handles ELF and shebang, and execvp even
+/// falls back to /bin/sh for shebang-less scripts — "no extension"
+/// does not mean "script" there. The bash detour is not just
+/// redundant but fatal under envs whose bash field is empty
+/// (smoke_env): pkg/bin/ffmpeg got routed into `spawn ""` ENOENT
+/// while the error text still named ffmpeg's path (empirical: every
+/// mac/linux verify-leg `ffmpeg -version` died exactly there;
+/// Windows survived because .exe hits direct spawn).
+fn resolve(prog: &str, args: &[&str], e: &Env) -> (String, Vec<String>) {
+    /// 路径解析为可直接派生的原生可执行？仅 Windows 需要判——POSIX
+    /// 的 execvp 无此区分 / does the path resolve to a directly
+    /// spawnable native executable? A Windows-only question — POSIX
+    /// execvp draws no such line
     fn is_native(p: &std::path::Path) -> bool {
         p.extension()
             .map(|x| {
@@ -267,7 +402,9 @@ fn resolve(prog: &str, args: &[&str]) -> (String, Vec<String>) {
             })
             .unwrap_or(false)
     }
-    let direct = if prog.contains('/') || prog.contains('\\') {
+    let direct = if e.os != Os::Windows {
+        true
+    } else if prog.contains('/') || prog.contains('\\') {
         let p = Path::new(prog);
         p.is_file() && is_native(p)
     } else {
@@ -285,7 +422,6 @@ fn resolve(prog: &str, args: &[&str]) -> (String, Vec<String>) {
             args.iter().map(|s| s.to_string()).collect(),
         )
     } else {
-        let e = env();
         // 经 bash 时路径参数必须是 POSIX 形式（D:\x 在 bash 里不解析）
         // a path argument must be POSIX when routed through bash (D:\x does
         // not resolve there)
@@ -305,7 +441,7 @@ fn resolve(prog: &str, args: &[&str]) -> (String, Vec<String>) {
 /// (scripts are routed through bash automatically)
 pub fn cmd(prog: &str, args: &[&str]) -> Command {
     let e = env();
-    let (p, a) = resolve(prog, args);
+    let (p, a) = resolve(prog, args, e);
     let mut c = Command::new(p);
     c.args(a)
         .env("PATH", &e.child_path)
@@ -325,7 +461,13 @@ pub fn cmd(prog: &str, args: &[&str]) -> Command {
         .env("MSYSTEM", &e.msystem)
         .env("MSYSTEM_PREFIX", &e.env_prefix)
         .env("MSYS2_ROOT", win_to_mixed(&e.msys2_root))
-        .env("ENV_PREFIX", &e.env_prefix);
+        .env("ENV_PREFIX", &e.env_prefix)
+        // git>=2.31 的全局 advice 开关：detached HEAD 说教、
+        // init.defaultBranch 提示等 hint: 块在所有子孙进程一次掐掉
+        // git>=2.31's global advice switch: the detached-HEAD lecture,
+        // init.defaultBranch notices and every other hint: block are
+        // silenced for all descendants in one shot
+        .env("GIT_ADVICE", "0");
     if !e.msystem.is_empty() {
         c.env("CHERE_INVOKING", "1");
     }
@@ -375,14 +517,173 @@ pub fn cmd(prog: &str, args: &[&str]) -> Command {
     c
 }
 
-/// 直接派生程序并等待完成；输出直通本进程 stdio
-/// Spawn a program and wait; output passes through to our stdio
+/// CI 输出闸门的小体量阈值：捕获输出小于它仍原样放出（版本/提示行不
+/// 丢），超出的成功即吞、失败回放尾部 / CI output-gate size threshold:
+/// captured output below it still passes verbatim (version/hint lines
+/// are kept); larger output is dropped on success and tail-replayed on
+/// failure
+const CI_GATE_SMALL: usize = 4 * 1024;
+
+/// 闸内命令失败时回放给控制台的输出行数 / how many tail lines a gated
+/// command's failure replays to the console
+const CI_GATE_TAIL: usize = 40;
+
+/// 本进程是否该闸住子进程输出：CI 下 runner 日志管道的背压在单步数万
+/// 行后堵死写端（见 run_tee 注释）。FFBUILD_CHILD 标记的
+/// recipe-run/postfix-run 子进程（run_tee spawn 时注入）不闸——其输出
+/// 经管道喂给父进程的 <name>.log，抑制由父进程那一头做
+/// whether this process should gate child output: under CI the runner's
+/// log channel backpressures once a step accumulates tens of thousands
+/// of lines (see run_tee). recipe-run/postfix-run children marked with
+/// FFBUILD_CHILD (injected by run_tee at spawn) are never gated — their
+/// output rides the pipe into the parent's <name>.log and suppression
+/// happens on the parent's side
+fn ci_gate() -> bool {
+    std::env::var_os("GITHUB_ACTIONS").is_some() && std::env::var_os("FFBUILD_CHILD").is_none()
+}
+
+/// 文本末尾 n 个非空行 / the last n non-empty lines of a text
+fn tail_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..].join("\n")
+}
+
+/// 闸制模式跑完并按体量处置捕获输出：小体量原样放出；大体量成功只留
+/// 一行体量摘要，失败回放尾部 CI_GATE_TAIL 行现场。等待期间每 30s
+/// 打一次报活，长命令（apt-get/pacman/brew）不至于看起来像冻住
+/// run to completion in gated mode and dispose of the captured output
+/// by size: small payloads pass verbatim; large ones leave a one-line
+/// size digest on success and replay a CI_GATE_TAIL-line tail on
+/// failure. A 30-second liveness line keeps long commands
+/// (apt-get/pacman/brew) from looking frozen
+fn run_gated(c: &mut Command, desc: &str) -> Result<i32, String> {
+    // 报活线程：等待期间每 30s 一行 / liveness thread: one line every
+    // 30 s while the command runs
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let label = desc.to_string();
+    let watcher = std::thread::spawn(move || {
+        let mut secs = 0u32;
+        while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+            rx.recv_timeout(std::time::Duration::from_secs(30))
+        {
+            secs += 30;
+            crate::log::log(&format!("… {label}: still running ({secs}s)"));
+        }
+    });
+    let out = c.output().map_err(|e| format!("spawn {desc}: {e}"))?;
+    let _ = tx.send(());
+    let _ = watcher.join();
+    let code = exit_code(&out.status);
+    let total = out.stdout.len() + out.stderr.len();
+    if code == 0 && total < CI_GATE_SMALL {
+        // 小体量：原样放出（stdout 在前、stderr 在后）/ small payload:
+        // verbatim (stdout first, stderr second)
+        let _ = std::io::stdout().write_all(&out.stdout);
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().write_all(&out.stderr);
+        let _ = std::io::stderr().flush();
+    } else if code != 0 {
+        // 失败：回放合并输出的尾部现场 / failure: replay the tail of the
+        // merged streams
+        let mut merged = String::from_utf8_lossy(&out.stdout).into_owned();
+        merged.push_str(&String::from_utf8_lossy(&out.stderr));
+        println!("{}", tail_lines(&merged, CI_GATE_TAIL));
+    } else {
+        crate::log::log(&format!(
+            "… {desc}: {} output suppressed",
+            human_size(total as u64)
+        ));
+    }
+    Ok(code)
+}
+
+/// 直接派生程序并等待完成；输出直通本进程 stdio。CI 下（且非
+/// FFBUILD_CHILD 子进程）改为捕获闸门：小体量放出、大体量吞掉只留
+/// 摘要+报活、失败回放尾部——见 ci_gate/run_gated
+/// Spawn a program and wait; output passes through to our stdio. Under
+/// CI (and not inside an FFBUILD_CHILD subprocess) it goes through the
+/// capture gate instead: small payloads pass, large ones are swallowed
+/// to a digest plus liveness lines, failures replay the tail — see
+/// ci_gate/run_gated
 pub fn run(prog: &str, args: &[&str], dir: &Path) -> Result<i32, String> {
     let mut c = cmd(prog, args);
     c.current_dir(dir);
+    if ci_gate() {
+        // 心跳标签：bash -c 取脚本首部（基名全是 bash 没信息量），其余
+        // 取程序基名 / heartbeat label: the script head for bash -c (the
+        // basename is always bash and says nothing), the program
+        // basename otherwise
+        let desc = if args.first() == Some(&"-c") && args.len() >= 2 {
+            format!("bash {}", args[1].chars().take(40).collect::<String>())
+        } else {
+            Path::new(prog)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| prog.to_string())
+        };
+        return run_gated(&mut c, &desc);
+    }
     c.status()
-        .map(|s| s.code().unwrap_or(-1))
+        .map(|s| exit_code(&s))
         .map_err(|e| format!("spawn {prog}: {e}"))
+}
+
+/// ExitStatus -> i32 归一：正常退出原码；Unix 信号死取 -signal
+/// （SIGSEGV -> -11、SIGILL -> -4——裸 -1 里信号号全丢，-11/-4 一眼
+/// 可分死因）；Windows 崩溃本就是 NTSTATUS 负码经 code() 原样透出 /
+/// ExitStatus -> i32 normalization: the raw code on clean exits;
+/// -signal on Unix signal death (SIGSEGV -> -11, SIGILL -> -4 — a bare
+/// -1 discards which signal, -11/-4 distinguish the cause at a glance);
+/// Windows crashes already surface as negative NTSTATUS via code()
+pub fn exit_code(s: &std::process::ExitStatus) -> i32 {
+    if let Some(c) = s.code() {
+        return c;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = s.signal() {
+            return -sig;
+        }
+    }
+    -1
+}
+
+/// 按签名滤行版 run：捕获 stdout+stderr，逐行剔除 drop_if 命中的
+/// 行（已知无害噪音按字面签名剔除——如 lookahead 编码器重排触发
+/// 的 muxer 非单调 dts 投诉），剩余原样透出；失败时回放尾部完整
+/// 现场（不过滤——失败要看全部上下文）/
+/// signature-filtered run: captures stdout+stderr, drops lines hit
+/// by drop_if (known-harmless noise removed by literal signature —
+/// e.g. the muxer's non-monotonic-dts complaint about lookahead
+/// reordering); on failure the unfiltered tail is replayed (failures
+/// want full context)
+pub fn run_filtered(prog: &str, args: &[&str], dir: &Path, drop_if: impl Fn(&str) -> bool) -> i32 {
+    let mut c = cmd(prog, args);
+    c.current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let out = match c.output() {
+        Ok(o) => o,
+        Err(_) => return 1,
+    };
+    let rc = exit_code(&out.status);
+    let merged = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if rc != 0 {
+        print!("{}", tail_lines(&merged, CI_GATE_TAIL));
+    } else {
+        for l in merged.lines() {
+            if !drop_if(l) {
+                println!("{l}");
+            }
+        }
+    }
+    rc
 }
 
 /// 非零退出视为失败 / Fail on a non-zero exit status
@@ -421,6 +722,25 @@ pub fn capture(prog: &str, args: &[&str], dir: &Path) -> Result<String, String> 
     Ok(String::from_utf8_lossy(&out.stdout).replace('\r', ""))
 }
 
+/// 宽松捕获：非零退出也拿回已产出的 stdout——mac nm 撞到不可解析成员
+/// 会 exit 1 但 stdout 照常吐符号表，整批丢掉正好哑掉 dedup（实证）。仅
+/// spawn 失败才 Err；调用方按空输出自行判死 / lax capture: a non-zero
+/// exit still hands back whatever stdout was produced — mac nm exits 1
+/// on an unparseable member yet keeps printing the symbol table, and
+/// discarding it wholesale is exactly what muted the dedup (empirical).
+/// Only a spawn failure errors; callers judge death by empty output
+pub fn capture_lax(prog: &str, args: &[&str], dir: &Path) -> Result<(String, i32), String> {
+    let mut c = cmd(prog, args);
+    c.current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let out = c.output().map_err(|e| format!("spawn {prog}: {e}"))?;
+    Ok((
+        String::from_utf8_lossy(&out.stdout).replace('\r', ""),
+        exit_code(&out.status),
+    ))
+}
+
 /// 捕获 bash 输出 / Capture bash output
 pub fn capture_bash(script: &str, dir: &Path) -> Result<String, String> {
     let e = env();
@@ -441,55 +761,165 @@ pub fn capture_bytes(prog: &str, args: &[&str], dir: &Path) -> Result<Vec<u8>, S
     Ok(out.stdout)
 }
 
+/// CI 下 run_tee 不回显时的进度心跳间隔：每往日志文件写满这么多字节
+/// 打一行 / heartbeat interval while run_tee's CI echo is off: one line
+/// per this many bytes appended to the log file
+const TEE_HEARTBEAT: usize = 256 * 1024;
+
+/// 回显抑制期的进度心跳：报 <tag> 日志文件已收字节数
+/// progress heartbeat while the echo is suppressed: report how many
+/// bytes the <tag> log file has taken
+fn tee_beat(tag: &str, written: usize) {
+    crate::log::log(&format!("… {tag}: {} written", human_size(written as u64)));
+}
+
 /// 运行并把 stdout 同时写入文件（tee 语义；stderr 也并入同一日志——
-/// 诊断完整性优先于两流的严格时序）/ Run with stdout teed to a file
-/// (stderr joins the same log — diagnostic completeness beats strict
-/// interleave order)
+/// 诊断完整性优先于两流的严格时序）。
+/// CI 下完全不回显子进程输出：Actions 的步骤日志走带背压的上传管道，
+/// runner 缓冲攒满（实测单步累计数万行后）写端就被拖住——回显一堵，
+/// 读循环停转、子进程管道写满，构建连锁锁死（"日志不动、构建也不动"）。
+/// 改为只写日志文件并按 TEE_HEARTBEAT 打进度心跳——控制台退化为纯
+/// 进度条；完整输出仍在 <name>.log/日志包，失败明细由 error_tail 兜底。
+/// 非 CI 照常逐字节回显。
+/// Run with stdout teed to a file (stderr joins the same log —
+/// diagnostic completeness beats strict interleave order).
+/// Under CI nothing of the child output is echoed: the Actions step log
+/// rides a backpressured upload channel whose runner buffer fills once
+/// a step accumulates tens of thousands of lines — a stalled echo stops
+/// the read loop, fills the child's pipe, and deadlocks the build with
+/// it ("log frozen, build frozen"). Instead only the log file grows
+/// while TEE_HEARTBEAT progress lines keep the console a pure progress
+/// display; full output still lands in <name>.log / the log bundle and
+/// error_tail prints the failure tail. Outside CI every byte echoes.
 pub fn run_tee(prog: &str, args: &[&str], dir: &Path, logfile: &Path) -> Result<i32, String> {
+    let ci = std::env::var_os("GITHUB_ACTIONS").is_some();
+    let tag = logfile
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "tee.log".to_string());
     let mut c = cmd(prog, args);
     c.current_dir(dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // FFBUILD_CHILD 标记子进程身份：其内部 sys::run 必须保持继承
+        // stdio，输出经本管道喂回给本函数写日志；闸门只在父进程生效
+        // mark the child context: its inner sys::run must keep
+        // inheriting stdio so output rides this pipe back for the log
+        // file; the CI gate applies to the parent side only
+        .env("FFBUILD_CHILD", "1");
     let mut ch = c.spawn().map_err(|e| format!("spawn {prog}: {e}"))?;
     let mut so = ch.stdout.take().unwrap();
     let mut se = ch.stderr.take().unwrap();
     let mut f = std::fs::File::create(logfile).map_err(|e| format!("{logfile:?}: {e}"))?;
+    // CI 回显抑制期的时间心跳：TEE_HEARTBEAT 字节里程碑只在子进程
+    // 有输出时触发——安静期（链接、长编译单元）控制台彻底静默，像
+    // 冻住。补一条 30s 报活线，字节数由读写循环经共享原子计数喂入 /
+    // a time-based heartbeat for the CI echo-suppressed stretch:
+    // TEE_HEARTBEAT byte milestones only fire while the child talks —
+    // quiet stretches (link steps, long compile units) leave the
+    // console dead silent and looking hung. A 30s liveness line fixes
+    // it; the byte counts are fed by the reader loops via shared
+    // atomics
+    let written_out = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let written_err = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (beat_tx, beat_rx) = std::sync::mpsc::channel::<()>();
+    let beat = if ci {
+        let tag_b = tag.clone();
+        let (wo, we) = (written_out.clone(), written_err.clone());
+        Some(std::thread::spawn(move || {
+            let mut secs = 0u32;
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                beat_rx.recv_timeout(std::time::Duration::from_secs(30))
+            {
+                secs += 30;
+                let total = wo.load(std::sync::atomic::Ordering::Relaxed)
+                    + we.load(std::sync::atomic::Ordering::Relaxed);
+                crate::log::log(&format!(
+                    "… {tag_b}: {} written, still running ({secs}s)",
+                    human_size(total as u64)
+                ));
+            }
+        }))
+    } else {
+        None
+    };
     // stderr 读线程：必须与 stdout 并行排空——管道写满而没人读时两条流
     // 会互相堵死；同写日志文件并回显本进程 stderr
     // the stderr reader thread must drain in parallel with stdout — a full
     // pipe nobody reads deadlocks both streams; it appends to the same
     // log file and echoes to our own stderr
     let mut f_err = f.try_clone().map_err(|e| format!("{logfile:?}: {e}"))?;
+    let tag_err = tag.clone();
     let t = std::thread::spawn(move || {
         let mut buf = [0u8; 65536];
         let mut wr = std::io::stderr();
+        let (mut written, mut hidden) = (0usize, 0usize);
         loop {
             match se.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let _ = f_err.write_all(&buf[..n]);
-                    let _ = wr.write_all(&buf[..n]);
-                    let _ = wr.flush();
+                    written += n;
+                    written_err.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+                    if !ci {
+                        let _ = wr.write_all(&buf[..n]);
+                        let _ = wr.flush();
+                    } else {
+                        hidden += n;
+                        if hidden >= TEE_HEARTBEAT {
+                            tee_beat(&tag_err, written);
+                            hidden = 0;
+                        }
+                    }
                 }
             }
+        }
+        // 收尾补一行总量：让最后的静默段在日志里也看得出体量
+        // final total on stream end so the last quiet stretch still
+        // shows its volume in the log
+        if hidden > 0 {
+            tee_beat(&tag_err, written);
         }
     });
     let mut buf = [0u8; 65536];
     let mut wr = std::io::stdout();
+    let (mut written, mut hidden) = (0usize, 0usize);
     loop {
         match so.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
                 let _ = f.write_all(&buf[..n]);
-                let _ = wr.write_all(&buf[..n]);
-                let _ = wr.flush();
+                written += n;
+                written_out.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+                if !ci {
+                    let _ = wr.write_all(&buf[..n]);
+                    let _ = wr.flush();
+                } else {
+                    hidden += n;
+                    if hidden >= TEE_HEARTBEAT {
+                        tee_beat(&tag, written);
+                        hidden = 0;
+                    }
+                }
             }
             Err(_) => break,
         }
     }
+    // 同上的收尾总量 / same final-total line as the stderr thread
+    if hidden > 0 {
+        tee_beat(&tag, written);
+    }
     let _ = t.join();
+    // 子进程输出已尽：停表收编心跳线程（send 即唤醒，不等下一个
+    // 30s 刻度）/ child output is done: stop and collect the
+    // heartbeat thread (the send wakes it now, not on the next 30s
+    // tick)
+    let _ = beat_tx.send(());
+    if let Some(h) = beat {
+        let _ = h.join();
+    }
     ch.wait()
-        .map(|s| s.code().unwrap_or(-1))
+        .map(|s| exit_code(&s))
         .map_err(|e| format!("wait {prog}: {e}"))
 }
 
@@ -593,6 +1023,28 @@ pub fn which(prog: &str) -> Option<PathBuf> {
     None
 }
 
+/// 7-Zip 解析：子进程 PATH 的 7z/7za/7zr，最后退 GHA Windows 镜像预装
+/// 位置（`C:\Program Files\7-Zip`，不经 MSYS2 PATH 也能命中）/
+/// resolve 7-Zip: 7z/7za/7zr on the child PATH, then the preinstalled
+/// location in the GHA Windows image (`C:\Program Files\7-Zip` —
+/// reachable even when MSYS2's PATH shadows it)
+pub fn sevenz() -> Result<String, String> {
+    for c in ["7z", "7za", "7zr"] {
+        if let Some(p) = which(c) {
+            return Ok(p.to_string_lossy().to_string());
+        }
+    }
+    for p in [
+        "C:/Program Files/7-Zip/7z.exe",
+        "C:/Program Files (x86)/7-Zip/7z.exe",
+    ] {
+        if Path::new(p).is_file() {
+            return Ok(p.to_string());
+        }
+    }
+    Err("7z not found (child PATH 7z/7za/7zr; C:/Program Files/7-Zip)".into())
+}
+
 /// sha256：优先 sha256sum（GNU），退回 shasum -a 256（macOS），再退 openssl
 /// sha256 of a byte slice: sha256sum → shasum -a 256 → openssl
 pub fn sha256_data(data: &[u8]) -> Result<String, String> {
@@ -636,4 +1088,15 @@ pub fn human_size(b: u64) -> String {
         i += 1;
     }
     format!("{v:.1}{}", units[i])
+}
+
+/// 日志文件末尾 <max_lines> 个非空行逐行原样拼出——CI 下 run_tee 不回显
+/// 子进程输出，命令失败时拿它把现场打到控制台（区别于 extras 的
+/// error_tail：那个是 400 字符单行摘要，这个是全量尾部）
+/// last <max_lines> non-empty lines of <logfile>, joined verbatim —
+/// run_tee does not echo child output under CI, so a failed command
+/// prints its scene through this (unlike extras' error_tail, which is
+/// a 400-char one-line digest; this is the verbatim tail)
+pub fn log_tail(logfile: &Path, max_lines: usize) -> String {
+    tail_lines(&crate::fsx::read(logfile), max_lines)
 }

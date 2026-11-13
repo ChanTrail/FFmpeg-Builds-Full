@@ -1,6 +1,6 @@
-//! 配方注册表：66 个 extras 表项——每库一个模块，按适用平台分目录
+//! 配方注册表：67 个 extras 表项——每库一个模块，按适用平台分目录
 //! （common/ 共享、linux/ 与 windows/ 平台专属）。
-//! Recipe registry: the 66 extras entries — one module per library, split
+//! Recipe registry: the 67 extras entries — one module per library, split
 //! by applicable platform (common/ shared, linux/ and windows/
 //! platform-only).
 //! 每库文件自带 `recipe()`（或 glib 的 `recipes()`，双表项），并用
@@ -43,6 +43,13 @@ const ORDER: &[(&str, &str)] = &[
     ("bzip2", ""),
     ("zstd", ""),
     ("brotli", ""),
+    // 早期基础库：xz(base lzma)、ogg(vorbis/theora 前置)、snappy、
+    // mbedtls(libssh crypto 后端) / early base libs: xz (base lzma),
+    // ogg (vorbis/theora prereq), snappy, mbedtls (libssh crypto)
+    ("xz", ""),
+    ("ogg", ""),
+    ("libsnappy", ""),
+    ("mbedtls", ""),
     ("gmp", ""),
     ("nettle", ""),
     ("gnutls", ""),
@@ -52,10 +59,27 @@ const ORDER: &[(&str, &str)] = &[
     ("ilbc", ""),
     ("gsm", ""),
     ("lc3", ""),
+    // vorbis/opus 在 sndfile 前：sndfile 的 ogg 封装支持顺带接上 /
+    // vorbis/opus before sndfile so its ogg-mux support hooks up
+    ("vorbis", ""),
+    ("opus", ""),
     ("sndfile", ""),
     ("bs2b", ""),
     ("modplug", ""),
     ("vo-amrwbenc", ""),
+    // 音频编解码簇 / audio codec cluster
+    // lame 的 decoder 半边要 libmpg123——必须在 lame 前 /
+    // lame's decoder half needs libmpg123 — must precede lame
+    ("mpg123", ""),
+    ("lame", ""),
+    ("twolame", ""),
+    ("opencore-amr", ""),
+    ("soxr", ""),
+    ("rubberband", ""),
+    ("openmpt", ""),
+    ("gme", ""),
+    ("chromaprint", ""),
+    ("openal", ""),
     ("mysofa", ""),
     ("flite", ""),
     ("pocketsphinx", ""),
@@ -71,6 +95,7 @@ const ORDER: &[(&str, &str)] = &[
     ("leptonica", ""),
     ("tesseract", ""),
     ("pixman", ""),
+    ("lcms2", ""),
     ("cairo", ""),
     ("freetype", ""),
     ("fribidi", ""),
@@ -80,6 +105,9 @@ const ORDER: &[(&str, &str)] = &[
     // resolves our libxml-2.0.pc
     ("libxml2", ""),
     ("fontconfig", ""),
+    // libass 吃 freetype/fribidi/harfbuzz/fontconfig 全套 /
+    // libass consumes the whole freetype/fribidi/harfbuzz/fontconfig set
+    ("libass", ""),
     ("pango", ""),
     ("librsvg", ""),
     ("svtjpegxs", ""),
@@ -87,6 +115,27 @@ const ORDER: &[(&str, &str)] = &[
     ("aom", ""),
     ("xevd", ""),
     ("xeve", ""),
+    // 视频编解码 + 图像/滤镜簇（theora 要 ogg、libjxl 自带
+    // hwy/skcms/brotli 子模块）/ video codec + image/filter cluster
+    // (theora wants ogg; libjxl brings bundled hwy/skcms/brotli
+    // submodules)
+    ("x264", ""),
+    ("x265", ""),
+    ("dav1d", ""),
+    ("libvpx", ""),
+    ("svtav1", ""),
+    ("rav1e", ""),
+    ("openh264", ""),
+    ("xvid", ""),
+    ("theora", ""),
+    ("openjpeg", ""),
+    ("libjxl", ""),
+    ("libwebp", ""),
+    ("zimg", ""),
+    ("vidstab", ""),
+    ("vmaf", ""),
+    ("frei0r", ""),
+    ("zvbi", ""),
     ("libcdio", ""),
     ("libcdio-paranoia", ""),
     ("caca", ""),
@@ -94,17 +143,44 @@ const ORDER: &[(&str, &str)] = &[
     ("librist", ""),
     ("libcurl", ""),
     ("librtmp", ""),
+    // 协议簇：libssh 要 mbedtls、libsrt 要 gnutls（都在前）/
+    // protocol cluster: libssh wants mbedtls, libsrt wants gnutls
+    // (both earlier)
+    ("libssh", ""),
+    ("libsrt", ""),
+    ("libzmq", ""),
     ("libdvdcss", ""),
     ("libdvdread", ""),
     ("libdvdnav", ""),
+    ("libbluray", ""),
     ("aribb24", ""),
     ("aribcaption", ""),
     ("kvazaar", ""),
     ("alsa", ""),
     ("vdpau", ""),
+    ("libvpl", ""),
     ("lz4", ""),
     ("raw1394", ""),
     ("dc1394", ""),
+    // linux 平台栈：X11/xcb 链按依赖序（macros→proto→xau/xdmcp→xcb
+    // →xtrans→x11→xext→xfixes→xv），libdrm 独立，libva 收尾 / the
+    // linux platform stack: the X11/xcb chain in dependency order
+    // (macros→proto→xau/xdmcp→xcb→xtrans→x11→xext→xfixes→xv), libdrm
+    // standalone, libva last
+    ("xorg-macros", ""),
+    ("xorgproto", ""),
+    ("xcb-proto", ""),
+    ("libxau", ""),
+    ("libxdmcp", ""),
+    ("libxcb", ""),
+    ("xtrans", ""),
+    ("libx11", ""),
+    ("libxext", ""),
+    ("libxfixes", ""),
+    ("libxv", ""),
+    ("libdrm", ""),
+    ("libva", ""),
+    ("pulseaudio", ""),
     ("vulkan", ""),
     ("opencl", ""),
     ("whisper", ""),
@@ -116,6 +192,18 @@ const ORDER: &[(&str, &str)] = &[
     ("davs2", ""),
     ("xavs2", ""),
     ("avisynth", ""),
+    // 尾簇：sdl2/vapoursynth 消费面广放最后；ffnvcodec/amf 纯头文件
+    // 安装，位置随意 / tail cluster: sdl2/vapoursynth last for their
+    // broad consumption; ffnvcodec/amf are header-only installs and can
+    // sit anywhere
+    ("sdl2", ""),
+    ("vapoursynth", ""),
+    ("ffnvcodec", ""),
+    ("amf", ""),
+    // 纯头文件安装，位置随意——ladspa 与 ffnvcodec/amf 同类 /
+    // header-only installs can sit anywhere — ladspa is the same
+    // class as ffnvcodec/amf
+    ("ladspa", ""),
 ];
 
 /// 组装全表：顺序即依赖序（敏感：whisper 必须在 vulkan 后、libdvdcss

@@ -8,7 +8,7 @@ use crate::sys::{self, Arch};
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("vvenc", "windows", "libvvenc", "--enable-libvvenc", body);
+    let mut x = r("vvenc", "all", "libvvenc", "--enable-libvvenc", body);
     x.src = include_str!("vvenc.rs");
     x
 }

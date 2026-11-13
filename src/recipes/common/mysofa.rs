@@ -7,7 +7,13 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("mysofa", "linux", "libmysofa", "--enable-libmysofa", body);
+    let mut x = r(
+        "mysofa",
+        "linux,mac",
+        "libmysofa",
+        "--enable-libmysofa",
+        body,
+    );
     x.src = include_str!("mysofa.rs");
     x
 }

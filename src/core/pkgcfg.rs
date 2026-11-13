@@ -481,6 +481,71 @@ pub fn sanitize_requires(f: &Path) {
     let _ = std::fs::write(f, c);
 }
 
+/// pc_heal_req_ops <content>：愈合 Requires/Requires.private/Conflicts
+/// 行里被剥掉运算符的 `mod ver` 裸对——补回 `>=`。旧版补丁器（Rust
+/// 移植前的 sed 时代）曾把 `gobject-2.0 >= 2.56.0` 修成
+/// `gobject-2.0 2.56.0`，裸版本 `2.56.0` 随后被 pkg-config 当成
+/// 不存在的伪包（"Package '2.56.0', required by 'gdk-pixbuf-2.0',
+/// not found"）；坏 .pc 随 deps 快照/环境缓存无限续命，pacman
+/// --needed 又不会重写已装文件。msys2 的 Requires 约束一律是 `>=`
+/// 写法，恢复是安全的；幂等，健康行原样通过
+/// Reinsert `>=` into bare `mod ver` pairs inside
+/// Requires/Requires.private/Conflicts lines whose operator was
+/// stripped. A pre-Rust sed-era patcher rewrote
+/// `gobject-2.0 >= 2.56.0` as `gobject-2.0 2.56.0`, leaving the bare
+/// `2.56.0` to be read by pkg-config as a phantom package
+/// ("Package '2.56.0', required by 'gdk-pixbuf-2.0', not found"); the
+/// damaged .pc files ride the deps snapshot/env cache forever and
+/// `pacman --needed` never rewrites installed files. msys2 Requires
+/// constraints are uniformly `>=`, so restoring is safe; idempotent,
+/// healthy lines pass through unchanged
+pub fn heal_req_ops(c: &str) -> String {
+    let mut out = String::with_capacity(c.len() + 16);
+    for line in c.split_inclusive('\n') {
+        let (body, nl) = match line.strip_suffix('\n') {
+            Some(b) => (b, "\n"),
+            None => (line, ""),
+        };
+        let (key, val) = match body.split_once(':') {
+            Some((k, v)) => (k.trim(), v),
+            None => {
+                out.push_str(line);
+                continue;
+            }
+        };
+        if !matches!(key, "Requires" | "Requires.private" | "Conflicts") {
+            out.push_str(line);
+            continue;
+        }
+        let toks: Vec<&str> = val.split_whitespace().collect();
+        let mut parts: Vec<&str> = Vec::with_capacity(toks.len() + 2);
+        // 前一记号是普通模块名时，紧跟的裸版本说明运算符被剥了 /
+        // a bare version right after a plain module name means the
+        // operator between them was stripped
+        let mut prev_was_name = false;
+        for t in toks {
+            let core = t.trim_end_matches(',');
+            let bare_ver = !core.is_empty()
+                && core.chars().next().unwrap().is_ascii_digit()
+                && core.chars().all(|ch| ch.is_ascii_digit() || ch == '.');
+            let is_op = REQ_OPS.contains(&t);
+            if bare_ver && prev_was_name {
+                parts.push(">=");
+            }
+            parts.push(t);
+            prev_was_name = !is_op && !bare_ver;
+        }
+        out.push_str(key);
+        out.push(':');
+        if !parts.is_empty() {
+            out.push(' ');
+            out.push_str(&parts.join(" "));
+        }
+        out.push_str(nl);
+    }
+    out
+}
+
 /// extras_lto_free <archive>：归档无 GCC LTO 字节码标记
 /// Reject archives carrying GCC LTO bytecode markers
 pub fn lto_free(a: &Path) -> bool {
@@ -574,8 +639,17 @@ pub fn static_libs_ok(check: &str) -> Result<(), String> {
                 }
             }
             if !found {
-                // 工具链搜索路径兜底 / compiler search path fallback
-                let d = sys::capture(&e.cc, &["-print-file-name", &ar_name], &e.work)
+                // 工具链搜索路径兜底——-print-file-name 是 joined 选项：
+                // 拆成两参数传给 gcc/clang，驱动会把库名当成链接输入而
+                // 非探测目标，必返空。windows_deps 的 libatomic 探测用的
+                // 正是 joined 形式 / compiler search path fallback —
+                // -print-file-name is a joined option: split into two
+                // argv entries and the driver treats the name as a link
+                // input rather than a probe target, always yielding
+                // nothing; the libatomic probe in windows_deps uses the
+                // joined form for exactly this reason
+                let arg = format!("-print-file-name={ar_name}");
+                let d = sys::capture(&e.cc, &[arg.as_str()], &e.work)
                     .unwrap_or_default()
                     .trim()
                     .to_string();

@@ -84,6 +84,7 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "update",
             "--init",
             "--recursive",
+            "-q",
             "--depth=1",
             "--filter=blob:none",
         ],

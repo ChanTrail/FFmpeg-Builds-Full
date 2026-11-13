@@ -35,6 +35,10 @@ python-markupsafe:
 autotools:
 libtool:
 clang: {archs: x86_64}
+# 冒烟诊断链末段要 gdb 抓崩溃回溯——缺了就只剩裸 NTSTATUS 码 /
+# the smoke diagnostic chain's last tier needs gdb for crash
+# backtraces — without it only the bare NTSTATUS code remains
+gdb:
 
 # --- video codecs ---------------------------------------------------------------
 libx264: {flags: --enable-libx264}
@@ -83,10 +87,6 @@ fribidi: {flags: --enable-libfribidi}
 fontconfig: {flags: --enable-fontconfig}
 libunibreak:
 lcms2: {flags: --enable-lcms2}
-# librsvg 曾是 UCRT64-only（MSYS2 没有 clang-aarch64 构建），但
-# mingw-w64-clang-aarch64-librsvg 现在有了——两架构都启用。
-# librsvg used to be UCRT64-only (MSYS2 had no clang-aarch64 build), but
-# mingw-w64-clang-aarch64-librsvg exists now — enabled on both arches.
 librsvg: {flags: --enable-librsvg}
 SDL2: {flags: --enable-sdl2}
 zimg: {flags: --enable-libzimg}
@@ -99,6 +99,13 @@ aribb24: {flags: --enable-libaribb24}
 zvbi: {flags: --enable-libzvbi}
 vapoursynth: {flags: --enable-vapoursynth}
 tesseract-ocr: {flags: --enable-libtesseract}
+# dlfcn-win32：FFmpeg 的 ladspa 检查要 ladspa.h + dlfcn.h 双头文件，
+# af_ladspa 运行时 dlopen 插件——此包给 mingw 提供 dlfcn.h + libdl.a
+# （dlopen → LoadLibrary 映射）/ dlfcn-win32: FFmpeg's ladspa check
+# wants ladspa.h + dlfcn.h together, and af_ladspa dlopens plugins at
+# runtime — this package gives mingw dlfcn.h + libdl.a (dlopen maps to
+# LoadLibrary)
+dlfcn:
 glib2:
 shaderc:
 spirv-tools:

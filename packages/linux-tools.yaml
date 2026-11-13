@@ -1,0 +1,45 @@
+# Linux 自建工具钉版：CI tool-cache 缓存的是 /opt/pyenv、/opt/cargo、
+# /opt/rustup 三棵目录树——本文件是它们内容的唯一真源，workflow 的
+# cache key 只哈希本文件：linux_common.rs 再怎么重构也不误炸 key，
+# 而真改钉版（rustup channel、cargo-c 版本、pip 清单、.deb URL）时
+# 冷装一次。debs 解进 / 不随缓存往返，收进来只为钉版收口一处。
+# Pinned versions for the self-installed Linux tools: the CI tool-cache
+# holds the /opt/pyenv, /opt/cargo and /opt/rustup trees — this file is
+# the single source of truth for their contents, and the workflow cache
+# key hashes only this file: refactors to linux_common.rs can no longer
+# bust the key, while a real pin bump (rustup channel, cargo-c version,
+# the pip list, the .deb URLs) cold-installs exactly once. The debs
+# unpack into / and never ride the cache; they live here only to keep
+# every pin in one place.
+
+# rustup-init 的 --default-toolchain / --profile / rustup-init's
+# --default-toolchain and --profile
+rustup:
+  channel: stable
+  profile: minimal
+
+# cargo-c 发布版号（URL 模板里的 {ARCH} 在运行时换成 x86_64/aarch64）/
+# the cargo-c release version ({ARCH} in the URL template resolves to
+# x86_64/aarch64 at runtime)
+cargo_c: 0.10.26
+
+# /opt/pyenv venv 里的 pip 包（meson/ninja/cmake 等构建工具——系统
+# Python 是 "externally managed"）/ the pip packages inside the
+# /opt/pyenv venv (meson/ninja/cmake and friends — the system Python is
+# "externally managed")
+pip:
+  - meson
+  - ninja
+  - cmake
+  - jinja2
+  - jsonschema
+  - setuptools
+
+# 发行版快照 .deb——payload 直解进 /：lame 要 AC_PREREQ(2.73)（已发布
+# tarball 没有），libiconv 的 autogen 专门要 aclocal-1.18 / distro
+# snapshot .debs whose payloads unpack straight into /: lame wants
+# AC_PREREQ(2.73) which no released tarball provides; libiconv's autogen
+# wants aclocal-1.18 specifically
+debs:
+  autoconf: https://archive.ubuntu.com/ubuntu/pool/main/a/autoconf/autoconf_2.73-2_all.deb
+  automake: https://archive.ubuntu.com/ubuntu/pool/main/a/automake/automake_1.18.1-4_all.deb

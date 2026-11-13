@@ -97,6 +97,19 @@ pub fn refresh_config_scripts(src: &Path) -> Result<(), String> {
 /// autogen/autoreconf）/ standard autotools build (autogen/autoreconf when
 /// no configure)
 pub fn autotools_build(src: &Path, args: &[&str]) -> Result<(), String> {
+    autotools_build_vars(src, args, &[])
+}
+
+/// autotools_build_vars [args, mvars]：同 autotools_build，另把 mvars
+/// 作为命令行变量传给 make 与 make install（命令行变量压过 Makefile
+/// 赋值——例如 xvid 的 `$(LN_S)` 探测出来是不带 -f 的 `ln -s`，撞
+/// 已存在文件即 Error，传 LN_S="ln -sf" 可解）
+/// Same as autotools_build, plus mvars forwarded as command-line
+/// variables to both `make` and `make install` (command-line vars beat
+/// Makefile assignments — e.g. xvid's `$(LN_S)` resolves to a
+/// flag-less `ln -s` that dies on existing files; LN_S="ln -sf" fixes
+/// it)
+pub fn autotools_build_vars(src: &Path, args: &[&str], mvars: &[&str]) -> Result<(), String> {
     let e = sys::env();
     refresh_config_scripts(src)?;
     if !src.join("configure").is_file() {
@@ -124,8 +137,16 @@ pub fn autotools_build(src: &Path, args: &[&str]) -> Result<(), String> {
             .join(" "),
         src,
     )?;
-    sys::run_ok("make", &["-j", &e.jobs.to_string()], src)?;
-    sys::run_ok("make", &["install"], src)
+    let mut mk: Vec<String> = vec!["-j".into(), e.jobs.to_string()];
+    mk.extend(mvars.iter().map(|s| s.to_string()));
+    sys::run_ok(
+        "make",
+        &mk.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        src,
+    )?;
+    let mut mi: Vec<&str> = vec!["install"];
+    mi.extend(mvars.iter().copied());
+    sys::run_ok("make", &mi, src)
 }
 
 /// meson_build [args]：meson 标准配方构建（静态、关 LTO）

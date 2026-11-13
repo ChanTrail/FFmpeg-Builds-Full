@@ -1,0 +1,29 @@
+Drop the unconditional `contrib` subdir from SUBDIRS.
+
+FFmpeg 只需要 libzvbi.a 本身——contrib 只产 zvbi-ntsc-cc/x11font 两个工具，
+却要拿 libzvbi.a 链 -lpng。上游 configure.ac 把 `-lpng -lz` 追加在 `-lm`
+之后（LIBS="-lpthread -lm -lpng -lz"），静态链接时 libpng.a 的 pow 引用
+落在已扫描完的 -lm 后面，x11font 直接 undefined reference。contrib 没有
+configure 开关，只能从这里摘。daemon/test/examples 走 --disable-* 旗标。
+FFmpeg only needs libzvbi.a itself — contrib only builds the zvbi-ntsc-cc
+and x11font tools, yet links them against libzvbi.a + -lpng. Upstream
+configure.ac appends `-lpng -lz` after `-lm` (LIBS="-lpthread -lm -lpng
+-lz"), so under static linking libpng.a's pow reference lands behind an
+already-scanned -lm and x11font fails with undefined references. contrib
+has no configure switch — it can only be dropped here; daemon/test/
+examples are covered by --disable-* flags.
+
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -19,10 +19,9 @@
+ # Attn order matters.
+ SUBDIRS = \
+ 	m4 \
+ 	src \
+-	$(proxy_dirs) \
+-	contrib
++	$(proxy_dirs)
+ 
+ if ENABLE_EXAMPLES
+ SUBDIRS += examples
+ endif

@@ -1,24 +1,13 @@
-# macOS arm64 源码：仅本平台×架构需要的库源 + common 值覆盖。
-# macOS arm64 sources: sources needed only on this platform+arch, plus
-# whole-value overrides of common.yaml.
-lcevcdec:
-  git: https://github.com/v-novaltd/LCEVCdec.git
-uavs3d:
-  git: https://github.com/uavs3/uavs3d.git
-harfbuzz:
-  git: https://github.com/harfbuzz/harfbuzz.git
+# macOS arm64 源：仅本平台独占的源 + common/base 的整值覆盖。
+# 源规格本身与平台无关——同值条目一律放 common.yaml，这里只留两类：
+# ① 平台独占源（配方 targets="mac"）；② 与共享值不同的覆盖。
+# macOS arm64 sources: platform-exclusive sources plus whole-value
+# overrides of common/base. Source specs are platform-agnostic —
+# same-valued entries all live in common.yaml; only two kinds remain
+# here: ① platform-exclusive sources (recipe targets="mac") and
+# ② overrides that differ from the shared value.
 
-# pango 的 fribidi 源在 common.yaml——这里只补 mac 才有的配方依赖
-# fribidi's source for pango lives in common.yaml — only the recipe deps
-# unique to mac are added here
-zlib:
+# ---- 覆盖 / overrides ----
+zlib:                      # base.yaml 未钉版；mac 钉 v1.3.1 / unpinned in base.yaml; pinned to v1.3.1 on mac
   git: https://github.com/madler/zlib.git
   ref: v1.3.1
-libpng:
-  git: https://github.com/pnggroup/libpng.git
-  ref: v1.6.44
-# librsvg 的 Rust 侧要 libfreetype.a；pango 的 pangoft2 后端也用它
-# librsvg's Rust side wants libfreetype.a; pango's pangoft2 backend too
-freetype:
-  git: https://gitlab.freedesktop.org/freetype/freetype.git
-  ref: VER-2-15-0

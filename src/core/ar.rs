@@ -171,7 +171,8 @@ pub fn member_file(m: &str) -> String {
     member_to_file(m)
 }
 
-/// `ar p` 倒出成员字节 / `ar p` — dump a member's raw bytes
+/// `ar p` <lib.a> <member>：倒出成员字节（<dir> 为命令工作目录）
+/// `ar p` <lib.a> <member>: dump a member's raw bytes (<dir> is the cwd)
 pub fn member_data(lib: &Path, member: &str, dir: &Path) -> Result<Vec<u8>, String> {
     sys::capture_bytes("ar", &["p", &lib.to_string_lossy(), member], dir)
 }

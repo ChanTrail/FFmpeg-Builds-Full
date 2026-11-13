@@ -6,14 +6,17 @@
 #   git: <url>             git 仓库：ref=tag/sha 钉死；ref=分支或未设 →
 #                          该分支 HEAD 经 CI 验证（GitHub/GitLab），无 CI
 #                          或失败回退最新 tag，无 tag 用 HEAD
+#   mirrors: [<url>, ...]  git 仓源回退镜像（主仓克隆失败按序尝试）
 #   ref: <branch|tag|sha>  可选钉住
 #   submodules: true       递归初始化子模块（浅）
 #   archive: <url>         固定产物归档（发行 tarball，configure 已烘焙）
 #   sha256: <hex>          archive 完整性校验
 
 ffmpeg:
-  git: https://github.com/FFmpeg/FFmpeg.git
-  ref: master              # FFMPEG_REF/FFMPEG_SHA 环境变量仍可覆盖 / env vars still override
+  git: git://git.ffmpeg.org/ffmpeg.git            # 官方仓优先（9418 原生协议）/ official repo first (native proto on 9418)
+  mirrors:                                        # 主仓克隆失败按序兜底 / ordered fallbacks when the primary clone fails
+    - https://github.com/FFmpeg/FFmpeg.git
+  ref: master              # FFMPEG_REPO/FFMPEG_REF/FFMPEG_SHA 环境变量仍可覆盖 / env vars still override
 
 zlib:
   git: https://github.com/madler/zlib.git

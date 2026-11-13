@@ -24,15 +24,20 @@
 #                   the extras state dir wholesale (extensionless
 #                   .ok/done markers included)
 #
-# 用法 / usage: collect-logs.sh <logs_dir> <work_root> <extras_root|''> <name>
-#   extras_root 传 '' 时只收 work 树 / pass '' for extras_root to collect
-#   only the work tree
+# 用法 / usage: collect-logs.sh <logs_dir> <work_root> <extras_root|''> <name> [dist_dir]
+#   extras_root 传 '' 时只收 work 树；dist_dir 可选——其下的 *.txt
+#   （smoke-gdb-* 取证文件等）收进 <name>/dist/。dist 在 work 根之外，
+#   不传就丢 / pass '' for extras_root to collect only the work tree;
+#   dist_dir is optional — *.txt under it (smoke-gdb-* forensics etc.)
+#   lands in <name>/dist/. dist lives outside the work root; without
+#   the arg those files are lost
 set -u
 
 logs="$1"
 work="$2"
 extra="${3:-}"
 name="$4"
+dist="${5:-}"
 mkdir -p "$logs"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
@@ -72,6 +77,22 @@ if [ -d "$work" ]; then
     | (cd "$logs/$name" && tar -xf -) || true
 fi
 
+# ── dist 的 *.txt（smoke-gdb-* 取证文件等）→ logs/<name>/dist/ ──
+# dist 在 work 根之外：归档走自己的上传 glob，这里只收诊断向 txt。
+# smoke 挂在打包前——build-* 产物包因无归档被整个跳过，这文件只有
+# 本包能见到 / dist *.txt (smoke-gdb-* forensics etc.) ->
+# logs/<name>/dist/. dist sits outside the work root: archives ship
+# via their own glob; only diagnostic txts join this bundle. A smoke
+# failure precedes packaging — the build-* artifact is skipped for
+# lack of archives, so this bundle is the file's only window out
+if [ -n "$dist" ] && [ -d "$dist" ]; then
+  (cd "$dist" && find . -type f -name '*.txt' | sort > "$scratch/dlist") || true
+  mkdir -p "$logs/$name/dist"
+  [ -s "$scratch/dlist" ] \
+    && (cd "$dist" && tar -cf - -T "$scratch/dlist") \
+    | (cd "$logs/$name/dist" && tar -xf -) || true
+fi
+
 # ── extras 状态目录全量 → logs/<name>/.extras/ ──
 # whole extras state dir -> logs/<name>/.extras/
 if [ -n "$extra" ] && [ -d "$extra" ]; then
@@ -104,17 +125,23 @@ fi
   echo
 
   echo "## FFmpeg configure 丢包 / configure-dropped libraries"
-  d="$(find "$logs" -name 'dropped-libs.txt' | head -n1)"
-  if [ -n "$d" ] && [ -s "$d" ]; then
+  # dropped-libs{variant}.txt 逐变体枚举——同干 config-log 按
+  # 变体 stem 配对 / enumerate every variant's dropped-libs{variant}
+  # .txt — sibling config-logs pair by the variant stem
+  any=0
+  while IFS= read -r d; do
+    [ -s "$d" ] || continue
+    any=1
+    stem="$(basename "$d" .txt)"
+    echo "### $stem"
     while IFS= read -r line; do
       [ -z "$line" ] && continue
       n="${line%% *}"
-      cl="$(find "$logs" -name "dropped-libs-$n.config-log.txt" | head -n1)"
+      cl="$(find "$logs" -name "$stem-$n.config-log.txt" | head -n1)"
       echo "- $line${cl:+  (config.log: ${cl#"$logs"/})}"
     done < "$d"
-  else
-    echo "(无 / none)"
-  fi
+  done < <(find "$logs" -name 'dropped-libs*.txt' ! -name '*.fflog.txt' ! -name '*.config-log.txt' | sort)
+  [ "$any" -eq 0 ] && echo "(无 / none)"
   echo
 
   echo "## 本包详细日志 / detailed logs in this bundle"

@@ -7,7 +7,7 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("pango", "mac", "pangocairo", "-", body);
+    let mut x = r("pango", "linux,mac", "pangocairo", "-", body);
     x.src = include_str!("pango.rs");
     x
 }

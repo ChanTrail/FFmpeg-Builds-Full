@@ -7,7 +7,7 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("librist", "mac", "librist", "--enable-librist", body);
+    let mut x = r("librist", "linux,mac", "librist", "--enable-librist", body);
     x.src = include_str!("librist.rs");
     x
 }

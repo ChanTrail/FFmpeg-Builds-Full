@@ -7,7 +7,7 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("pixman", "mac", "pixman-1", "-", body);
+    let mut x = r("pixman", "linux,mac", "pixman-1", "-", body);
     x.src = include_str!("pixman.rs");
     x
 }

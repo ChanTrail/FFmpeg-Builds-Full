@@ -31,6 +31,11 @@ pub struct Pipeline {
     pub extras: fn() -> Result<(), String>,
     /// 取源码+configure+编译 FFmpeg / fetch+configure+build FFmpeg
     pub ffmpeg: fn() -> Result<(), String>,
+    /// 当前变体的 ffmpeg 配置作业（args/build_dir/dropped 算好不跑）
+    /// ——build-all 四变体并行编排的素材 / the current variant's
+    /// ffmpeg configure job (args/build_dir/dropped computed, not yet
+    /// run) — the material build-all orchestrates four variants with
+    pub ffmpeg_plan: fn() -> Result<crate::ffmpeg::ConfJob, String>,
     /// 打包并校验产物 / package and verify the artifact
     pub package: fn() -> Result<(), String>,
     /// 保存依赖缓存 / save the deps cache

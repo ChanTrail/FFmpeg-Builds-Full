@@ -36,7 +36,7 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     // (work root sits inside the repo) and passes the corpse off as live
     if sys::run("git", &["--git-dir=.git", "rev-parse", "--git-dir"], &src) != Ok(0) {
         crate::fsx::rm_rf(&src.join(".git"));
-        sys::run_ok("git", &["init"], &src)?;
+        sys::run_ok("git", &["init", "-q"], &src)?;
     }
     // 至少一个 commit 给 tag/describe——新 init 的空库需要，带历史的真
     // 检出直接过 / at least one commit for tag/describe — needed by a

@@ -1,5 +1,11 @@
-//! xeve 配方：EVC 编码器
-//! xeve recipe: EVC encoder
+//! xeve 配方：EVC 编码器。注意：产物 libxeve.a 与 libxevd.a 共享
+//! mc/recon 源——windows fixup 与 mac nmedit 会对交集符号做后缀改名/
+//! 本地化，归档必须保持出厂状态（改过的快照曾把 alf_create 改成现存
+//! API 名 xeve_alf_create 而自毁）/ xeve recipe: EVC encoder. Note:
+//! libxeve.a shares mc/recon sources with libxevd.a — windows fixup and
+//! mac nmedit suffix-rename/localize the intersecting symbols, so the
+//! archived product must stay pristine (a cached snapshot once renamed
+//! alf_create into the live API name xeve_alf_create and self-destructed)
 
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};
@@ -77,7 +83,12 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     fsx::rm_glob(&e.prefix_win.join("bin"), "libxeve*.dll*");
     let sub = e.prefix_win.join("lib/xeve/libxeve.a");
     let flat = e.prefix_win.join("lib/libxeve.a");
-    if sub.is_file() && !flat.is_file() {
+    // 必须覆盖：flat 位可能躺着 overlay 恢复出来的旧归档（实证：
+    // !flat 守卫曾让上古改名毒在新鲜构建旁骑了整轮）/ must
+    // overwrite: the flat slot can hold an overlay-restored archive
+    // (empirical: a !flat guard once let legacy rename poison ride a
+    // whole pass next to the fresh build)
+    if sub.is_file() {
         std::fs::copy(&sub, &flat).map_err(|x| format!("copy xeve.a: {x}"))?;
     }
     Ok(())

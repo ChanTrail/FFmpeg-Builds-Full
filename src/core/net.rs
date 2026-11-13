@@ -49,7 +49,7 @@ fn client() -> &'static reqwest::Client {
     })
 }
 
-// ==================== HTTP ====================
+// ==================== HTTP 传输层 / transport ====================
 
 /// 判断一次失败是否值得重试：传输错误/408/429/5xx 可重试，其余 4xx 终态
 /// Whether a failure is worth retrying: transport errors and 408/429/5xx
@@ -243,12 +243,111 @@ pub fn curl(url: &str, out: &Path) -> Result<(), String> {
 
 // ==================== Git / ls-remote 助手 ====================
 
+/// 网络型 git 调用的统一 -c 前缀：http.lowSpeed* 让连接已建立但传输
+/// stalled（<1KB/s 持续 60s）的调用 60s 内报错——git 默认对这类传输
+/// 无限等待，CI 上表现为日志无声卡死；报错后交调用侧重试。对 https
+/// 全部生效；git:// 原生协议不吃这套，好在全源清单里仅 librtmp 一家
+/// 用 git://。maintenance.auto/gc.auto 关闭维护任务——一次性检出永远
+/// 不需要 commit-graph/midx/增量 repack，新版 git 在 fetch/clone 尾部
+/// 自动跑，几十个并发预取线程全程后台烧磁盘 I/O 拖慢整机。-c 经
+/// GIT_CONFIG_PARAMETERS 传给子 git 进程，clone 递归拉起的子模块
+/// fetch 同样生效
+/// Shared -c prefix for network git calls: http.lowSpeed* fails a
+/// connected-but-stalled transfer (<1KB/s for 60s) inside 60s — git's
+/// default waits forever on those, which on CI reads as a silent log
+/// freeze; the caller's retry layer then takes over. It covers every
+/// https transport; the git:// protocol ignores it, but only librtmp
+/// in the whole source map uses git://. maintenance.auto/gc.auto kill
+/// repo maintenance — throwaway checkouts never need commit-graph/
+/// midx/incremental-repack, yet modern git fires them at the tail of
+/// every fetch/clone and dozens of concurrent prefetch threads burn
+/// disk I/O all build long. -c propagates to child git processes via
+/// GIT_CONFIG_PARAMETERS, covering the submodule fetches spawned by
+/// clone
+pub(crate) const GIT_NET: &[&str] = &[
+    "-c",
+    "http.lowSpeedLimit=1024",
+    "-c",
+    "http.lowSpeedTime=60",
+    "-c",
+    "maintenance.auto=false",
+    "-c",
+    "gc.auto=0",
+];
+
+/// git 传输重试的退避序列：网关 504/拥塞在 ~10s 尺度上很少自愈，
+/// 15/30/60/90s 递增才躲得过高峰（实证：freedesktop 三连炸全死在
+/// 固定 10s 窗口里）/ backoff ladder for git transport retries:
+/// gateway 504s / congestion rarely heal on a ~10s scale — the
+/// 15/30/60/90s ramp dodges the busy window (empirical: three flat-10s
+/// attempts all died inside one freedesktop burst)
+fn git_retry_delay(attempt: u32) -> Duration {
+    Duration::from_secs([15, 30, 60, 90][(attempt as usize).min(3)])
+}
+
+/// git 网络读操作统一入口：GIT_NET 传输超时 + 5 次递增退避重试
+/// （ls-remote / 轻量探测用）/ shared entry for network git reads:
+/// GIT_NET transport timeouts + 5 attempts on a rising backoff
+/// (ls-remote / light probes)
+fn git_capture(args: &[&str]) -> Result<String, String> {
+    let mut a: Vec<&str> = GIT_NET.to_vec();
+    a.extend_from_slice(args);
+    let mut last = String::new();
+    for i in 1..=5 {
+        match sys::capture("git", &a, &sys::env().work) {
+            Ok(o) => return Ok(o),
+            Err(e) => {
+                last = e;
+                if i < 5 {
+                    std::thread::sleep(git_retry_delay(i));
+                }
+            }
+        }
+    }
+    Err(last)
+}
+
+/// 同 git_capture，面向无输出命令（clone/fetch）。clean_between 是
+/// 重试前要清掉的半成品路径（clone 拒绝非空目录，fetch 不需要）/
+/// same as git_capture for output-less commands (clone/fetch), wd as
+/// cwd. clean_between is a partial-result path to wipe before each
+/// retry (clone refuses a non-empty dir; fetch needs none)
+pub(crate) fn git_run(
+    args: &[&str],
+    wd: &Path,
+    clean_between: Option<&Path>,
+) -> Result<(), String> {
+    let mut a: Vec<&str> = GIT_NET.to_vec();
+    a.extend_from_slice(args);
+    let mut last = String::new();
+    // 同 git_capture 的 5 次递增退避——clone/fetch 撞 504 是同一类
+    // 瞬时网关拥塞 / same rising 5-attempt backoff as git_capture —
+    // clone/fetch hitting 504 is the same transient gateway congestion
+    for i in 1..=5 {
+        match sys::run("git", &a, wd) {
+            Ok(0) => return Ok(()),
+            Ok(c) => last = format!("exited {c}"),
+            Err(e) => last = e,
+        }
+        if i < 5 {
+            if let Some(p) = clean_between {
+                fsx::rm_rf(p);
+            }
+            std::thread::sleep(git_retry_delay(i));
+        }
+    }
+    Err(format!(
+        "git {} failed: {last}",
+        args.first().unwrap_or(&"?")
+    ))
+}
+
 /// `git ls-remote <url> [patterns]` → (sha, ref) 行列表
 /// List remote refs as (sha, ref) pairs
 pub fn ls_remote(url: &str, patterns: &[&str]) -> Result<Vec<(String, String)>, String> {
     let mut args = vec!["ls-remote", url];
     args.extend_from_slice(patterns);
-    let out = sys::capture("git", &args, &sys::env().work)?;
+    let out = git_capture(&args)?;
     Ok(out
         .lines()
         .filter_map(|l| {
@@ -261,11 +360,7 @@ pub fn ls_remote(url: &str, patterns: &[&str]) -> Result<Vec<(String, String)>, 
 /// 默认分支：(分支名, HEAD sha)——`git ls-remote --symref url HEAD`
 /// Default branch: (name, HEAD sha) — `git ls-remote --symref url HEAD`
 pub fn default_branch(url: &str) -> Result<(String, String), String> {
-    let out = sys::capture(
-        "git",
-        &["ls-remote", "--symref", url, "HEAD"],
-        &sys::env().work,
-    )?;
+    let out = git_capture(&["ls-remote", "--symref", url, "HEAD"])?;
     let mut branch = String::new();
     let mut sha = String::new();
     for l in out.lines() {
@@ -326,7 +421,7 @@ pub fn latest_tag(url: &str) -> Result<Option<String>, String> {
     // 匹配不到任何内容静默返回空）/ `--tags` is only an option *before*
     // the repository argument — after it, git treats it as a ref pattern
     // and silently matches nothing
-    let out = sys::capture("git", &["ls-remote", "--tags", url], &sys::env().work)?;
+    let out = git_capture(&["ls-remote", "--tags", url])?;
     let refs: Vec<(String, String)> = out
         .lines()
         .filter_map(|l| {
@@ -343,8 +438,24 @@ pub fn latest_tag(url: &str) -> Result<Option<String>, String> {
     tags.dedup();
     let mut ver: Vec<&String> = tags.iter().filter(|t| is_version_tag(t)).collect();
     ver.sort_by_key(|t| vkey(t));
-    if let Some(t) = ver.last() {
-        return Ok(Some((*t).clone()));
+    // 版本号开头的 tag（v1.2.3/1.2.3）优先——"ww53.4-video" 式把版本段
+    // 藏进名字中间的内部构建标签，vkey 首元素碾压一切真版本，只能做
+    // 兜底（实证：intel/libva 回退抓到了 ww* 系的 0.31.1 化石）/
+    // version-leading tags (v1.2.3 / 1.2.3) take precedence — internal
+    // build labels burying the version mid-name (ww53.4-video) outrank
+    // every real release on the first vkey element, so they may serve
+    // only as a fallback (empirical: intel/libva's fallback fetched a
+    // ww*-era 0.31.1 fossil)
+    if let Some(t) = ver
+        .iter()
+        .copied()
+        .rfind(|t| {
+            let s = t.strip_prefix('v').unwrap_or(t);
+            s.chars().next().is_some_and(|c| c.is_ascii_digit())
+        })
+        .or_else(|| ver.last().copied())
+    {
+        return Ok(Some(t.clone()));
     }
     Ok(tags.last().cloned())
 }
@@ -593,10 +704,14 @@ pub fn fetch_git(
     refname: &str,
     sha: Option<&str>,
 ) -> Result<PathBuf, String> {
-    sys::run_ok(
-        "git",
+    // GIT_NET 统一 -c：传输停滞 60s 判死 + 关维护任务；半成品 src
+    // 在重试前清掉（clone 拒绝非空目录）/ GIT_NET's unified -c:
+    // stalled transfers die in 60s + maintenance off; the partial src
+    // is wiped between retries (clone refuses a non-empty dir)
+    git_run(
         &[
             "clone",
+            "-q",
             "--depth",
             "1",
             "--branch",
@@ -607,6 +722,7 @@ pub fn fetch_git(
             "src",
         ],
         wd,
+        Some(&wd.join("src")),
     )?;
     let src = wd.join("src");
     if let Some(want) = sha {
@@ -628,26 +744,24 @@ pub fn fetch_git(
 /// fetch_git_commit <url> <sha>: shallow checkout of one exact commit
 pub fn fetch_git_commit(wd: &Path, url: &str, sha: &str) -> Result<PathBuf, String> {
     fsx::rm_rf(&wd.join("src"));
-    sys::run_ok("git", &["init", "src"], wd)?;
+    sys::run_ok("git", &["init", "-q", "src"], wd)?;
     let src = wd.join("src");
     sys::run_ok("git", &["remote", "add", "origin", url], &src)?;
-    // 瞬时拉取失败重试 3 次（git.ffmpeg.org 周期性 502）
-    // transient fetch failures retry 3x (git.ffmpeg.org 502s periodically)
-    let mut ok = false;
-    for i in 1..=3 {
-        if sys::run("git", &["fetch", "--depth", "1", "origin", sha], &src)? == 0 {
-            ok = true;
-            break;
-        }
-        if i == 3 {
-            return Err(format!("git fetch {url} {sha} failed after 3 attempts"));
-        }
-        std::thread::sleep(Duration::from_secs(10));
-    }
-    let _ = ok;
+    // 瞬时拉取失败重试 3 次（git.ffmpeg.org 周期性 502）——git_run
+    // 内置重试；fetch 增量续传无需清理 / transient fetch failures
+    // retry 3x inside git_run (git.ffmpeg.org 502s periodically);
+    // fetch resumes incrementally, nothing to clean
+    git_run(&["fetch", "-q", "--depth", "1", "origin", sha], &src, None)
+        .map_err(|e| format!("git fetch {url} {sha} {e}"))?;
     sys::run_ok(
         "git",
-        &["-c", "advice.detachedHead=false", "checkout", "FETCH_HEAD"],
+        &[
+            "-c",
+            "advice.detachedHead=false",
+            "checkout",
+            "-q",
+            "FETCH_HEAD",
+        ],
         &src,
     )?;
     Ok(src)

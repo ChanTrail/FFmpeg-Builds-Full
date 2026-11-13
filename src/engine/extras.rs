@@ -16,6 +16,7 @@ use crate::fsx;
 use crate::log;
 use crate::pkgcfg;
 use crate::sys;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -111,10 +112,10 @@ pub fn applies(targets: &str) -> bool {
     })
 }
 
-/// extras_provided：平台自带栈已把库装进前缀（pc 模块必须来自前缀内，
-/// 静态归档门槛也要过）/ the platform's own stack already installed the
-/// library into the prefix (pc modules must come from inside the prefix and
-/// the static-archive gate must pass)
+/// extras_provided：平台自带栈已把库装进前缀（pc 模块必须来自平台栈
+/// 自己的前缀、静态归档门槛也要过）/ the platform's own stack already
+/// installed the library (pc modules must come from the platform stack's
+/// own prefix and the static-archive gate must pass)
 pub fn provided(check: &str) -> bool {
     let e = sys::env();
     for c in check.split(',') {
@@ -129,25 +130,69 @@ pub fn provided(check: &str) -> bool {
         if !pkgcfg::exists(c) {
             return false;
         }
-        // .pc 文件必须位于 $PREFIX 或 $MSYSTEM_PREFIX 内部——系统 -dev 包
-        // 不算"已提供" / the .pc file must live inside $PREFIX or
-        // $MSYSTEM_PREFIX — a system -dev package is not "provided"
+        // .pc 必须来自 $MSYSTEM_PREFIX（pacman 这类平台栈自己的树）且
+        // 不属于 deps 前缀——系统 -dev 包不算"已提供"；deps 前缀里无
+        // .ok 的 .pc 更不算：那是快照残留（配方建过或该建的），骑平台
+        // 捷径会永久跳过重建。实证：fontconfig 配方上线时快照已带
+        // 2.16 文件且无 .ok，provided 永远放行 → pango 卡 >=2.17。
+        // linux/mac 上 env_prefix==prefix，此条件恒假——跳过权全部
+        // 归还给 .ok 哈希校验 / the .pc must come from $MSYSTEM_PREFIX
+        // (the platform stack's own tree, e.g. pacman) yet NOT the deps
+        // prefix — a system -dev package is not "provided", and neither
+        // is an .ok-less .pc inside the deps prefix: that is snapshot
+        // residue from a recipe that built or should build it, and
+        // riding the platform shortcut skips the rebuild forever.
+        // Empirical: the fontconfig recipe went live while snapshots
+        // already carried 2.16 files and no .ok — provided let it
+        // through permanently and pango's >=2.17 check failed.
+        // On linux/mac env_prefix==prefix so this is always false —
+        // skip authority returns to the .ok hash check entirely
         let pcd = pkgcfg::variable(c, "pcfiledir");
-        let inside = [&e.prefix, &e.env_prefix]
-            .iter()
-            .any(|p| !p.is_empty() && pcd.starts_with(p.as_str()));
-        if !inside {
+        let from_platform = !e.env_prefix.is_empty()
+            && pcd.starts_with(e.env_prefix.as_str())
+            && (e.prefix.is_empty() || !pcd.starts_with(e.prefix.as_str()));
+        if !from_platform {
             return false;
         }
     }
     pkgcfg::static_libs_ok(check).is_ok()
 }
 
-/// 配方 .ok 标记的期望哈希：配方分组源码 + 工具链指纹
-/// Expected .ok hash: group source + toolchain fingerprint
+/// 配方 .ok 标记的期望哈希：配方分组源码 + 工具链指纹 + 同名源规格。
+/// 源规格（git ref / archive sha256 / submodules）必须参与：钉版本一变，
+/// 恢复出来的 .ok 就得失效，否则旧版本快照无限续命（实证：fontconfig
+/// 已钉 2.17+，2.16 的 provided 仍放行，pango 卡 >=2.17 全平台挂）。
+/// 同名键缺席按空处理（异名源配方如 ffnvcodec→nv-codec-headers）；
+/// 多源配方只覆盖主源——次要源换版时一般也伴随配方改动。
+/// Expected .ok hash: group source + toolchain fingerprint + same-named
+/// source spec. The spec (git ref / archive sha256 / submodules) must
+/// take part: a bumped version pin has to invalidate a restored .ok, or
+/// the stale snapshot rides forever (empirical: fontconfig stayed
+/// "provided" at 2.16 after the 2.17+ pin and pango's >=2.17 check
+/// failed on every platform). A missing same-named key counts as empty
+/// (renamed-source recipes like ffnvcodec -> nv-codec-headers);
+/// multi-source recipes cover the primary source only — a secondary
+/// source bump normally rides a recipe change anyway.
 pub fn recipe_sum(r: &Recipe) -> Result<String, String> {
     let tc = crate::deps::toolchain();
-    sys::sha256_data(format!("{}{tc}", r.src).as_bytes())
+    let spec = crate::sources::spec(r.name)
+        .map(|s| format!("{s:?}"))
+        .unwrap_or_default();
+    // :pic 盐（仅 linux-x86_64）：x86_64 的 -fPIC 真实改变目标代码
+    // （GOT 间接寻址），引入前的旧快照 .a 链不进 .so——混盐逼其重建
+    // 一轮。aarch64 寻址天生位置无关（ADRP），旧 .a 本就可链 .so；
+    // PE 无 PIC 概念——两者无需盐，快照平滑续用 / the :pic salt
+    // (linux-x86_64 only): -fPIC genuinely changes x86_64 codegen
+    // (GOT indirection), so pre-PIC snapshot .a files can't link into
+    // .so — the salt forces one rebuild. aarch64 addressing is
+    // position-independent by design (ADRP) and PE has no PIC concept
+    // — both ride their existing snapshots without a salt
+    let mode = if sys::env().os == sys::Os::Linux && sys::env().arch == sys::Arch::X86_64 {
+        ":pic"
+    } else {
+        ""
+    };
+    sys::sha256_data(format!("{}{tc}{spec}{mode}", r.src).as_bytes())
 }
 
 /// extras_run：主循环 / main loop
@@ -182,6 +227,23 @@ pub fn run_all() -> Result<(), String> {
                 format!("{}/share/aclocal:{aclocal}", e.prefix)
             },
         );
+        // 配方内部 cargo 拉取（rav1e/librsvg 的 Rust 依赖）不经我们的
+        // git 设施——cargo 自带网络旋钮喂满：10 次重试、1KB/s 停流判
+        // 死、关 HTTP/2 多路复用（单流停滞不再拖死整批并发）。用户
+        // 自设值不覆盖 / cargo fetches inside recipes (rav1e/librsvg
+        // Rust deps) bypass our git plumbing — feed cargo's own
+        // network knobs in full: 10 retries, stall-kill at 1KB/s,
+        // HTTP/2 multiplexing off (one stalled stream no longer sinks
+        // the whole batch). An operator-set value is never clobbered
+        for (k, v) in [
+            ("CARGO_NET_RETRY", "10"),
+            ("CARGO_HTTP_MULTIPLEXING", "false"),
+            ("CARGO_HTTP_LOW_SPEED_LIMIT", "1024"),
+        ] {
+            if std::env::var(k).is_err() {
+                std::env::set_var(k, v);
+            }
+        }
         if e.os != sys::Os::Windows {
             // 前缀不在编译器默认搜索路径上——跨配方探测（nettle 找
             // -lgmp、libpng 找 zlib.h 这类不经 pkg-config 的原始检查）
@@ -202,6 +264,22 @@ pub fn run_all() -> Result<(), String> {
             let cur = std::env::var("LDFLAGS").unwrap_or_default();
             if !cur.contains(&lib) {
                 std::env::set_var("LDFLAGS", format!("{cur} {lib}").trim());
+            }
+            // 依赖一律 PIC：x86_64 上 PIC 的寄存器代价≈0（aarch64 的
+            // ADRP 寻址天生位置无关，-fPIC 是 no-op），换来的是同一份
+            // deps 快照静态/共享两种产物通吃——.a 链进 .so 的合法性
+            // 不依赖构建模式，共享构建才不用另起一条 deps 通道 /
+            // unconditionally PIC: the register tax is ~zero on
+            // x86_64 (aarch64's ADRP addressing is position-independent
+            // by design, -fPIC a no-op there) — and in return one deps
+            // snapshot serves both static and shared products: .a-into-
+            // .so legality no longer depends on the build mode, so a
+            // shared build needs no second deps channel
+            for var in ["CFLAGS", "CXXFLAGS"] {
+                let cur = std::env::var(var).unwrap_or_default();
+                if !cur.contains("-fPIC") {
+                    std::env::set_var(var, format!("{cur} -fPIC").trim());
+                }
             }
         }
     }
@@ -247,6 +325,9 @@ pub fn run_all() -> Result<(), String> {
                 "sord",
                 "sratom",
                 "lilv",
+                // ffnvcodec 配方的源键与配方名不同 /
+                // the ffnvcodec recipe's sources key differs from its name
+                "nv-codec-headers",
             ]
             .iter()
             .map(|s| s.to_string()),
@@ -377,6 +458,13 @@ pub fn run_all() -> Result<(), String> {
                 }
             };
             println!("{reason}");
+            // CI 下 run_tee 不回显子进程输出——单行摘要之外再把失败配方
+            // 日志的 verbatim 尾部打出来，控制台里看得见现场；全量仍在
+            // <name>.log / run_tee does not echo child output under CI —
+            // beyond the one-line digest print the failed recipe's
+            // verbatim log tail so the console shows the scene; the full
+            // log still lives in <name>.log
+            println!("{}", sys::log_tail(&rlog, 40));
             // 验收失败时 .log 里只有一段干净的构建输出——把失败结论也补进
             // 去，否则日志包看得见成功、看不见为什么算失败 / on an
             // acceptance failure the .log holds only a clean build —
@@ -443,6 +531,8 @@ pub fn run_all() -> Result<(), String> {
             }
         };
         println!("archive post-processing failed: {why}");
+        // 同上的 verbatim 尾部 / same verbatim tail as the recipe path
+        println!("{}", sys::log_tail(&plog, 40));
         fsx::append_line(&status, "postfix failed")?;
         let _ = fsx::append_line(&plog, &format!("postfix-run: {why}"));
         let _ = std::fs::copy(&status, work.join("extras-status.txt"));
@@ -656,57 +746,309 @@ pub fn vendored_manifest(rel: &str, stamp: SystemTime) -> Result<(), String> {
 /// 等长记号在归档成员里做字节级改名
 /// Equal-length byte rename inside every archive member that carries the
 /// token
-fn byte_rename(lib: &Path, pairs: &[(&str, &str)], dir: &Path) -> Result<usize, String> {
-    let tmp = dir.join(format!("bytern{}", std::process::id()));
-    fsx::install_d(&tmp)?;
-    let mut renamed = 0;
-    for m in crate::ar::members(lib, dir) {
-        if m == "/" || m == "//" || m == "__.SYMDEF" {
-            continue;
+///
+/// 实现：自解析归档头按偏移逐成员定位、原地改写。CLI `ar` 只能按名
+/// 寻址——rust 归档里 `.rcgu.o` 重名成员成堆，`ar p` 永远只拿第一
+/// 份，其余重名成员的引用留在旧名（实证：librav1e 改名后
+/// `__RNv…___rust_alloc` undefined——定义所在成员被改、重名成员的
+/// 引用没动）/ implementation: parse the archive header ourselves and
+/// patch members in place by offset. The `ar` CLI addresses members by
+/// name only — rust archives pile up duplicate `.rcgu.o` names where
+/// `ar p` always yields the first copy, leaving the other same-named
+/// members' references on the old name (empirical: after the librav1e
+/// rename `__RNv…___rust_alloc` went undefined — the defining member
+/// was renamed while duplicate-named members' references were not)
+pub(crate) fn byte_rename(
+    lib: &Path,
+    pairs: &[(&str, &str)],
+    _dir: &Path,
+) -> Result<usize, String> {
+    let map: HashMap<&[u8], &[u8]> = pairs
+        .iter()
+        .map(|(f, t)| (f.as_bytes(), t.as_bytes()))
+        .collect();
+    let mut buf = std::fs::read(lib).map_err(|e| format!("read {lib:?}: {e}"))?;
+    if buf.len() < 8 || &buf[..8] != b"!<arch>\n" {
+        return Err(format!("{lib:?}: not a standard ar archive"));
+    }
+    // NUL 分词：符号名在 strtab 里以 \x00 分隔——切成 token 流逐词查表
+    // 单趟 O(n)，且精确命中边界不会误伤子串；顺带自动跳过 `//` 长名表
+    // (\n 分隔无 \x00 token) 与成员头(≤16B 名段装不下 mangled 名)
+    // / NUL-tokenize: symbol names are \x00-delimited inside string
+    // tables — split into tokens and map each in one O(n) pass with
+    // exact-boundary hits that cannot bruise substrings; automatically
+    // skips the `//` long-name table (\n-delimited, no \x00 tokens) and
+    // member headers (the ≤16B name field can't hold mangled names)
+    fn patch_tokens(data: &mut [u8], map: &HashMap<&[u8], &[u8]>) -> bool {
+        let mut hit = false;
+        let mut i = 0;
+        while i < data.len() {
+            if data[i] == 0 {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < data.len() && data[i] != 0 {
+                i += 1;
+            }
+            if let Some(&t) = map.get(&data[start..i]) {
+                data[start..i].copy_from_slice(t);
+                hit = true;
+            }
         }
-        // ar p 直接把成员字节倒出来——不经文件系统抽提，怪成员名也安全
-        // `ar p` dumps the member bytes straight out — no filesystem
-        // extraction, so exotic member names are safe
-        let Ok(mut data) = crate::ar::member_data(lib, &m, dir) else {
-            continue;
+        hit
+    }
+    // 成员头数字段是右对齐空格填充的 ASCII 十进制 /
+    // header numeric fields are space-padded ASCII decimals
+    fn ascii_dec(b: &[u8]) -> usize {
+        b.iter()
+            .filter(|c| c.is_ascii_digit())
+            .fold(0usize, |a, c| a * 10 + (c - b'0') as usize)
+    }
+    let mut renamed = 0usize;
+    let mut pos = 8usize;
+    while pos + 60 <= buf.len() {
+        let hdr = &buf[pos..pos + 60];
+        if &hdr[58..60] != b"`\n" {
+            break;
+        }
+        let size = ascii_dec(&hdr[48..58]);
+        let raw = &hdr[0..16];
+        let mut dstart = pos + 60;
+        // BSD `#1/N`：成员名前 N 字节内联在数据区开头 /
+        // BSD `#1/N`: the member's first N bytes inline the name
+        let inline = raw.strip_prefix(b"#1/").map(ascii_dec).unwrap_or(0);
+        let name: &[u8] = if inline > 0 {
+            buf.get(dstart..dstart + inline).unwrap_or(b"")
+        } else {
+            raw
         };
-        let hit = pairs
-            .iter()
-            .any(|(f, _)| data.windows(f.len()).any(|w| w == f.as_bytes()));
-        if !hit {
-            continue;
+        // 索引/长名表成员跳过：GNU `/`、`//`、`/SYM64/`，BSD `__.SYMDEF*`
+        // （含 #1/N 内联与直填两种名式）。`/NNN` 扩展名引用是普通成
+        // 员，照常补丁 / skip index & long-name members: GNU `/`, `//`,
+        // `/SYM64/`, BSD `__.SYMDEF*` (both #1/N-inline and direct-field
+        // name forms). A `/NNN` extended-name reference is a normal
+        // member — patch its data as usual
+        let special = {
+            let nz = name.iter().position(|c| *c == 0).unwrap_or(name.len());
+            let mut end = nz;
+            while end > 0 && name[end - 1] == b' ' {
+                end -= 1;
+            }
+            let t = &name[..end];
+            t == b"/"
+                || t == b"//"
+                || t == b"/SYM64/"
+                || t == b"/SYM64"
+                || t.starts_with(b"__.SYMDEF")
+        };
+        if inline > 0 {
+            dstart += inline;
         }
-        for (from, to) in pairs {
-            debug_assert_eq!(from.len(), to.len(), "byte-rename must be equal-length");
-            data = replace_bytes(&data, from.as_bytes(), to.as_bytes());
-        }
-        let obj = tmp.join(crate::ar::member_file(&m));
-        std::fs::write(&obj, &data).map_err(|e| format!("write {obj:?}: {e}"))?;
-        let fname = crate::ar::member_file(&m);
-        // 成员名被消毒/截断时 ar r 不会替换原名——先删后加，杜绝同符号
-        // 双份成员 / when the sanitized name differs from the original,
-        // `ar r` won't replace it — delete first so no duplicate-symbol
-        // member survives
-        let _ = sys::run("ar", &["d", &lib.to_string_lossy(), &m], dir);
-        if sys::run("ar", &["r", &lib.to_string_lossy(), &fname], &tmp).unwrap_or(1) == 0 {
+        let dlen = size.saturating_sub(inline);
+        if !special
+            && dstart + dlen <= buf.len()
+            && patch_tokens(&mut buf[dstart..dstart + dlen], &map)
+        {
             renamed += 1;
         }
+        pos += 60 + size + (size & 1);
     }
-    fsx::rm_rf(&tmp);
+    std::fs::write(lib, &buf).map_err(|e| format!("write {lib:?}: {e}"))?;
     Ok(renamed)
 }
 
-/// 字节序列全量替换（等长）/ replace all occurrences of a byte sequence
-/// (equal length)
-fn replace_bytes(data: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
-    let mut out = data.to_vec();
-    let mut i = 0;
-    while i + from.len() <= out.len() {
-        if &out[i..i + from.len()] == from {
-            out[i..i + from.len()].copy_from_slice(to);
-            i += from.len();
-        } else {
-            i += 1;
+/// 把"册内全局 UNDEF ∩ 局部定义"的 Mach-O 符号就地提升为外部符号
+/// （`n_type |= N_EXT`），返回改动的 nlist 条目数 /
+/// promote archive members' symbols that are "global UNDEF ∩ local def"
+/// to external (`n_type |= N_EXT`) in place; returns patched nlist count
+///
+/// 起因：新版 rustc 把 `__rustc` 分配/panic shim 以局部符号（N_SECT
+/// 无 N_EXT）发进静态库成员——同 crate-hash 的 librsvg 同类 shim 仍
+/// 是全局（0x0f），两版 rustc 的 codegen 差异。局部定义够不着其它
+/// 成员的外部 UNDEF，裸 `-lrav1e` 链测 `__rust_alloc`/`realloc`/
+/// `start_panic`/`alloc_zeroed`/`panic_cleanup` 全家 undefined——
+/// 与 dedup 无关，归档天生不自洽。提升判据"本册某成员对外引它 ∧
+/// 本册某成员局部定义它"恰好命中 mis-localized 导出 /
+/// cause: newer rustc emits the `__rustc` alloc/panic shim as LOCAL
+/// symbols (N_SECT without N_EXT) inside staticlib members — the
+/// same-crate-hash librsvg shim is still global (0x0f), a codegen
+/// difference across rustc versions. A local definition can't satisfy
+/// the other members' external UNDEFs, so the bare `-lrav1e` test dies
+/// on the whole `__rust_alloc/realloc/start_panic/alloc_zeroed/
+/// panic_cleanup` family — inherent self-inconsistency, unrelated to
+/// dedup. The criterion "undef'd globally in ≥1 member ∧ defined
+/// locally in ≥1 member" hits exactly the mis-localized exports
+fn macho_export_shim_defs(lib: &Path) -> Result<usize, String> {
+    let mut buf = std::fs::read(lib).map_err(|e| format!("read {lib:?}: {e}"))?;
+    if buf.len() < 8 || &buf[..8] != b"!<arch>\n" {
+        return Err(format!("{lib:?}: not a standard ar archive"));
+    }
+    fn ascii_dec(b: &[u8]) -> usize {
+        b.iter()
+            .filter(|c| c.is_ascii_digit())
+            .fold(0usize, |a, c| a * 10 + (c - b'0') as usize)
+    }
+    let mut undefs: HashSet<Vec<u8>> = HashSet::new();
+    let mut locals: Vec<(Vec<u8>, usize)> = Vec::new(); // (名, n_type 字节位置) / (name, file offset of n_type byte)
+    let mut pos = 8usize;
+    while pos + 60 <= buf.len() {
+        let hdr = &buf[pos..pos + 60];
+        if &hdr[58..60] != b"`\n" {
+            break;
+        }
+        let size = ascii_dec(&hdr[48..58]);
+        let inline = hdr[0..16].strip_prefix(b"#1/").map(ascii_dec).unwrap_or(0);
+        let dstart = pos + 60 + inline;
+        let dlen = size.saturating_sub(inline);
+        pos += 60 + size + (size & 1);
+        let Some(data) = buf.get(dstart..dstart + dlen) else {
+            continue;
+        };
+        // 只认 64 位小端 Mach-O；`.SYMDEF`/位码/文本成员自然出局 /
+        // 64-bit LE Mach-O only — SYMDEF/bitcode/text members bow out
+        if data.len() < 32 || data[..4] != [0xcf, 0xfa, 0xed, 0xfe] {
+            continue;
+        }
+        let ncmds = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
+        let mut lc = 32usize;
+        let (mut symoff, mut nsyms, mut stroff, mut strsize) = (0usize, 0usize, 0usize, 0usize);
+        for _ in 0..ncmds {
+            if lc + 8 > data.len() {
+                break;
+            }
+            let cmd = u32::from_le_bytes(data[lc..lc + 4].try_into().unwrap());
+            let csz = u32::from_le_bytes(data[lc + 4..lc + 8].try_into().unwrap()) as usize;
+            if cmd == 0x2 && lc + 24 <= data.len() {
+                // LC_SYMTAB / LC_SYMTAB
+                symoff = u32::from_le_bytes(data[lc + 8..lc + 12].try_into().unwrap()) as usize;
+                nsyms = u32::from_le_bytes(data[lc + 12..lc + 16].try_into().unwrap()) as usize;
+                stroff = u32::from_le_bytes(data[lc + 16..lc + 20].try_into().unwrap()) as usize;
+                strsize = u32::from_le_bytes(data[lc + 20..lc + 24].try_into().unwrap()) as usize;
+            }
+            lc = lc.saturating_add(csz.max(8));
+        }
+        if nsyms == 0 || symoff + nsyms * 16 > data.len() || stroff + strsize > data.len() {
+            continue;
+        }
+        for i in 0..nsyms {
+            let n = symoff + i * 16;
+            let strx = u32::from_le_bytes(data[n..n + 4].try_into().unwrap()) as usize;
+            let ntype = data[n + 4];
+            if strx == 0 || strx >= strsize {
+                continue;
+            }
+            let s = stroff + strx;
+            let e = match data[s..stroff + strsize].iter().position(|c| *c == 0) {
+                Some(k) => s + k,
+                None => continue,
+            };
+            let name = data[s..e].to_vec();
+            let ty = ntype & 0x0e;
+            if ntype & 0xe0 != 0 || ntype & 0x10 != 0 {
+                continue; // N_STAB / N_PEXT 不参与 / skip stab & private-extern
+            }
+            if ty == 0 && ntype & 0x01 != 0 {
+                undefs.insert(name);
+            } else if (ty == 0x0e || ty == 0x02) && ntype & 0x01 == 0 {
+                locals.push((name, dstart + n + 4));
+            }
+        }
+    }
+    let mut flipped = 0usize;
+    for (name, at) in locals {
+        if undefs.contains(&name) {
+            buf[at] |= 0x01; // 打 N_EXT / set N_EXT
+            flipped += 1;
+        }
+    }
+    if flipped > 0 {
+        std::fs::write(lib, &buf).map_err(|e| format!("write {lib:?}: {e}"))?;
+    }
+    Ok(flipped)
+}
+
+/// 枚举 ar 归档全部成员 Mach-O 符号表里的外部定义名（N_EXT 置位 ∧
+/// N_TYPE≠N_UNDF）。自解析替代 `nm -g`——实证 mac nm 在 4000+ 成员的
+/// librsvg-2.a 上漏报：真实共享外部定义 933 个它只吐了 376，dedup 的
+/// shared 集被腰斩，ffmpeg 终链 894 个 duplicate / enumerate external
+/// definition names (N_EXT set ∧ N_TYPE≠N_UNDF) across every member's
+/// Mach-O symtab in an ar archive. Self-parsing replaces `nm -g` —
+/// empirically mac nm under-reports on the 4000+-member librsvg-2.a:
+/// the true shared external-def set is 933 while it emitted only 376,
+/// which halved dedup's `shared` set and left 894 duplicates at the
+/// final ffmpeg link
+fn macho_def_names(lib: &Path) -> HashSet<String> {
+    let Ok(buf) = std::fs::read(lib) else {
+        return HashSet::new();
+    };
+    if buf.len() < 8 || &buf[..8] != b"!<arch>\n" {
+        return HashSet::new();
+    }
+    fn ascii_dec(b: &[u8]) -> usize {
+        b.iter()
+            .filter(|c| c.is_ascii_digit())
+            .fold(0usize, |a, c| a * 10 + (c - b'0') as usize)
+    }
+    let mut out = HashSet::new();
+    let mut pos = 8usize;
+    while pos + 60 <= buf.len() {
+        let hdr = &buf[pos..pos + 60];
+        if &hdr[58..60] != b"`\n" {
+            break;
+        }
+        let size = ascii_dec(&hdr[48..58]);
+        let inline = hdr[0..16].strip_prefix(b"#1/").map(ascii_dec).unwrap_or(0);
+        let dstart = pos + 60 + inline;
+        let dlen = size.saturating_sub(inline);
+        pos += 60 + size + (size & 1);
+        let Some(data) = buf.get(dstart..dstart + dlen) else {
+            continue;
+        };
+        // 只认 64 位小端 Mach-O / 64-bit LE Mach-O only
+        if data.len() < 32 || data[..4] != [0xcf, 0xfa, 0xed, 0xfe] {
+            continue;
+        }
+        let ncmds = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
+        let mut lc = 32usize;
+        let (mut symoff, mut nsyms, mut stroff, mut strsize) = (0usize, 0usize, 0usize, 0usize);
+        for _ in 0..ncmds {
+            if lc + 8 > data.len() {
+                break;
+            }
+            let cmd = u32::from_le_bytes(data[lc..lc + 4].try_into().unwrap());
+            let csz = u32::from_le_bytes(data[lc + 4..lc + 8].try_into().unwrap()) as usize;
+            if cmd == 0x2 && lc + 24 <= data.len() {
+                // LC_SYMTAB / LC_SYMTAB
+                symoff = u32::from_le_bytes(data[lc + 8..lc + 12].try_into().unwrap()) as usize;
+                nsyms = u32::from_le_bytes(data[lc + 12..lc + 16].try_into().unwrap()) as usize;
+                stroff = u32::from_le_bytes(data[lc + 16..lc + 20].try_into().unwrap()) as usize;
+                strsize = u32::from_le_bytes(data[lc + 20..lc + 24].try_into().unwrap()) as usize;
+            }
+            lc = lc.saturating_add(csz.max(8));
+        }
+        if nsyms == 0 || symoff + nsyms * 16 > data.len() || stroff + strsize > data.len() {
+            continue;
+        }
+        for i in 0..nsyms {
+            let n = symoff + i * 16;
+            let strx = u32::from_le_bytes(data[n..n + 4].try_into().unwrap()) as usize;
+            let ntype = data[n + 4];
+            if strx == 0 || strx >= strsize {
+                continue;
+            }
+            if ntype & 0xe0 != 0 || ntype & 0x10 != 0 {
+                continue; // N_STAB / N_PEXT 不参与 / skip stab & private-extern
+            }
+            if ntype & 0x01 == 0 || ntype & 0x0e == 0 {
+                continue; // 只要外部且已定义 / extern ∧ defined only
+            }
+            let s = stroff + strx;
+            let e = match data[s..stroff + strsize].iter().position(|c| *c == 0) {
+                Some(k) => s + k,
+                None => continue,
+            };
+            out.insert(String::from_utf8_lossy(&data[s..e]).into_owned());
         }
     }
     out
@@ -782,15 +1124,187 @@ fn postfix() -> Result<(), String> {
         "chromaprint",
         "libchromaprint",
         "whisper",
+        // libjxl 全 C++：libjxl_threads.pc 不带 C++ 运行时，--enable-libjxl
+        // 显式声明下链测一死 configure 整体中止（实证：linux 的
+        // std::__throw_system_error/std::thread 未解析）/ libjxl is all
+        // C++: libjxl_threads.pc forgets the C++ runtime, and with an
+        // explicit --enable-libjxl a failed link test aborts configure
+        // outright (empirical: unresolved std::__throw_system_error /
+        // std::thread on linux)
+        "libjxl",
+        "libjxl_threads",
+        // svm.cpp 拉进 vtable/__gxx_personality 全套 / svm.cpp drags in
+        // vtable and __gxx_personality references
+        "libvmaf",
+        // 整个 codec 是 C++（SceneChangeDetection/VAACalculation…）/
+        // the whole codec is C++ (SceneChangeDetection, VAACalculation...)
+        "openh264",
     ] {
         libs_private_tr(pc, &[&e.cxxrt]);
     }
+    // libsrt 按配方编了 cryspr-mbedtls——.pc 只字不提 crypto 归档 /
+    // libsrt compiles cryspr-mbedtls per the recipe — its .pc never
+    // mentions the crypto archives
+    libs_private_tr(
+        "srt",
+        &["-lmbedtls", "-lmbedx509", "-lmbedcrypto", &e.cxxrt],
+    );
     libs_private_tr("twolame", &["-lm"]);
-    // soxr WITH_OPENMP 拖入 GOMP_* ——仅 GCC 运行时（windows/clangarm64/
-    // macOS 跳过）/ soxr drags GOMP_* when built WITH_OPENMP — GCC runtimes
-    // only (skipped on windows/clangarm64/macOS)
+    // soxr WITH_OPENMP 拖入 omp_* 尾巴。只在 linux 修 .pc：windows 的
+    // pacman soxr.pc 本就带 -lgomp，而 FFmpeg 对 libsoxr 是裸 -lsoxr
+    // 链测不查 .pc——windows 侧的解药在 windows_common 的 extra-libs
+    // （gomp 探测）；macOS 自有配方关了 OpenMP / soxr's WITH_OPENMP
+    // drags omp_* tails. Patch the .pc on linux only: pacman's
+    // windows soxr.pc already carries -lgomp, and FFmpeg probes
+    // libsoxr with a bare -lsoxr link test that never consults a .pc —
+    // the windows remedy lives in windows_common's extra-libs (the
+    // gomp probe); macOS's own soxr recipe disables OpenMP
     if e.os == sys::Os::Linux {
         libs_private_tr("soxr", &["-lgomp", "-lm"]);
+    }
+
+    // macOS 的"同名同码"撞名只能靠归档手术——ld64 早把
+    // -multiply_defined 打成 obsolete 直接忽略（实证：ffmpeg_g/ffplay_g
+    // 链接 297 个 duplicate symbols）。两对：librav1e∩librsvg-2 嵌同一
+    // rustc 的 std/alloc 单态化对象；libxevd∩libxeve 共享 mc/recon 源。
+    // byte_rename 把 b 册里的交集符号等长改名（_…→z…）——引用与定义
+    // 同步迁移，b 册自洽且与 a 册零碰撞（与 windows 的 redefine_sym
+    // 同效，Mach-O 等价物）/
+    // macOS same-name same-code collisions can only be cured by archive
+    // surgery — ld64 long ago declared -multiply_defined obsolete and
+    // ignores it (empirical: 297 duplicate symbols at the ffmpeg_g /
+    // ffplay_g links). Two pairs: librav1e ∩ librsvg-2 embed one rustc's
+    // std/alloc monomorphs; libxevd ∩ libxeve share mc/recon sources;
+    // libzmq ∩ libssh collide on _sha1_init (zmq's bundled sha1.c vs
+    // libssh's md_mbedcrypto adapter).
+    // `nmedit -R` localizes the intersecting symbols in the second
+    // archive — a local symbol escapes cross-archive resolution,
+    // intra-archive references keep their own copy, and external
+    // references resolve against the other archive's identical
+    // definitions (same effect as windows' redefine_sym; the Mach-O
+    // equivalent)
+    if e.os == sys::Os::Mac {
+        // 先修自洽性再 dedup：新 rustc 把 __rustc shim 发成局部符号，
+        // 裸 -lrav1e 链测全家 undefined。提升为全局后它进 shared，
+        // 随 byte_rename 与引用同步迁移 / fix self-consistency before
+        // dedup: new rustc emits __rustc shims local so the bare -lrav1e
+        // test dies; once global they enter `shared` and migrate with
+        // their references under byte_rename
+        for l in ["librav1e.a", "librsvg-2.a"] {
+            let p = libdir.join(l);
+            if !p.is_file() {
+                continue;
+            }
+            match macho_export_shim_defs(&p) {
+                Ok(0) => {}
+                Ok(n) => {
+                    let _ = sys::run(&e.ranlib, &[&p.to_string_lossy()], &e.work);
+                    log::log(&format!(
+                        "[extras] promoted {n} local def(s) to external in {l} \
+                         (__rustc shim locality)"
+                    ));
+                }
+                Err(why) => log::warn(&format!("[extras] shim promote on {l}: {why}")),
+            }
+        }
+        // (a, b)：a 册保留原名，b 册等长改名——libzmq∩libssh 撞
+        // _sha1_init（zmq 自带 sha1.c vs libssh 的 md_mbedcrypto
+        // 适配器），b 册选 libssh：其 sha1_init 只是内部胶水，zmq
+        // 保留规范名 / (a, b): a keeps its names, b gets renamed —
+        // libzmq∩libssh collide on _sha1_init (zmq's bundled sha1.c vs
+        // libssh's md_mbedcrypto adapter); b is libssh whose sha1_init
+        // is only internal glue while zmq keeps the canonical name
+        for (a, b) in [
+            ("libxevd.a", "libxeve.a"),
+            ("librsvg-2.a", "librav1e.a"),
+            ("libzmq.a", "libssh.a"),
+        ] {
+            let (pa, pb) = (libdir.join(a), libdir.join(b));
+            if !(pa.is_file() && pb.is_file()) {
+                log::log(&format!(
+                    "[extras] dedup pair {a}∩{b}: an archive is absent; skipped"
+                ));
+                continue;
+            }
+            // 外部定义集自解析枚举（macho_def_names）：`nm -g` 在
+            // 4000+ 成员的 librsvg-2.a 上漏报——真实 shared 933 它只
+            // 给 376，dedup 腰斩后 ffmpeg 终链 894 个 duplicate（实证）
+            // / external-def sets come from self-parsed enumeration
+            // (macho_def_names): `nm -g` under-reports on the 4000+-
+            // member librsvg-2.a — 933 truly shared vs 376 emitted,
+            // leaving 894 duplicates at the final ffmpeg link
+            // (empirical)
+            let sa = macho_def_names(&pa);
+            let sb = macho_def_names(&pb);
+            if sa.is_empty() || sb.is_empty() {
+                log::log(&format!(
+                    "[extras] dedup pair {a}∩{b}: defined sets {} vs {}; skipped",
+                    sa.len(),
+                    sb.len()
+                ));
+                continue;
+            }
+            let shared: Vec<String> = sa.intersection(&sb).cloned().collect();
+            if shared.is_empty() {
+                log::log(&format!(
+                    "[extras] dedup pair {a}∩{b}: no shared symbols; skipped"
+                ));
+                continue;
+            }
+            // 等长字节改名而非 nmedit -R：-R 是把定义从符号表整个删掉
+            // ——rav1e 单测 -lrav1e 里本册引用当场 undefined（实证：
+            // __rustc 单态化全灭）。byte_rename 把每个共享名在 b 册
+            // 改成等长新名（首字符 _ -> z，strtab 偏移原样），引用与
+            // 定义同步迁移，b 册自洽且与 a 册零碰撞；nm 误报的幽灵名
+            // 在字节层找不到就天然跳过，不需要重试循环 /
+            // equal-length byte rename instead of nmedit -R: -R
+            // deletes definitions from the symbol table outright —
+            // rav1e's own references went undefined in the standalone
+            // -lrav1e test (empirical: __rustc monomorphs massacred).
+            // byte_rename swaps every shared name inside b for a
+            // same-length new one (leading _ -> z so strtab offsets
+            // stay valid); references and definitions migrate together
+            // leaving b self-consistent and collision-free vs a.
+            // nm's ghost reports simply never appear at byte level —
+            // no retry loop needed
+            let mut pairs: Vec<(String, String)> = Vec::new();
+            for s in &shared {
+                if !s.starts_with('_') {
+                    log::warn(&format!(
+                        "[extras] {a}∩{b}: shared name '{s}' lacks '_' prefix; skipped"
+                    ));
+                    continue;
+                }
+                let tgt = format!("z{}", &s[1..]);
+                // 哨兵：目标名在任何一册已定义就跳过（同 windows 版）
+                // sentinel: skip when the target name is already
+                // defined in either archive (same rule as the windows
+                // variant)
+                if sa.contains(&tgt) || sb.contains(&tgt) {
+                    log::warn(&format!(
+                        "[extras] {a}∩{b}: skip '{s}' — target '{tgt}' already defined"
+                    ));
+                    continue;
+                }
+                pairs.push((s.clone(), tgt));
+            }
+            if pairs.is_empty() {
+                continue;
+            }
+            let refs: Vec<(&str, &str)> = pairs
+                .iter()
+                .map(|(o, n)| (o.as_str(), n.as_str()))
+                .collect();
+            let n = byte_rename(&pb, &refs, &e.work)?;
+            if n > 0 {
+                let _ = sys::run(&e.ranlib, &[&pb.to_string_lossy()], &e.work);
+            }
+            log::log(&format!(
+                "[extras] renamed {} {a}-shared symbol(s) in {b} across {n} member(s) \
+                 (_… -> z…)",
+                pairs.len()
+            ));
+        }
     }
 
     // GnuTLS 的 ARM AES 汇编与 OpenSSL aesv8-armx 同源——导出 aes_v8_* 名

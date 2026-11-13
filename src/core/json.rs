@@ -9,15 +9,15 @@
 /// 解析值 / Parsed value
 #[derive(Debug, Clone)]
 pub enum V {
-    /// null
+    /// null 字面量 / the null literal
     Null,
-    /// true / false
+    /// 布尔 true/false / the boolean literals
     Bool(bool),
     /// 数字（一律 f64——API 里只要够用）/ numbers, always f64
     Num(f64),
-    /// "..."
+    /// 字符串 "..." / a "..." string
     Str(String),
-    /// [...]
+    /// 数组 [...] / an [...] array
     Arr(Vec<V>),
     /// {...}（键序保留）/ object (key order preserved)
     Obj(Vec<(String, V)>),
@@ -100,7 +100,8 @@ impl P<'_> {
         Ok(())
     }
 
-    /// 字面量（true/false/null）/ literal
+    /// 消费字面量 <word>（true/false/null）并产出值 <v>
+    /// consume the literal <word> (true/false/null) and yield <v>
     fn lit(&mut self, word: &str, v: V) -> Result<V, String> {
         if self.b[self.i..].starts_with(word.as_bytes()) {
             self.i += word.len();

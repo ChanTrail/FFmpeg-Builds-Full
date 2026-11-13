@@ -1,19 +1,22 @@
 # Rust 驱动程序（FFmpeg-Builds-Full）的 CI：所有分支 push 与
 # PR→master 先跑五个平台的 fmt/check/clippy/test；全绿后各平台现编
-# release 驱动 → 按 build.yml 的 runner 布局做 FFmpeg 构建准备——
-# 环境就位 + packages + extras（止于 [extras] summary）→ save-deps
-# 把依赖前缀快照发回 "deps" release。FFmpeg 本体构建与发布在
-# build.yml（它监听本 workflow 在非 master 分支的成功完成，链出
-# pre-release 构建；release.yml 则在 master 上接棒做驱动发布）。
+# release 驱动 → 按 scheduled.yml 的 runner 布局做完整 FFmpeg 构建
+# （build-all 子命令全链：packages + extras + ffmpeg + package，产物
+# 进 workflow artifact）。master push 且全绿时尾部 release job 发
+# dispatch 调起 release.yml——它按 run-id 跨 run 拉本 run 的
+# Driver-*/ffmpeg-* 产物直接发布（驱动与 FFmpeg 都只吃 CI 验证过的产
+# 物，不再重编）。save-deps 照旧把依赖前缀快照发回 "deps" release。
 # CI for the Rust driver (FFmpeg-Builds-Full): every branch push and
 # PRs to master first run fmt/check/clippy/test on all five platforms;
 # once all green, each platform builds the release driver in place and
-# finishes the FFmpeg build preparation on build.yml's runner layout —
-# env setup + packages + extras (stopping at the [extras] summary) ->
-# save-deps publishing the prefix snapshot back to the "deps" release.
-# The FFmpeg build/release itself lives in build.yml (it listens for
-# this workflow succeeding on non-master branches for pre-release
-# builds; release.yml chains on master for driver releases).
+# performs a COMPLETE FFmpeg build on scheduled.yml's runner layout
+# (the full `build-all` chain: packages + extras + ffmpeg + package,
+# product riding a workflow artifact). On an all-green master push the
+# tail release job dispatches release.yml — it pulls this run's
+# Driver-*/ffmpeg-* artifacts cross-run by run-id and publishes them
+# as-is (driver and FFmpeg ship exactly what CI verified, nothing is
+# rebuilt). save-deps still publishes the prefix snapshot back to the
+# "deps" release.
 name: CI
 
 on:
@@ -28,6 +31,10 @@ on:
     paths-ignore:
       - '**.md'
       - 'old/**'
+  # GitHub 偶发静默丢 push 事件（实证 cddbce7 推送零 run）——留个手动
+  # 补发口子 / GitHub occasionally drops push events silently (empirical:
+  # cddbce7 produced zero runs) — keep a manual retrigger hatch
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -45,10 +52,10 @@ jobs:
   # fmt --check + cargo check + clippy -D warnings + cargo test on each of
   # the five target platforms: the driver's cfg!(windows)/cfg(unix)/aarch64
   # branches only compile on their own platform.
-  # 矩阵与 build.yml 的 driver/build 矩阵一一对应：cfg!(windows)/
+  # 矩阵与 scheduled.yml 的 build 矩阵一一对应：cfg!(windows)/
   # cfg(unix) 之外还有 cfg!(target_arch = "aarch64") 分支，x86 上编
   # 不到的 arm 代码也要各编各测一遍。
-  # The matrix mirrors build.yml's driver/build matrix one-to-one:
+  # The matrix mirrors scheduled.yml's build matrix one-to-one:
   # besides cfg!(windows)/cfg(unix) there are cfg!(target_arch =
   # "aarch64") branches — arm-only code that never compiles on x86
   # gets built and tested on its own runner too.
@@ -103,7 +110,7 @@ jobs:
   # never compile the driver themselves. --locked pins Cargo.lock so the
   # binary is bit-faithful to the checked-in manifests.
   driver:
-    name: Driver (${{ matrix.platform }})
+    name: Build Driver (${{ matrix.platform }})
     needs: test
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -136,31 +143,73 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Build driver (release)
+      - name: Build Driver (release)
         run: cargo build --release --locked
 
-      - name: Upload driver
+      - name: Upload Driver
         uses: actions/upload-artifact@v7
         with:
-          name: driver-${{ matrix.platform }}
+          name: Driver-${{ matrix.platform }}
           path: target/release/${{ matrix.exe }}
           if-no-files-found: error
-          retention-days: 1
+          # release.yml 按 run-id 跨 run 拉这份产物直接发布——留存要
+          # 覆盖"CI 完跑→发布"间隔与手动重发窗口 / release.yml pulls
+          # this artifact cross-run by run-id and publishes it as-is —
+          # retention must cover the CI-finish→publish gap plus manual
+          # re-release windows
+          retention-days: 7
 
-  # ── FFmpeg 构建准备 / FFmpeg build preparation ────────────────────────
-  # 与 build.yml 的 build job 同一 runner 布局、同一环境安装，但驱动只
-  # 走到 [extras] summary（packages + extras 两个子命令——build 子命令
-  # 的前半），然后 save-deps 把前缀快照发回 "deps" release。ffmpeg /
-  # package 阶段留给 build.yml；本 job 的产物就是预热好的 deps 缓存。
-  # The same runner layout and env installation as build.yml's build job,
-  # but the driver only walks to the [extras] summary (the packages +
-  # extras subcommands — the front half of `build`), then save-deps
-  # publishes the prefix snapshot back to the "deps" release. The
-  # ffmpeg/package stages stay in build.yml; this job's product is a
-  # warmed deps cache.
-  deps:
-    name: Deps ${{ matrix.platform }}
-    needs: driver
+  # ── FFmpeg 源码解析 / FFmpeg source resolution ───────────────────────
+  # 五条腿构建同一份 upstream commit——build 阶段每条腿自己 clone 的话，
+  # 上游在跑期间前进会造成跨平台源码漂移，诊断对不上。resolve 一次由
+  # FFMPEG_SHA 喂给所有腿(same as scheduled.yml's prepare job)。
+  # All five legs build the same upstream commit — if every leg cloned
+  # for itself, upstream moving mid-run would skew sources across
+  # platforms and corrupt diagnosis. Resolve once and feed every leg
+  # via FFMPEG_SHA (scheduled.yml's prepare job).
+  prepare:
+    name: Resolve FFmpeg master
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.up.outputs.sha }}
+    steps:
+      - name: Resolve FFmpeg master
+        id: up
+        run: |
+          set -euo pipefail
+          # 仓源顺序与 sources/base.yaml 的 ffmpeg: 键一致——官方
+          # git:// 优先，github 兜底 / same repo order as the `ffmpeg:`
+          # key in sources/base.yaml — official git:// first, github
+          # as fallback
+          sha=""
+          for repo in git://git.ffmpeg.org/ffmpeg.git https://github.com/FFmpeg/FFmpeg.git; do
+            out="$(git ls-remote "$repo" refs/heads/master 2>/dev/null | cut -f1 || true)"
+            if [[ "$out" =~ ^[0-9a-f]{40}$ ]]; then
+              sha="$out"
+              echo "resolved via $repo"
+              break
+            fi
+          done
+          [[ -n "$sha" ]] || { echo "::error::could not resolve FFmpeg master on any repo"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Building FFmpeg commit $sha"
+
+  # ── FFmpeg 构建 / FFmpeg build ──────────────────────────────────────
+  # 与 scheduled.yml 的 build job 同一 runner 布局、同一环境安装、同一
+  # build-all 全链（packages + extras + ffmpeg + package）——产物随
+  # workflow artifact 留档；master 全绿时 release.yml 按 run-id 把它
+  # 直接发布出去（scheduled.yml 只剩定时跟上游的活）。save-deps 照旧
+  # 把前缀快照发回 "deps" release。
+  # The same runner layout, env installation and full `build-all` chain
+  # as scheduled.yml's build job (packages + extras + ffmpeg + package)
+  # — the product rides a workflow artifact and, on an all-green master
+  # push, release.yml publishes it as-is by run-id (scheduled.yml only
+  # keeps the periodic upstream-tracking duty). save-deps still
+  # publishes the prefix snapshot back to the "deps" release.
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: [driver, prepare]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     permissions:
@@ -192,6 +241,10 @@ jobs:
             runner: macos-latest
             kind: macos
     env:
+      # 钉住的 upstream commit：五条腿构建同一份源码（prepare job 解析
+      # 一次）/ the pinned upstream commit: all five legs build the same
+      # source (resolved once by the prepare job)
+      FFMPEG_SHA: ${{ needs.prepare.outputs.sha }}
       FFBUILD_DIST: dist
       # GitLab 源解析用的 PAT：secrets 优先、仓库变量兜底；都不设则匿名
       # （公共项目可查但限流低）。自托管实例用同一 token。
@@ -212,17 +265,32 @@ jobs:
       # 驱动吃本趟 driver job 的 artifact——CI 测的就是这版代码，不是
       # 已发布 release / the driver is this run's own artifact — CI
       # exercises the current code, not a published release
-      - name: Download driver
+      - name: Download Driver
         uses: actions/download-artifact@v8
         with:
-          name: driver-${{ matrix.platform }}
+          name: Driver-${{ matrix.platform }}
           path: driver
 
-      - name: Make driver executable (POSIX)
+      - name: Make Driver Executable (POSIX)
         if: matrix.kind != 'windows'
         run: chmod +x driver/FFmpeg-Builds-Full
 
       # ---------------------------------------------------------------- Windows
+      # Defender 实时扫描对 MSYS2 的文件风暴（pacman 装包、缓存解压、
+      # fork+编译）是实打实的损耗——必须排在本段所有重 I/O 步之前；
+      # arm64 腿的 clangarm64 工具链文件数是 mingw64 的近两倍，差距
+      # 尤其明显。runner 是管理员，失败也无害 / Defender's real-time
+      # scan is a measurable tax on MSYS2's file storms (pacman
+      # installs, cache extraction, fork+compiles) — it must run before
+      # every heavy-I/O step in this section; the arm64 leg's
+      # clangarm64 toolchain holds nearly twice mingw64's file count,
+      # which is where the gap bites hardest. The runner is admin;
+      # failure is harmless
+      - name: Exclude build dirs from Defender (Windows)
+        if: matrix.kind == 'windows'
+        run: |
+          try { Add-MpPreference -ExclusionPath "$env:RUNNER_TEMP\msys64","$env:RUNNER_TEMP\ffmpeg-ccache","$env:GITHUB_WORKSPACE" } catch { }
+
       - name: Set up MSYS2 (${{ matrix.msystem || 'none' }})
         if: matrix.kind == 'windows'
         uses: msys2/setup-msys2@v2
@@ -233,6 +301,15 @@ jobs:
           # (GitHub CLI, a native Windows program) is reachable for the deps
           # publish/restore steps.
           path-type: inherit
+          # arm64 上关掉 action 自带的包下载缓存：msys 层是 x64 仿真，收尾
+          # 的 paccache 静默 127（setup-msys2#358；msys2-autobuild 对 arm64
+          # 同样关缓存，actions/toolkit#1311）。包本身照装——我们自己的
+          # env 缓存已覆盖收益大头 / disable the action's package cache on
+          # arm64: the msys layer is x64-emulated and its closing paccache
+          # call dies silently with 127 (setup-msys2#358; msys2-autobuild
+          # disables it on arm64 too, actions/toolkit#1311). Packages still
+          # install — our own env cache covers the bulk of the win anyway
+          cache: ${{ matrix.platform != 'windows-arm64' }}
           # pacman-contrib carries `paccache`, which this action's post-run
           # cache-save step shells out to; the CLANGARM64 base image does not
           # ship it and the whole job then dies at step 1 with exit 127
@@ -249,6 +326,10 @@ jobs:
       # 存：替换正在运行的 bash 已加载的 DLL 会炸，那部分是
       # setup-msys2 的地盘。key 带 run_id + 前缀回退=滚动最新快照；
       # 半截状态的缓存由驱动里的完成戳机制兜住。
+      # 存侧拆成显式 save 步（见 Publish deps 之后）：合体 actions/cache
+      # 的 post-if 恒为 success()——失败与取消都静默不存，env 又值得在
+      # 取消时存（build 段取消时环境早已装好）。由 .ff-env-complete
+      # 戳把关，装到半途的快照永远写不进缓存。
       # The unpacked pacman environment rides actions/cache wholesale: the
       # $MSYSTEM_PREFIX subtree + pacman's local DB /var/lib/pacman/local.
       # On a hit every `pacman -S --needed` in the driver's packages() is a
@@ -259,10 +340,16 @@ jobs:
       # that part belongs to setup-msys2 anyway. run_id key + prefix
       # fallback = rolling newest snapshot; a half-written env is caught by
       # the completion-stamp check inside the driver.
+      # The save side is an explicit step (after Publish deps): the
+      # combined actions/cache hard-codes post-if: success() — failures
+      # and cancellations silently save nothing, yet a cancelled
+      # mid-build run already holds a complete env worth keeping. The
+      # .ff-env-complete stamp gates it: a half-installed snapshot can
+      # never reach the cache.
       - name: Restore MSYS2 env cache
         if: matrix.kind == 'windows'
         id: envcache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: |
             ${{ runner.temp }}\msys64\${{ matrix.msysdir }}
@@ -271,7 +358,37 @@ jobs:
           restore-keys: |
             env-${{ matrix.platform }}-
 
-      - name: Install packages (Windows, MSYS2 ${{ matrix.msystem || '' }})
+      # ccache 滚动缓存——显式调用模式（驱动按 FFBUILD_CCACHE 给 --cc
+      # 加前缀，不走 symlink masquerade）；arm64 腿不设开关（WoA 仿真的
+      # rdrand 崩溃有案底）。存侧同样是显式 save 步：ccache 条目按内容
+      # 寻址，取消时半截目录照样是有效命中料，always() 存。
+      # rolling ccache cache — explicit-invocation mode (the driver
+      # prefixes --cc when FFBUILD_CCACHE is set; no symlink
+      # masquerade); the arm64 leg never gets the flag (the WoA rdrand
+      # crash is on record). The save side is an explicit step too:
+      # ccache entries are content-addressed, so a truncated dir at
+      # cancel time is still valid hit material — saved via always().
+      - name: Restore ccache (Windows)
+        # 门槛同 FFBUILD_CCACHE——arm64 腿 ccache 不跑、目录不存在，
+        # 缓存步整段跳过（否则 post-job save 报 path-not-exist 警告）
+        # same gate as FFBUILD_CCACHE — the arm64 leg never runs ccache
+        # and the dir never exists; skip the step entirely (else the
+        # post-job save warns path-not-exist)
+        if: matrix.platform == 'windows-x86_64'
+        id: ccachewin
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}\ffmpeg-ccache
+          key: ccache-${{ matrix.platform }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ matrix.platform }}-
+
+      # 全链构建：packages → extras(恢复+配方) → ffmpeg → package。
+      # MSYS_ENV_RESTORED 照旧传给驱动 packages() 的环境完成戳校验。
+      # The full chain: packages -> extras (restore+recipes) -> ffmpeg ->
+      # package. MSYS_ENV_RESTORED still feeds the driver's packages()
+      # env-stamp check.
+      - name: Build FFmpeg (Windows, MSYS2 ${{ matrix.msystem || '' }})
         if: matrix.kind == 'windows'
         env:
           FFBUILD_WORK: ${{ github.workspace }}/ffmpeg-${{ matrix.platform }}
@@ -281,20 +398,12 @@ jobs:
           # The driver's packages() uses it to decide whether the env
           # completion stamp has to be verified.
           MSYS_ENV_RESTORED: ${{ steps.envcache.outputs.cache-hit }}
-        run: ./driver/FFmpeg-Builds-Full.exe packages
-
-      # 第三方库前缀：restore 上轮 deps → 配方表 → [extras] summary。
-      # 本步超时给 save-deps 留出发 partial 快照的时间窗。
-      # The third-party prefix: restore last run's deps -> recipe table ->
-      # the [extras] summary. The step timeout leaves save-deps a window
-      # to publish a partial snapshot.
-      - name: Build deps [extras] (Windows)
-        if: matrix.kind == 'windows'
-        env:
-          FFBUILD_WORK: ${{ github.workspace }}/ffmpeg-${{ matrix.platform }}
-          FFBUILD_MSYS2: ${{ runner.temp }}\msys64
-          GH_TOKEN: ${{ github.token }}
-        run: ./driver/FFmpeg-Builds-Full.exe extras
+          # 只开 x86_64——arm64 的 WoA 仿真 rdrand 崩溃有案底 / x86_64
+          # only — the arm64 WoA-emulation rdrand crash is on record
+          FFBUILD_CCACHE: ${{ matrix.platform == 'windows-x86_64' && '1' || '' }}
+          CCACHE_DIR: ${{ runner.temp }}\ffmpeg-ccache
+          CCACHE_MAXSIZE: 2G
+        run: ./driver/FFmpeg-Builds-Full.exe build-all
 
       # Publish the deps overlay (extras libs) even when the run died; the
       # next run restores it before compiling.
@@ -306,24 +415,88 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ./driver/FFmpeg-Builds-Full.exe save-deps
 
+      # env 完成戳探测：戳在 var/lib/pacman/local/.ff-env-complete——驱动
+      # 在 env 安装收尾时落下、安装开始前先摘除，戳在=环境完整。取消场景
+      # 下 always() 步仍被 GitHub 放行，戳探针把"装在半途"挡在缓存外。
+      # Env completeness probe: the stamp lives at
+      # var/lib/pacman/local/.ff-env-complete — the driver drops it before
+      # installing and re-creates it at the end, so its presence means a
+      # complete env. GitHub still runs always() steps on cancellation;
+      # the stamp keeps "installed halfway" out of the cache.
+      - name: Probe MSYS2 env completeness
+        if: always() && matrix.kind == 'windows'
+        id: envprobe
+        shell: bash
+        run: |
+          if [ -f "${RUNNER_TEMP}/msys64/var/lib/pacman/local/.ff-env-complete" ]; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save MSYS2 env cache
+        if: always() && matrix.kind == 'windows' && steps.envprobe.outputs.ok == '1' && steps.envcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ runner.temp }}\msys64\${{ matrix.msysdir }}
+            ${{ runner.temp }}\msys64\var\lib\pacman\local
+          key: ${{ steps.envcache.outputs.cache-primary-key }}
+
+      - name: Save ccache (Windows)
+        if: always() && matrix.platform == 'windows-x86_64' && steps.ccachewin.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}\ffmpeg-ccache
+          key: ${{ steps.ccachewin.outputs.cache-primary-key }}
+
       # ------------------------------------------------------------------ Linux
       - name: Free disk space
         if: matrix.kind == 'linux'
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          # 每棵目录树各起一个后台 rm——串行删 ~25GB 里 Android SDK
+          # 一家（~12GB/14 万 inode）就要烧大半分钟，并行后总时长
+          # ≈最慢那棵树 / one background rm per tree: serially, the
+          # Android SDK alone (~12GB/140k inodes) burns most of a
+          # minute; in parallel the step lasts as long as the
+          # slowest single tree
+          for d in /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                   /opt/cabal /usr/local/.ghcup /opt/hostedtoolcache \
+                   /usr/local/share/boost /usr/share/swift /usr/lib/jvm \
+                   /usr/local/graalvm /usr/local/lib/node_modules; do
+            [ -d "$d" ] && sudo rm -rf "$d" &
+          done
+          wait || true
+          # hostedtoolcache 整树可删：本工作流无 setup-* 步骤，
+          # checkout/cache 跑的是 runner 自带 node / the whole
+          # hostedtoolcache is dead weight: no setup-* steps here,
+          # checkout/cache run on the runner-bundled node
+          sudo docker image prune -af >/dev/null 2>&1 || true
           sudo apt-get clean || true
           df -h /
 
       # 自建工具目录（python venv / rustup / cargo-c）走 actions/cache——
       # 装一次 ~1-2 分钟，之后每轮探测到二进制就跳过。apt 包走 Azure 本地
-      # 镜像足够快，缓存 root 拥有的下载目录不值得折腾。
+      # 镜像足够快，缓存 root 拥有的下载目录不值得折腾。key 只哈希
+      # packages/linux-tools.yaml——钉版真源：代码重构不误炸，真改钉版
+      # 才冷装。
       # Self-installed tool dirs (python venv / rustup / cargo-c) ride
       # actions/cache — ~1-2 min once, then binary probes skip the steps.
       # The apt packages come from the Azure-local mirror quickly enough
       # that caching a root-owned download dir is not worth the plumbing.
+      # The key hashes packages/linux-tools.yaml alone — the pin truth
+      # source: code refactors can't bust it, a real pin bump
+      # cold-installs.
       - name: Prepare tool cache dirs (Linux)
         if: matrix.kind == 'linux'
-        run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/pyenv /opt/cargo /opt/rustup /opt/ffbuild /ffmpeg-${{ matrix.platform }}
+        run: |
+          sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/pyenv /opt/cargo /opt/rustup /opt/ffbuild /ffmpeg-${{ matrix.platform }}
+          # ccache 目录预建成 runner 属主——build 步经 sudo 以 root 跑，
+          # root 建出的目录下轮 restore（runner 身份）就写不进去了 /
+          # pre-create the ccache dir owned by the runner — the build
+          # step runs as root via sudo, and a root-owned dir would be
+          # unwritable for next run's restore (which runs as runner)
+          mkdir -p "${{ runner.temp }}/ffmpeg-ccache"
 
       - name: Restore tool cache (Linux)
         if: matrix.kind == 'linux'
@@ -333,15 +506,32 @@ jobs:
             /opt/pyenv
             /opt/cargo
             /opt/rustup
-          # 不给 restore-keys：key 里哈希了驱动的 packages 实现，版本钉
-          # （cargo-c、pip 清单）一改自动冷装；前缀回退反而会把旧版二进
-          # 制恢复回来，而"二进制在场即跳过"探针会把它当成新版。
-          # No restore-keys on purpose: the key hashes the driver's
-          # packages implementation, so a bump of any pinned version
-          # (cargo-c, the pip list) cold-installs; a prefix fallback would
-          # restore the OLD binaries and the "skip if binary exists"
-          # probes would take them for the new version.
-          key: tools-${{ matrix.platform }}-${{ hashFiles('src/platforms/linux_common.rs', 'packages/linux.yaml') }}
+          # 不给 restore-keys：key 里哈希了钉版清单（cargo-c、pip 清单、
+          # rustup channel、.deb URL），一改自动冷装；前缀回退反而会把
+          # 旧版二进制恢复回来，而"二进制在场即跳过"探针会把它当成新版。
+          # No restore-keys on purpose: the key hashes the pin manifest
+          # (cargo-c, the pip list, the rustup channel, the .deb URLs), so
+          # a bump of any pinned version cold-installs; a prefix fallback
+          # would restore the OLD binaries and the "skip if binary
+          # exists" probes would take them for the new version.
+          key: tools-${{ matrix.platform }}-${{ hashFiles('packages/linux-tools.yaml') }}
+
+      # ccache 滚动缓存——显式调用模式（驱动按 FFBUILD_CCACHE 给 --cc
+      # 加前缀）；ffmpeg 跟 master 但跨 run 大部分文件不变，预处理
+      # 哈希照样命中（configure 探针编译同吃）/ rolling ccache cache —
+      # explicit-invocation mode (the driver prefixes --cc when
+      # FFBUILD_CCACHE is set); ffmpeg tracks master but most files are
+      # unchanged run-to-run, so the preprocessed-source hash still hits
+      # (configure's probe compiles included)
+      - name: Restore ccache (Linux)
+        if: matrix.kind == 'linux'
+        id: ccachelinux
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ffmpeg-ccache
+          key: ccache-${{ matrix.platform }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ matrix.platform }}-
 
       # apt、/opt、/usr/local 安装都需要 root。新版 runner 的 sudo-rs
       # 不认 -E（直接忽略），改用 `sudo env` 显式透传——FFBUILD_DIST
@@ -354,31 +544,47 @@ jobs:
       # compile-time-baked phantom path, a lost GH_TOKEN silently disables
       # deps restore/upload, a lost GITHUB_STEP_SUMMARY silently drops the
       # failure details from the run page.
-      - name: Install packages (Linux)
-        if: matrix.kind == 'linux'
-        env:
-          FFBUILD_WORK: /ffmpeg-${{ matrix.platform }}
-          FFBUILD_DIST: ${{ github.workspace }}/dist
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          sudo env FFBUILD_WORK="$FFBUILD_WORK" FFBUILD_DIST="$FFBUILD_DIST" \
-            GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
-            GITHUB_SHA="$GITHUB_SHA" \
-            ./driver/FFmpeg-Builds-Full packages
-
-      - name: Build deps [extras] (Linux)
+      - name: Build FFmpeg (Linux)
         if: matrix.kind == 'linux'
         timeout-minutes: 325
         env:
           FFBUILD_WORK: /ffmpeg-${{ matrix.platform }}
           FFBUILD_DIST: ${{ github.workspace }}/dist
           GH_TOKEN: ${{ github.token }}
+          FFMPEG_SHA: ${{ needs.prepare.outputs.sha }}
+          FFBUILD_CCACHE: "1"
+          CCACHE_DIR: ${{ runner.temp }}/ffmpeg-ccache
+          CCACHE_MAXSIZE: 2G
         run: |
+          set -euo pipefail
+          # apt、/opt、/usr/local 安装都需要 root。新版 runner 的 sudo-rs
+          # 不认 -E（直接忽略），改用 `sudo env` 显式透传——FFBUILD_DIST
+          # 丢了产物会写进编译期烤进二进制的幽灵路径；GH_TOKEN 丢了
+          # deps 恢复/上传全体静默跳过；GITHUB_STEP_SUMMARY 丢了
+          # 失败明细进不了 run 页；GITHUB_ACTIONS 丢了驱动的 CI 输出
+          # 闸门判不出来，日志回全量模式；FFMPEG_SHA 丢了退化成各腿
+          # 自解的 HEAD；CCACHE_DIR/FFBUILD_CCACHE 丢了 ccache 静默失效。
+          # apt, /opt and the /usr/local install all want root. sudo-rs on
+          # newer runners silently ignores -E, so pass env through
+          # `sudo env` explicitly — a lost FFBUILD_DIST sends artifacts to
+          # the compile-time-baked phantom path, a lost GH_TOKEN silently
+          # disables deps restore/upload, a lost GITHUB_STEP_SUMMARY
+          # silently drops the failure details from the run page, a lost
+          # GITHUB_ACTIONS leaves the driver's CI output gate disengaged
+          # and the log back at full volume, and a lost FFMPEG_SHA
+          # degrades every leg to resolving its own HEAD, and lost
+          # CCACHE_DIR / FFBUILD_CCACHE silently disables ccache.
           sudo env FFBUILD_WORK="$FFBUILD_WORK" FFBUILD_DIST="$FFBUILD_DIST" \
             GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
             GITHUB_SHA="$GITHUB_SHA" \
             GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
-            ./driver/FFmpeg-Builds-Full extras
+            GITHUB_ACTIONS="$GITHUB_ACTIONS" \
+            FFMPEG_SHA="$FFMPEG_SHA" \
+            FFMPEG_REF="${FFMPEG_REF:-}" FFMPEG_REPO="${FFMPEG_REPO:-}" \
+            FFBUILD_SHARED="${FFBUILD_SHARED:-}" FFBUILD_DEBUG="${FFBUILD_DEBUG:-}" \
+            FFBUILD_CCACHE="$FFBUILD_CCACHE" CCACHE_DIR="$CCACHE_DIR" \
+            CCACHE_MAXSIZE="$CCACHE_MAXSIZE" \
+            ./driver/FFmpeg-Builds-Full build-all
 
       - name: Publish deps (Linux)
         if: matrix.kind == 'linux' && always()
@@ -390,7 +596,19 @@ jobs:
         run: |
           sudo env FFBUILD_WORK="$FFBUILD_WORK" GH_TOKEN="$GH_TOKEN" \
             GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_ACTIONS="$GITHUB_ACTIONS" \
             ./driver/FFmpeg-Builds-Full save-deps
+
+      # ccache 条目按内容寻址、单条原子写——取消留下的半截目录仍是有效
+      # 命中料，always() 存 / ccache entries are content-addressed and
+      # written atomically — a truncated dir at cancel time is still valid
+      # hit material, saved via always()
+      - name: Save ccache (Linux)
+        if: always() && matrix.kind == 'linux' && steps.ccachelinux.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ffmpeg-ccache
+          key: ${{ steps.ccachelinux.outputs.cache-primary-key }}
 
       # ------------------------------------------------------------------ macOS
       # The runner image ships a Homebrew tap that Homebrew warns about on
@@ -400,10 +618,13 @@ jobs:
         run: brew untap aws/tap || true
 
       # ccache + the workspace snapshot cache make the otherwise from-scratch
-      # dependency rebuild several times faster.
+      # dependency rebuild several times faster. The save side is explicit:
+      # the workspace is mid-write state at cancel time, so save on
+      # success/failure (!cancelled()) rather than always().
       - name: Restore warm caches (macOS)
         if: matrix.kind == 'macos'
-        uses: actions/cache@v6
+        id: macwarm
+        uses: actions/cache/restore@v6
         with:
           path: |
             ${{ runner.temp }}/ffmpeg-ccache
@@ -412,21 +633,22 @@ jobs:
           restore-keys: |
             ${{ matrix.platform }}-warm-
 
-      - name: Install packages (macOS)
+      - name: Build FFmpeg (macOS)
         if: matrix.kind == 'macos'
+        timeout-minutes: 340
         env:
           # Oldest macOS the binaries are meant to run on.
           MACOSX_DEPLOYMENT_TARGET: "14.0"
           GH_TOKEN: ${{ github.token }}
-        run: ./driver/FFmpeg-Builds-Full packages
-
-      - name: Build deps [extras] (macOS)
-        if: matrix.kind == 'macos'
-        timeout-minutes: 340
-        env:
-          MACOSX_DEPLOYMENT_TARGET: "14.0"
-          GH_TOKEN: ${{ github.token }}
-        run: ./driver/FFmpeg-Builds-Full extras
+          # warm cache 已含此目录——把死缓存接上电：驱动按
+          # FFBUILD_CCACHE 给 --cc 加 "ccache " 前缀 / the warm cache
+          # already covers this dir — wire up the dormant cache: the
+          # driver prefixes --cc with "ccache " when FFBUILD_CCACHE is
+          # set
+          FFBUILD_CCACHE: "1"
+          CCACHE_DIR: ${{ runner.temp }}/ffmpeg-ccache
+          CCACHE_MAXSIZE: 2G
+        run: ./driver/FFmpeg-Builds-Full build-all
 
       # Publish the deps workspace snapshot even when the run died; the
       # next run restores it before compiling.
@@ -436,7 +658,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ./driver/FFmpeg-Builds-Full save-deps
 
+      # 取消时工作区正是写到一半的状态——只在成功/失败时存 /
+      # the workspace is mid-write state at cancel time — save on
+      # success/failure only
+      - name: Save warm caches (macOS)
+        if: matrix.kind == 'macos' && !cancelled() && steps.macwarm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ runner.temp }}/ffmpeg-ccache
+            ${{ runner.temp }}/ffmpeg-${{ matrix.platform }}-workspace
+          key: ${{ steps.macwarm.outputs.cache-primary-key }}
+
       # ----------------------------------------------------------------- common
+      # 完整构建的产物（ffmpeg 压缩包 + sha256）随 workflow artifact
+      # 留档供检视——只留档，任何 FFmpeg release 都不在本 workflow 发
+      # / the complete build's product (the ffmpeg archive + sha256)
+      # rides a workflow artifact for inspection — archived only;
+      # no FFmpeg release is ever published from this workflow
+      - name: Upload build
+        if: ${{ !cancelled() && hashFiles('dist/*.7z', 'dist/*.tar.xz') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-${{ matrix.platform }}
+          path: |
+            dist/*.7z
+            dist/*.tar.xz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
       # 日志收集统一为"收进 workspace 再上传"，三平台共用
       # .github/scripts/collect-logs.sh：驱动产物在工作区之外（win:
       # ffmpeg-<platform> + <msys64>/<envdir>/.extras，linux:
@@ -472,7 +723,7 @@ jobs:
           msys="$(cygpath -u "$FFBUILD_MSYS2")"
           bash "$ws/.github/scripts/collect-logs.sh" \
             "$ws/logs" "$ws/ffmpeg-${{ matrix.platform }}" "$msys/${{ matrix.msysdir }}/.extras" \
-            "ffmpeg-${{ matrix.platform }}"
+            "ffmpeg-${{ matrix.platform }}" "$ws/dist"
 
       - name: Upload build logs (Windows)
         if: always() && matrix.kind == 'windows'
@@ -491,7 +742,7 @@ jobs:
           # world-readable — the runner user collects them directly
           bash "$GITHUB_WORKSPACE/.github/scripts/collect-logs.sh" \
             "$GITHUB_WORKSPACE/logs" /ffmpeg-${{ matrix.platform }} /opt/ffbuild/.extras \
-            "ffmpeg-${{ matrix.platform }}"
+            "ffmpeg-${{ matrix.platform }}" "$GITHUB_WORKSPACE/dist"
 
       - name: Collect logs (macOS)
         if: always() && matrix.kind == 'macos'
@@ -500,7 +751,7 @@ jobs:
             "$GITHUB_WORKSPACE/logs" \
             "$RUNNER_TEMP/ffmpeg-${{ matrix.platform }}" \
             "$RUNNER_TEMP/ffmpeg-${{ matrix.platform }}-workspace/.extras" \
-            "ffmpeg-${{ matrix.platform }}"
+            "ffmpeg-${{ matrix.platform }}" "$GITHUB_WORKSPACE/dist"
 
       - name: Upload build logs (Linux)
         if: always() && matrix.kind == 'linux'
@@ -520,18 +771,127 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # ── 干净机验证 / Clean-machine verify ───────────────────────────────
+  # scheduled.yml 的 verify 腿同款：每平台一条干净 runner，下载本趟
+  # Driver artifact 与 build-<p> 产物，解包后对四个变体逐个 smoke。
+  # 过了才把 dist 重传为 ffmpeg-<p>——release.yml 只认 ffmpeg-*
+  # （"发布=验证过的产物"这条不变量与 scheduled.yml 一致；build-* 仍是
+  # 纯留档）。驱动用 artifact 不用已发布 release：CI 验的是本趟代码。
+  # The same verify legs as scheduled.yml: one clean runner per platform
+  # pulls this run's Driver artifact and the build-<p> product, unpacks
+  # and smokes all four variants. Passing legs re-upload dist as
+  # ffmpeg-<p> — release.yml only consumes ffmpeg-* (the same
+  # "publish = verified product" invariant as scheduled.yml; build-*
+  # stays archive-only). The driver comes from the artifact, not a
+  # published release: CI verifies this run's own code.
+  verify:
+    name: Verify (${{ matrix.platform }})
+    needs: [driver, build]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x86_64
+            runner: windows-latest
+          - platform: windows-arm64
+            runner: windows-11-arm
+          - platform: linux-x86_64
+            runner: ubuntu-26.04
+          - platform: linux-arm64
+            runner: ubuntu-26.04-arm
+          - platform: macos-arm64
+            runner: macos-latest
+    steps:
+      - name: Download driver artifact (for `smoke`)
+        uses: actions/download-artifact@v8
+        with:
+          name: Driver-${{ matrix.platform }}
+          path: driver
+
+      - name: Download build
+        uses: actions/download-artifact@v8
+        with:
+          name: build-${{ matrix.platform }}
+          path: dist
+
+      # Catches corruption between the build job and this one.
+      - name: Verify SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c -- *.sha256
+          else
+            shasum -a 256 -c -- *.sha256
+          fi
+
+      # 仅 Windows 产物是固实 7z——GHA windows 镜像自带 7z（MSYS2
+      # 包栈另有 p7zip 兜底）/ only Windows products are solid 7z —
+      # the GHA windows image ships 7z (with the MSYS2 stack's p7zip
+      # as fallback)
+      - name: Extract (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p pkg
+          for f in dist/*.7z; do 7z x -y "$f" -opkg >/dev/null; done
+
+      - name: Extract (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p pkg
+          for f in dist/*.tar.xz; do tar -xf "$f" -C pkg; done
+
+      # 驱动的 smoke 子命令在干净环境测 ffmpeg/ffprobe/ffplay / the
+      # driver's `smoke` subcommand tests ffmpeg/ffprobe/ffplay on a clean
+      # machine
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x driver/* 2>/dev/null || true
+          bins=(pkg/*/bin)
+          # build-all 一腿产四个变体（静态/shared/debug/shared-debug）
+          # ——逐个冒烟，shared 变体的旁位解析（$ORIGIN/@loader_path/
+          # exe 目录）在此顺带实证 / build-all emits four variants per
+          # leg (static/shared/debug/shared-debug) — smoke each one;
+          # the shared variants' sibling resolution
+          # ($ORIGIN/@loader_path/exe dir) gets proven here in passing
+          [[ ${#bins[@]} -eq 4 ]] || { echo "::error::expected exactly four packages, found: ${bins[*]}"; exit 1; }
+          exe="$(find driver -name 'FFmpeg-Builds-Full*' -type f | head -n1)"
+          for b in "${bins[@]}"; do
+            echo "=== smoke $b ==="
+            "$exe" smoke "$b"
+          done
+
+      # Only builds that passed verification are published; release.yml
+      # picks up `ffmpeg-*` artifacts and nothing else.
+      - name: Upload verified build
+        uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-${{ matrix.platform }}
+          path: |
+            dist/*.7z
+            dist/*.tar.xz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
   # ── Release（仅 master push 全绿）/ Release (master pushes, all-green only)
   # 发 repository_dispatch 调起独立的 Release run——dispatch 是
-  # GITHUB_TOKEN 下官方留的链接口（release.yml 链 build.yml 用的同款）。
-  # 不用 workflow_call：可复用调用把被调 job 内联进本 run 并共享
-  # artifact 命名空间——CI driver job 与 release build job 的
-  # driver-<p> 撞名，release 组装步曾拿到无 sha256 的 CI 版 artifact。
-  # dispatch 既保"红 CI → Release 零记录"（workflow_run 事件没有结论
-  # 过滤器，completed 含失败，旧实现每条红 CI 都留一条全跳过记录），
-  # 又还它独立 run 条目与隔离命名空间。
+  # GITHUB_TOKEN 下官方留的链接口。不用 workflow_call：可复用调用把
+  # 被调 job 内联进本 run 并共享 artifact 命名空间——CI driver job 与
+  # release build job 的 driver-<p> 撞名，release 组装步曾拿到无
+  # sha256 的 CI 版 artifact。dispatch 既保"红 CI → Release 零记录"
+  # （workflow_run 事件没有结论过滤器，completed 含失败，旧实现每条
+  # 红 CI 都留一条全跳过记录），又还它独立 run 条目与隔离命名空间。
   # fires a repository_dispatch so release.yml runs as its OWN run —
-  # dispatch is the sanctioned chaining hook under GITHUB_TOKEN (the
-  # same one release.yml uses to kick build.yml). Not workflow_call:
+  # dispatch is the sanctioned chaining hook under GITHUB_TOKEN. Not
+  # workflow_call:
   # reusable calls inline callee jobs into this run and share the
   # artifact namespace — CI's driver job and the release build job
   # both uploaded driver-<p>, and the assemble step picked CI's
@@ -542,23 +902,30 @@ jobs:
   # run entry and isolated namespace.
   release:
     name: Kick Release
-    needs: [test, driver, deps]
+    needs: [test, driver, build, prepare, verify]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: write
     steps:
-      - name: Fire the Release driver dispatch
+      - name: Fire the Release dispatch
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # client_payload.sha = 被 CI 测过的 commit——release.yml 检出
-          # 它做版本探测与构建（CI 完跑到发布之间可能有新 push）/
-          # client_payload.sha = the CI-tested commit — release.yml
-          # checks it out for the version probe and builds (new pushes
-          # may land between CI finishing and the release)
+          # client_payload：sha = 被 CI 测过的 commit（release.yml 检出
+          # 它做版本探测，CI 完跑到发布之间可能有新 push）；run_id =
+          # 本 run——release.yml 按它跨 run 拉 Driver-*/ffmpeg-* 产物
+          # 直接发布，驱动与 FFmpeg 都只吃 CI 已验证的产物，不再重编 /
+          # client_payload: sha = the CI-tested commit (release.yml
+          # checks it out for the version probe — new pushes may land
+          # between CI finishing and the release); run_id = this run —
+          # release.yml pulls the Driver-*/ffmpeg-* artifacts cross-run
+          # by it and publishes them as-is: driver and FFmpeg ship
+          # exactly what CI verified, nothing gets rebuilt
           gh api "repos/$GITHUB_REPOSITORY/dispatches" \
-            -f "event_type=Release driver" \
-            -F "client_payload[sha]=$GITHUB_SHA"
+            -f "event_type=Release" \
+            -F "client_payload[sha]=$GITHUB_SHA" \
+            -F "client_payload[run_id]=$GITHUB_RUN_ID" \
+            -F "client_payload[ffmpeg_sha]=${{ needs.prepare.outputs.sha }}"

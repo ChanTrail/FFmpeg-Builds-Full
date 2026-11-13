@@ -53,9 +53,11 @@ pub fn load(file: &str) -> Result<Vec<Pkg>, String> {
     }
 }
 
-/// 解析单个 YAML 文档：字符串数组 或 {name: null|{archs,flags}} 映射
-/// parse one YAML document: a string array or a
-/// {name: null|{archs,flags}} map
+/// 解析单个 YAML 文档 <doc>：字符串数组 或 {name: null|{archs,flags}}
+/// 映射（<file> 为错误定位用清单名）
+/// parse one YAML document <doc>: a string array or a
+/// {name: null|{archs,flags}} map (<file> is the manifest name used in
+/// error messages)
 fn parse(doc: &Yaml, file: &str) -> Result<Vec<Pkg>, String> {
     // 数组形：纯包名列表 / array form: bare package names
     if let Some(arr) = doc.as_vec() {

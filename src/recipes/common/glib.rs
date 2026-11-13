@@ -13,7 +13,13 @@ use crate::sys::{self, Os};
 /// recipe table entries (one each for macOS and Windows, sharing the
 /// same build body)
 pub fn recipes() -> Vec<Recipe> {
-    let mut a = r("glib", "mac", "glib-2.0,gobject-2.0,gio-2.0", "-", body);
+    let mut a = r(
+        "glib",
+        "linux,mac",
+        "glib-2.0,gobject-2.0,gio-2.0",
+        "-",
+        body,
+    );
     a.src = include_str!("glib.rs");
     let mut b = r(
         "glib",
@@ -64,6 +70,27 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         // == makes @{...} strings return early as-is
         fsx::sed_i(
             "s|at_string\\[0\\] != L'@'|at_string[0] == L'@'|",
+            &src.join("gio/gwin32appinfo.c"),
+            &src,
+        )?;
+        // 斩草除根：上面的补丁只堵 @{...} 一条路径，而 runner 的 MRT
+        // 栈在 grab_registry_string 里仍跳堆地址（0xfb42a66 实证——
+        // vendored glib 补丁是否随 deps 世系生效存疑）。ffmpeg 用不到
+        // GAppInfo，让 update_registry_data 整个空转：线程照起但零
+        // 注册表读、计数照常归零（do_wait 不悬）、API 返回空表。签名
+        // 行换成"stub + 改名真身"，原函数体完整保留为 dead function /
+        // eradicate the class: the patch above only covers the @{...}
+        // path, yet the runner's MRT stack still jumps to a heap
+        // address inside grab_registry_string (0xfb42a66 empirical —
+        // whether the vendored glib patch survives through the deps
+        // lineage is doubtful). ffmpeg needs no GAppInfo, so
+        // update_registry_data is stubbed to a no-op: the thread still
+        // spawns but reads no registry, the counter still drains
+        // (do_wait never hangs) and the API returns empty tables.
+        // The signature line becomes "stub + renamed real function";
+        // the original body survives intact as a dead function
+        fsx::sed_i(
+            "s|^update_registry_data (void)$|update_registry_data (void) { return; }\\nstatic void update_registry_data_disabled (void)|",
             &src.join("gio/gwin32appinfo.c"),
             &src,
         )?;
