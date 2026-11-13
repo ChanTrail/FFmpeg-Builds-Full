@@ -1069,14 +1069,12 @@ pub fn package() -> Result<(), String> {
             s
         }
     };
-    // 依赖版本清单：.extras/versions.txt（name version 行，map 已排
-    // 序）/ dependency versions: .extras/versions.txt ("name version"
-    // lines, already sorted by the map)
-    let versions = crate::extras::versions_map()
-        .iter()
-        .map(|(n, v)| format!("{n} {v}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    // 依赖版本清单按本二进制的启用名单逐名解——平台栈自带的库走
+    // pkg-config 探测；配方库行已带 .srcver/pc 最优值 / the
+    // dependency-version list resolves every name the binary actually
+    // enabled — platform-stack libs resolve via pkg-config probes;
+    // recipe rows already carry their best .srcver/pc value
+    let versions = crate::ffmpeg::enabled_versions(&conf);
     // BUILDINFO.info 版式向发行样例靠齐：品牌头（变体词随产物）→
     // Version/License/Source Code → External Assets → "<变体> build
     // configuration:" 领起 configure 收尾汇总 → "<变体> external

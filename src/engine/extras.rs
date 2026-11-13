@@ -162,12 +162,13 @@ fn non_empty(v: String) -> String {
     }
 }
 
-/// 本轮新构建配方的版本：源码检出版本痕迹优先（预取缓存 .srcver →
-/// 配方 wd .srcver，后者是 materialize 现场解析的路径），都没有时
-/// 回退 pc 模块版本 / a freshly built recipe's version: the source
-/// checkout's trace first (prefetch-cache .srcver, then recipe-wd
-/// .srcver — the path materialize's inline resolve writes), falling
-/// back to the pc module version
+/// 配方版本链：源码检出版本痕迹（预取缓存 .srcver → 配方 wd
+/// .srcver，后者是 materialize 现场解析的路径）→ pc 模块版本 →
+/// spec 自带版本串（钉住的 ref/归档包名）/ a recipe's version chain:
+/// the source checkout's trace (prefetch-cache .srcver, then recipe-wd
+/// .srcver — the path materialize's inline resolve writes) -> the pc
+/// module version -> the spec's own string (pinned ref / archive
+/// package name)
 fn built_version(name: &str, check: &str) -> String {
     let e = sys::env();
     for p in [
@@ -179,7 +180,11 @@ fn built_version(name: &str, check: &str) -> String {
             return v;
         }
     }
-    pc_version(check)
+    let v = pc_version(check);
+    if !v.is_empty() {
+        return v;
+    }
+    crate::sources::spec_version(name)
 }
 
 /// extras_applies：配方是否适用于当前平台
@@ -386,6 +391,11 @@ pub fn run_all() -> Result<(), String> {
     // disk once after the whole pass — per-recipe load+save would be
     // O(n²) pointless IO
     let mut versions = versions_map();
+    // provided 名单：收尾刷新跳过它们——已装库的版本归平台栈，不能拿
+    // 源码 spec 顶替 / the provided set: the closing refresh skips
+    // them — an installed lib's version belongs to the platform stack,
+    // the source spec must not stand in for it
+    let mut provided_set: HashSet<String> = HashSet::new();
 
     let table = crate::recipes::table();
     // 预取全部适用配方的源码——下载/CI 查询在后台并发，配方编译在
@@ -451,6 +461,7 @@ pub fn run_all() -> Result<(), String> {
             // 平台栈自带的库：版本问它自己的 .pc / platform-provided:
             // ask its own .pc for the version
             versions.insert(r.name.to_string(), non_empty(pc_version(r.check)));
+            provided_set.insert(r.name.to_string());
             log::log(&format!("[extras] {}: provided by platform", r.name));
             continue;
         }
@@ -463,11 +474,14 @@ pub fn run_all() -> Result<(), String> {
                 fsx::append_line(&flagsf, r.flags)?;
             }
             fsx::append_line(&status, &format!("{} cached", r.name))?;
-            // 快照恢复的库不重建——刷新一次 pc 版本，拿不到就沿用旧
-            // 记录 / a snapshot-restored lib is not rebuilt — refresh
-            // from its .pc, keeping the prior record when that yields
-            // nothing
-            let v = pc_version(r.check);
+            // 快照恢复的库不重建，但版本链与新构建同款：.srcver → pc
+            // → spec——check 用 file:/arsym: 牌的配方 pc 查不到，
+            // .srcver/spec 仍能给真版本 / a snapshot-restored lib is
+            // not rebuilt, but its version chain matches a fresh build:
+            // .srcver -> pc -> spec — recipes whose check uses
+            // file:/arsym: tokens have no pc to ask, .srcver/spec still
+            // answers
+            let v = built_version(r.name, r.check);
             if !v.is_empty() {
                 versions.insert(r.name.to_string(), v);
             } else {
@@ -608,10 +622,33 @@ pub fn run_all() -> Result<(), String> {
         fsx::rm_rf(&wd);
     }
 
-    // 版本清单剪枝+落盘：只留本次适用配方的行——配方从表里移除后旧行
-    // 不随快照续命 / prune and persist the version map: keep only rows
-    // of recipes applicable this pass — a recipe removed from the table
-    // must not ride the snapshot forever
+    // 版本清单收尾：先把剩余预取全部 join——cached/provided 分支从不
+    // 等本配方的预取，其 .srcver 可能还在落盘途中；join 后统一刷新
+    // "-"/缺失行（provided 跳过——已装库的版本归平台栈，源码 spec
+    // 不能顶替）。然后剪枝落盘：只留本次适用配方的行——配方从表里
+    // 移除后旧行不随快照续命 / version-map wrap-up: join every
+    // outstanding prefetch first — the cached/provided branches never
+    // await their recipe's prefetch so its .srcver may still be
+    // landing; then refresh every "-"/missing row (provided skipped —
+    // an installed lib's version belongs to the platform stack, the
+    // source spec must not stand in). Finally prune+persist: keep only
+    // rows of recipes applicable this pass — a recipe removed from the
+    // table must not ride the snapshot forever
+    for r in crate::recipes::table()
+        .iter()
+        .filter(|r| applies(r.targets))
+    {
+        crate::sources::wait_prefetch(r.name);
+        if provided_set.contains(r.name) {
+            continue;
+        }
+        if matches!(versions.get(r.name).map(String::as_str), None | Some("-")) {
+            let v = built_version(r.name, r.check);
+            if !v.is_empty() {
+                versions.insert(r.name.to_string(), v);
+            }
+        }
+    }
     versions.retain(|n, _| applicable.contains(n));
     save_versions(&versions);
 

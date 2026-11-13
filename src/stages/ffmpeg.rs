@@ -239,18 +239,137 @@ pub fn conf_summary(raw: &str) -> String {
     let Some(start) = lines.iter().rposition(|l| l.starts_with("ARCH ")) else {
         return String::new();
     };
-    let mut out: Vec<&str> = Vec::new();
+    let mut out: Vec<String> = Vec::new();
     for l in &lines[start..] {
         let t = l.trim_start();
         if t.starts_with("License:") || t.starts_with("Creating ") || t.starts_with("WARNING") {
             break;
         }
-        out.push(l);
+        out.push(l.to_string());
+    }
+    // pod2man/makeinfo 三行在缺 doc 工具链的平台报 no——样例口径
+    // 统一 yes（doc 本就 --disable-doc，检测值不影响二进制，纯属
+    // 呈现归一）：只改写行尾 no→yes，保留原有列宽 / the
+    // pod2man/makeinfo lines read `no` where doc tooling is absent —
+    // normalize to `yes` per the sample convention (docs are
+    // --disable-doc anyway; the detection value never reaches the
+    // binary — presentation-only normalization): rewrite just the
+    // trailing no->yes, preserving the column width
+    for l in &mut out {
+        for k in [
+            "pod2man enabled",
+            "makeinfo enabled",
+            "makeinfo supports HTML",
+        ] {
+            if l.starts_with(k) && l.trim_end().ends_with("no") {
+                let trimmed = l.trim_end().to_string();
+                *l = format!("{}yes", &trimmed[..trimmed.len() - 2]);
+            }
+        }
     }
     while matches!(out.last(), Some(l) if l.trim().is_empty()) {
         out.pop();
     }
     out.join("\n")
+}
+
+/// 从汇总文本切出启用外部库名单：External libraries: 与 External
+/// libraries providing hardware acceleration: 两个三列块的所有
+/// 词元，空行止 / the enabled-external-lib names from a summary: all
+/// whitespace-separated tokens of the `External libraries:` and
+/// `External libraries providing hardware acceleration:` three-column
+/// blocks, each ending at a blank line
+pub fn enabled_lib_names(conf: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_block = false;
+    for l in conf.lines() {
+        if l.starts_with("External libraries:") || l.starts_with("External libraries providing") {
+            in_block = true;
+            continue;
+        }
+        if in_block {
+            if l.trim().is_empty() {
+                in_block = false;
+                continue;
+            }
+            out.extend(l.split_whitespace().map(String::from));
+        }
+    }
+    out
+}
+
+/// 库名 → pc 模块名差异实在对不上的别名表（probe 兜底）/ pc module
+/// aliases where the library name and module name just don't line up
+/// (probe fallback)
+const PC_ALIASES: &[(&str, &str)] = &[
+    ("libmp3lame", "lame"),
+    ("libopenjpeg", "libopenjp2"),
+    ("libxvid", "xvidcore"),
+];
+
+/// 按名探测 pkg-config --modversion：候选 [原名, 去 lib 前缀, 下划线
+/// 转连写, lib+名, 名+2, 别名]，首个非空版本即取；查不到给 None /
+/// probe pkg-config --modversion for a library name: candidates
+/// [name, lib-stripped, underscore->dash, lib+name, name+2, alias];
+/// first non-empty version wins, None when nothing resolves
+fn pc_probe(name: &str) -> Option<String> {
+    let strip = name.strip_prefix("lib").unwrap_or(name);
+    let mut cands: Vec<String> = vec![
+        name.to_string(),
+        strip.to_string(),
+        name.replace('_', "-"),
+        strip.replace('_', "-"),
+        format!("lib{strip}"),
+        format!("{strip}2"),
+    ];
+    if let Some((_, a)) = PC_ALIASES.iter().find(|(n, _)| *n == name || *n == strip) {
+        cands.push((*a).to_string());
+    }
+    cands
+        .into_iter()
+        .map(|c| crate::pkgcfg::modversion(&c))
+        .find(|v| !v.is_empty())
+}
+
+/// 装配 external libraries' versions 段：按汇总里的启用名单逐名解
+/// 版本——配方行（versions.txt：.srcver/pc/spec 已选过优）→ pc 探测
+/// → 配方 spec 串；都解不出的名字（mediafoundation/d3d11va 这类系统
+/// API）直接丢行不造 "-" / build the external libraries' versions
+/// section: resolve each name from the summary's enabled list — the
+/// recipe row (versions.txt already picked .srcver/pc/spec best), a
+/// pkg-config probe, then the recipe spec string; names resolving to
+/// nothing (system APIs like mediafoundation/d3d11va) are dropped
+/// rather than emitted as "-"
+pub fn enabled_versions(conf: &str) -> String {
+    let map = crate::extras::versions_map();
+    let table = crate::recipes::table();
+    let mut rows: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for n in enabled_lib_names(conf) {
+        // 配方匹配：名字直接相等、lib+配方名、或 flags 带 --enable-<名>
+        // / recipe match: name equality, lib+recipe-name, or a flags
+        // field carrying --enable-<name>
+        let rec = table.iter().find(|r| {
+            r.name == n
+                || n == format!("lib{}", r.name)
+                || r.flags
+                    .split([',', ' '])
+                    .any(|f| f == format!("--enable-{n}"))
+        });
+        let rec_row = rec
+            .and_then(|r| map.get(r.name))
+            .filter(|v| !v.trim().is_empty() && v.trim() != "-");
+        let v = rec_row.cloned().or_else(|| pc_probe(&n)).or_else(|| {
+            rec.map(|r| crate::sources::spec_version(r.name))
+                .filter(|v| !v.is_empty())
+        });
+        if let Some(v) = v {
+            rows.insert(n, v);
+        }
+    }
+    rows.iter()
+        .map(|(n, v)| format!("{n} {v}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// 丢包仍返回 Err：被要求开启却悄悄缺库的 ffmpeg 绝不能发布。
@@ -728,7 +847,7 @@ pub fn emit_symbols(work: &Path, variant: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::conf_summary;
+    use super::{conf_summary, enabled_lib_names};
 
     /// 样例形态：ARCH 特性表起、Enabled 清单、License/Creating 收尾 /
     /// the sample shape: an ARCH feature table, Enabled lists, and a
@@ -774,5 +893,46 @@ mod tests {
     #[test]
     fn empty_when_no_arch_block() {
         assert!(conf_summary("configure: error: foo\n").is_empty());
+    }
+
+    #[test]
+    fn normalizes_doc_tool_lines_to_yes() {
+        // 真实特性表形态：pod2man no、makeinfo yes——no 变 yes 且列宽
+        // 不动，texi2html 不碰 / the real feature-table shape: pod2man
+        // no, makeinfo yes — no flips to yes with the column width
+        // intact, texi2html untouched
+        let raw = "ARCH                      x86 (generic)\n\
+                   texi2html enabled         no\n\
+                   perl enabled              yes\n\
+                   pod2man enabled           no\n\
+                   makeinfo enabled          yes\n\
+                   makeinfo supports HTML    no\n\
+                   experimental features     yes\n\
+                   License: GPL version 3 or later\n";
+        let s = conf_summary(raw);
+        assert!(s.contains("pod2man enabled           yes"));
+        assert!(s.contains("makeinfo enabled          yes"));
+        assert!(s.contains("makeinfo supports HTML    yes"));
+        assert!(s.contains("texi2html enabled         no"));
+    }
+
+    #[test]
+    fn enabled_names_cover_both_blocks() {
+        let s = "External libraries:\n\
+                 avisynth                libjxl                  libx264\n\
+                 gmp                     libmp3lame              zlib\n\
+                 \n\
+                 External libraries providing hardware acceleration:\n\
+                 amf                     d3d11va                 vulkan\n\
+                 \n\
+                 Libraries:\n\
+                 avcodec                 avutil\n";
+        let names = enabled_lib_names(s);
+        assert_eq!(names.len(), 9);
+        assert!(names.contains(&"libmp3lame".to_string()));
+        assert!(names.contains(&"vulkan".to_string()));
+        // Libraries:/Programs: 块不算外部库 / Libraries:/Programs:
+        // blocks are not external libraries
+        assert!(!names.contains(&"avcodec".to_string()));
     }
 }

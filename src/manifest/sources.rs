@@ -428,6 +428,24 @@ fn git_describe(src: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// spec 自带的版本串：archive 源解析包名，git 源用钉住的 ref——
+/// .srcver/.pc 双双缺席时的兜底（快照恢复期的老缓存没有 .srcver）
+/// the spec's own version string: archive sources parse the package
+/// name, git sources use the pinned ref — the fallback when both
+/// .srcver and .pc are absent (old caches on snapshot restores carry
+/// no .srcver)
+pub fn spec_version(name: &str) -> String {
+    spec(name)
+        .map(|s| {
+            s.archive
+                .as_deref()
+                .map(archive_version_str)
+                .or_else(|| s.ref_.clone())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default()
+}
+
 /// 归档包名 → 版本串：剥扩展后取最后一段数字打头的 - 分段
 /// （gmp-6.3.0 → 6.3.0）；实在分不出就还整个 stem / archive package
 /// name -> version string: strip the extension and take the last
