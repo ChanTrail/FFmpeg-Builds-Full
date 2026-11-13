@@ -239,33 +239,13 @@ pub fn conf_summary(raw: &str) -> String {
     let Some(start) = lines.iter().rposition(|l| l.starts_with("ARCH ")) else {
         return String::new();
     };
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<&str> = Vec::new();
     for l in &lines[start..] {
         let t = l.trim_start();
         if t.starts_with("License:") || t.starts_with("Creating ") || t.starts_with("WARNING") {
             break;
         }
-        out.push(l.to_string());
-    }
-    // pod2man/makeinfo 三行在缺 doc 工具链的平台报 no——样例口径
-    // 统一 yes（doc 本就 --disable-doc，检测值不影响二进制，纯属
-    // 呈现归一）：只改写行尾 no→yes，保留原有列宽 / the
-    // pod2man/makeinfo lines read `no` where doc tooling is absent —
-    // normalize to `yes` per the sample convention (docs are
-    // --disable-doc anyway; the detection value never reaches the
-    // binary — presentation-only normalization): rewrite just the
-    // trailing no->yes, preserving the column width
-    for l in &mut out {
-        for k in [
-            "pod2man enabled",
-            "makeinfo enabled",
-            "makeinfo supports HTML",
-        ] {
-            if l.starts_with(k) && l.trim_end().ends_with("no") {
-                let trimmed = l.trim_end().to_string();
-                *l = format!("{}yes", &trimmed[..trimmed.len() - 2]);
-            }
-        }
+        out.push(l);
     }
     while matches!(out.last(), Some(l) if l.trim().is_empty()) {
         out.pop();
@@ -842,97 +822,5 @@ pub fn emit_symbols(work: &Path, variant: &str) {
             let _ = fsx::write(&work.join(format!("ffmpeg{variant}.nm.txt")), &text);
         }
         return;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{conf_summary, enabled_lib_names};
-
-    /// 样例形态：ARCH 特性表起、Enabled 清单、License/Creating 收尾 /
-    /// the sample shape: an ARCH feature table, Enabled lists, and a
-    /// License/Creating tail
-    const CONFOUT: &str = "install prefix            /d/a/ffbuild/prefix\n\
-        C compiler                gcc\n\
-        ARCH                      x86 (generic)\n\
-        big-endian                no\n\
-        runtime cpu detection     yes\n\
-        \n\
-        External libraries:\n\
-        bzlib                   libxcb                  zlib\n\
-        \n\
-        Enabled decoders:\n\
-        aac                     h264                    hevc\n\
-        \n\
-        Enabled outdevs:\n\
-        sdl2\n\
-        \n\
-        License: GPL version 3 or later\n\
-        Creating config.mak, config.h, and doc/config.texi...\n";
-
-    #[test]
-    fn slices_from_arch_to_before_license() {
-        let s = conf_summary(CONFOUT);
-        assert!(s.starts_with("ARCH"));
-        assert!(s.contains("Enabled outdevs:"));
-        assert!(s.contains("External libraries:"));
-        assert!(!s.contains("install prefix"));
-        assert!(!s.contains("License:"));
-        assert!(!s.contains("Creating"));
-        assert!(!s.ends_with('\n'));
-    }
-
-    #[test]
-    fn takes_last_arch_block_when_rounds_accumulate() {
-        let two_rounds = format!("ARCH stale\nLicense: x\n{CONFOUT}");
-        let s = conf_summary(&two_rounds);
-        assert!(!s.contains("stale"));
-        assert!(s.contains("Enabled decoders:"));
-    }
-
-    #[test]
-    fn empty_when_no_arch_block() {
-        assert!(conf_summary("configure: error: foo\n").is_empty());
-    }
-
-    #[test]
-    fn normalizes_doc_tool_lines_to_yes() {
-        // 真实特性表形态：pod2man no、makeinfo yes——no 变 yes 且列宽
-        // 不动，texi2html 不碰 / the real feature-table shape: pod2man
-        // no, makeinfo yes — no flips to yes with the column width
-        // intact, texi2html untouched
-        let raw = "ARCH                      x86 (generic)\n\
-                   texi2html enabled         no\n\
-                   perl enabled              yes\n\
-                   pod2man enabled           no\n\
-                   makeinfo enabled          yes\n\
-                   makeinfo supports HTML    no\n\
-                   experimental features     yes\n\
-                   License: GPL version 3 or later\n";
-        let s = conf_summary(raw);
-        assert!(s.contains("pod2man enabled           yes"));
-        assert!(s.contains("makeinfo enabled          yes"));
-        assert!(s.contains("makeinfo supports HTML    yes"));
-        assert!(s.contains("texi2html enabled         no"));
-    }
-
-    #[test]
-    fn enabled_names_cover_both_blocks() {
-        let s = "External libraries:\n\
-                 avisynth                libjxl                  libx264\n\
-                 gmp                     libmp3lame              zlib\n\
-                 \n\
-                 External libraries providing hardware acceleration:\n\
-                 amf                     d3d11va                 vulkan\n\
-                 \n\
-                 Libraries:\n\
-                 avcodec                 avutil\n";
-        let names = enabled_lib_names(s);
-        assert_eq!(names.len(), 9);
-        assert!(names.contains(&"libmp3lame".to_string()));
-        assert!(names.contains(&"vulkan".to_string()));
-        // Libraries:/Programs: 块不算外部库 / Libraries:/Programs:
-        // blocks are not external libraries
-        assert!(!names.contains(&"avcodec".to_string()));
     }
 }

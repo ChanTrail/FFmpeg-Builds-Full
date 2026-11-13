@@ -61,11 +61,18 @@ pub fn init_env(arch: Arch) -> Result<(), String> {
     let jobs = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    // 子进程 PATH：前缀 bin + homebrew + 系统 PATH / child PATH: prefix
-    // bin + homebrew + the system PATH
+    // 子进程 PATH：前缀 bin + homebrew + texinfo keg + 系统 PATH——
+    // texinfo 是 keg-only 不落符号链，makeinfo 只住
+    // /opt/homebrew/opt/texinfo/bin（configure 的 makeinfo/
+    // makeinfo-HTML 探活要用；pod2man 由系统 perl 自带）/ child PATH:
+    // prefix bin + homebrew + the texinfo keg + the system PATH —
+    // keg-only texinfo leaves no symlinks, makeinfo lives solely in
+    // /opt/homebrew/opt/texinfo/bin (configure's makeinfo/
+    // makeinfo-HTML probes need it; pod2man comes with the system
+    // perl)
     let old_path = std::env::var("PATH").unwrap_or_default();
     let child_path = format!(
-        "{}/bin:/opt/homebrew/bin:/usr/local/bin:{old_path}",
+        "{}/bin:/opt/homebrew/bin:/opt/homebrew/opt/texinfo/bin:/usr/local/bin:{old_path}",
         prefix.to_string_lossy()
     );
     sys::set_env(Env {

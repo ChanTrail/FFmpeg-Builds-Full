@@ -94,12 +94,22 @@ pub fn init_env(arch: Arch) -> Result<(), String> {
         ("gcc", "g++", "-lstdc++")
     };
     // 子进程 PATH：前缀 bin 优先，其次是 msys2 /usr/bin（Windows 分号形
-    // 式，Command 直接用）/ child PATH: prefix bin first, then msys2
-    // /usr/bin — Windows ';' form, used verbatim by Command
+    // 式，Command 直接用）。core_perl 单列：MSYS2 的 perl 包把
+    // pod2man/pod2usage 这类核心脚本收进 /usr/bin/core_perl 而非
+    // /usr/bin——不进 PATH 的话 FFmpeg configure 的 pod2man --help
+    // 探活恒败（perl -v 能过是另一回事，perl.exe 本就在 /usr/bin）/
+    // child PATH: prefix bin first, then msys2 /usr/bin — Windows ';'
+    // form, used verbatim by Command. core_perl gets its own entry:
+    // MSYS2's perl package files core scripts like pod2man/pod2usage
+    // under /usr/bin/core_perl rather than /usr/bin — off PATH it
+    // makes FFmpeg configure's `pod2man --help` probe always fail
+    // (`perl -v` passing is a different matter; perl.exe lives in
+    // /usr/bin itself)
     let mut child_path = format!(
-        "{};{}",
+        "{};{};{}",
         prefix_win.join("bin").to_string_lossy(),
-        root.join("usr/bin").to_string_lossy()
+        root.join("usr/bin").to_string_lossy(),
+        root.join("usr/bin/core_perl").to_string_lossy()
     );
     // gh 只住原生 Windows 侧（GitHub CLI 目录），child_path 刻意收窄后
     // 它够不着——从进程 PATH 把含 gh.exe 的那一格并进来：该目录只有

@@ -316,12 +316,24 @@ fn system_pc_path() -> &'static str {
     })
 }
 
-/// 拼子进程 PATH：前缀 bin + MSYS usr/bin + 原 PATH / Build the child PATH
+/// 拼子进程 PATH：前缀 bin + MSYS usr/bin + core_perl + 原 PATH——
+/// core_perl 收 pod2man 这类 perl 核心脚本（configure 的 pod2man
+/// --help 探活要用）/ Build the child PATH from prefix bin, MSYS
+/// usr/bin, core_perl and the old PATH — core_perl holds perl core
+/// scripts like pod2man (needed by configure's `pod2man --help`
+/// probe)
 pub fn child_path(msys2_root: &Path, env_prefix: &str) -> String {
     let prefix_bin = posix_to_win(&format!("{env_prefix}/bin"), msys2_root);
     let usr_bin = msys2_root.join("usr").join("bin");
+    let core_perl = usr_bin.join("core_perl");
     let old = std::env::var("PATH").unwrap_or_default();
-    format!("{};{};{}", prefix_bin.display(), usr_bin.display(), old)
+    format!(
+        "{};{};{};{}",
+        prefix_bin.display(),
+        usr_bin.display(),
+        core_perl.display(),
+        old
+    )
 }
 
 /// POSIX 路径 → Windows 路径（cygpath -w 的等价物，覆盖 <root> MSYS2 根

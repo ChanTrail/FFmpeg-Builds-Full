@@ -14,3 +14,10 @@
 - meson
 - ninja
 - pkg-config
+# texinfo 是 keg-only（不落 /opt/homebrew/bin 符号链）——makeinfo 由
+# env 的 child PATH 直接并 /opt/homebrew/opt/texinfo/bin；configure 的
+# makeinfo/makeinfo-HTML 探活要用 / texinfo is keg-only (no symlinks
+# into /opt/homebrew/bin) — makeinfo reaches children via the env's
+# child PATH folding in /opt/homebrew/opt/texinfo/bin; needed by
+# configure's makeinfo/makeinfo-HTML probes
+- texinfo
