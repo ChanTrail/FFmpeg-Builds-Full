@@ -100,6 +100,88 @@ pub fn work_dir() -> PathBuf {
     sys::env().work.join("extras")
 }
 
+/// versions.txt：BUILDINFO "external libraries' versions" 段的数据源，
+/// 每行 "name version"。住在 .extras 里随 deps 快照往返——快照恢复
+/// 后直接判 cached 的配方不再构建，版本就靠这份文件续命
+/// versions.txt: the data source for BUILDINFO's "external libraries'
+/// versions" section — "name version" per line. Living under .extras
+/// it rides the deps snapshot: recipes judged cached after a snapshot
+/// restore never rebuild, and this file is what keeps their version
+/// on record
+fn versions_file() -> PathBuf {
+    state_dir().join("versions.txt")
+}
+
+/// 读 versions.txt 为有序映射（name→version）/ read versions.txt into
+/// a sorted name->version map
+pub fn versions_map() -> std::collections::BTreeMap<String, String> {
+    fsx::read(&versions_file())
+        .lines()
+        .filter_map(|l| {
+            l.split_once(' ')
+                .map(|(n, v)| (n.to_string(), v.trim().to_string()))
+        })
+        .collect()
+}
+
+/// 整表写回 versions.txt（BTreeMap 序即行序）/ write the whole map back
+/// (BTreeMap order is the line order)
+fn save_versions(map: &std::collections::BTreeMap<String, String>) {
+    let body: String = map.iter().map(|(n, v)| format!("{n} {v}\n")).collect();
+    let _ = fsx::write(&versions_file(), &body);
+}
+
+/// check 串里首个 pkg-config 模块名——file:/hdrsym:/arsym: 牌与
+/// "-"/"always" 都跳过；pc 模块名从不含 ':' / first pkg-config module
+/// in a check string — file:/hdrsym:/arsym: tokens and "-"/"always"
+/// are skipped; a pc module name never contains ':'
+fn first_pc(check: &str) -> Option<String> {
+    check
+        .split(',')
+        .map(str::trim)
+        .find(|t| !t.is_empty() && *t != "-" && *t != "always" && !t.contains(':'))
+        .map(str::to_string)
+}
+
+/// check 串首个 pc 模块的 --modversion（无模块或查询失败给空串）
+/// --modversion of the check string's first pc module (empty when no
+/// module or the query fails)
+fn pc_version(check: &str) -> String {
+    first_pc(check)
+        .map(|pc| pkgcfg::modversion(&pc))
+        .unwrap_or_default()
+}
+
+/// 空版本串统一占位 "-"——行还在、栏不塌 / empty version strings get
+/// the "-" placeholder — the row stays, the column doesn't collapse
+fn non_empty(v: String) -> String {
+    if v.trim().is_empty() {
+        "-".into()
+    } else {
+        v.trim().to_string()
+    }
+}
+
+/// 本轮新构建配方的版本：源码检出版本痕迹优先（预取缓存 .srcver →
+/// 配方 wd .srcver，后者是 materialize 现场解析的路径），都没有时
+/// 回退 pc 模块版本 / a freshly built recipe's version: the source
+/// checkout's trace first (prefetch-cache .srcver, then recipe-wd
+/// .srcver — the path materialize's inline resolve writes), falling
+/// back to the pc module version
+fn built_version(name: &str, check: &str) -> String {
+    let e = sys::env();
+    for p in [
+        e.work.join("src-cache").join(name).join(".srcver"),
+        work_dir().join(name).join(".srcver"),
+    ] {
+        let v = fsx::read(&p).trim().to_string();
+        if !v.is_empty() {
+            return v;
+        }
+    }
+    pc_version(check)
+}
+
 /// extras_applies：配方是否适用于当前平台
 /// Whether the recipe applies to this platform
 pub fn applies(targets: &str) -> bool {
@@ -299,6 +381,11 @@ pub fn run_all() -> Result<(), String> {
     // summary; status.txt keeps the bare "name failed" pair (downstream
     // code matches the line suffix)
     let mut failed: Vec<(String, String)> = Vec::new();
+    // 版本清单在内存里累积、整表走完后一次性落盘——逐配方读写文件是
+    // O(n²) 无谓 IO / the version map accumulates in memory and lands on
+    // disk once after the whole pass — per-recipe load+save would be
+    // O(n²) pointless IO
+    let mut versions = versions_map();
 
     let table = crate::recipes::table();
     // 预取全部适用配方的源码——下载/CI 查询在后台并发，配方编译在
@@ -334,6 +421,15 @@ pub fn run_all() -> Result<(), String> {
         )
         .collect();
     crate::sources::prefetch(names);
+    // 本次适用配方名集——循环后给版本清单剪枝用（for 会搬走 table，
+    // 这里先借出名字）/ this pass's applicable recipe names — the
+    // post-loop version-map prune needs them (the for loop moves
+    // table, so borrow the names here first)
+    let applicable: HashSet<String> = table
+        .iter()
+        .filter(|r| applies(r.targets))
+        .map(|r| r.name.to_string())
+        .collect();
 
     for r in table {
         if !applies(r.targets) {
@@ -352,6 +448,9 @@ pub fn run_all() -> Result<(), String> {
                 fsx::append_line(&flagsf, r.flags)?;
             }
             fsx::append_line(&status, &format!("{} provided", r.name))?;
+            // 平台栈自带的库：版本问它自己的 .pc / platform-provided:
+            // ask its own .pc for the version
+            versions.insert(r.name.to_string(), non_empty(pc_version(r.check)));
             log::log(&format!("[extras] {}: provided by platform", r.name));
             continue;
         }
@@ -364,6 +463,18 @@ pub fn run_all() -> Result<(), String> {
                 fsx::append_line(&flagsf, r.flags)?;
             }
             fsx::append_line(&status, &format!("{} cached", r.name))?;
+            // 快照恢复的库不重建——刷新一次 pc 版本，拿不到就沿用旧
+            // 记录 / a snapshot-restored lib is not rebuilt — refresh
+            // from its .pc, keeping the prior record when that yields
+            // nothing
+            let v = pc_version(r.check);
+            if !v.is_empty() {
+                versions.insert(r.name.to_string(), v);
+            } else {
+                versions
+                    .entry(r.name.to_string())
+                    .or_insert_with(|| "-".into());
+            }
             log::log(&format!("[extras] {}: cached", r.name));
             continue;
         }
@@ -435,6 +546,12 @@ pub fn run_all() -> Result<(), String> {
                 fsx::append_line(&flagsf, r.flags)?;
             }
             fsx::append_line(&status, &format!("{} ok", r.name))?;
+            // 新构建：版本痕迹 > pc 版本 / freshly built: the source
+            // version trace beats the pc version
+            versions.insert(
+                r.name.to_string(),
+                non_empty(built_version(r.name, r.check)),
+            );
             log::log(&format!("[extras] {}: ok", r.name));
         } else {
             let reason = match &rc {
@@ -477,6 +594,9 @@ pub fn run_all() -> Result<(), String> {
                 r.name
             ));
             failed.push((r.name.to_string(), reason.clone()));
+            // 失败的库不进二进制——旧版本行一并摘除 / a failed lib is
+            // not in the binary — its stale version row goes too
+            versions.remove(r.name);
             // 失败现场在 wd 删除前抢救：<name>.log 只是输出流，
             // config.log 这类文件才是"检查为何没过"的答案
             // salvage the scene before wd is deleted: <name>.log is the
@@ -487,6 +607,13 @@ pub fn run_all() -> Result<(), String> {
         log::group_end();
         fsx::rm_rf(&wd);
     }
+
+    // 版本清单剪枝+落盘：只留本次适用配方的行——配方从表里移除后旧行
+    // 不随快照续命 / prune and persist the version map: keep only rows
+    // of recipes applicable this pass — a recipe removed from the table
+    // must not ride the snapshot forever
+    versions.retain(|n, _| applicable.contains(n));
+    save_versions(&versions);
 
     // postfix（.pc 元数据修补+归档去重）与配方同权：group + run_tee 落
     // extras/postfix.log——它动的是全配方共享的 .pc/归档，出问题光看单

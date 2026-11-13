@@ -224,6 +224,35 @@ pub struct ConfJob {
     pub build_log: PathBuf,
 }
 
+/// 从 configure 的 stdout 切出收尾汇总：最后一个 `ARCH ` 特性表行起
+/// （tee 文件只留成功轮，防御性 rposition 取最后一块），到
+/// `License:`/`Creating `/`WARNING` 行之前止；尾部空行剥净。取不到
+/// 块时返回空串，调用方回退旧式 buildconf 内容
+/// Slice the closing summary out of configure's stdout: from the last
+/// `ARCH ` feature-table line (the tee file only holds the successful
+/// round; the defensive rposition takes the last block anyway) up to
+/// a `License:`/`Creating `/`WARNING` line, trailing blanks stripped.
+/// Returns empty when no block is found — callers fall back to the
+/// classic buildconf capture
+pub fn conf_summary(raw: &str) -> String {
+    let lines: Vec<&str> = raw.lines().collect();
+    let Some(start) = lines.iter().rposition(|l| l.starts_with("ARCH ")) else {
+        return String::new();
+    };
+    let mut out: Vec<&str> = Vec::new();
+    for l in &lines[start..] {
+        let t = l.trim_start();
+        if t.starts_with("License:") || t.starts_with("Creating ") || t.starts_with("WARNING") {
+            break;
+        }
+        out.push(l);
+    }
+    while matches!(out.last(), Some(l) if l.trim().is_empty()) {
+        out.pop();
+    }
+    out.join("\n")
+}
+
 /// 丢包仍返回 Err：被要求开启却悄悄缺库的 ffmpeg 绝不能发布。
 /// Drive FFmpeg configure in <build_dir>; when it fails on a missing/broken external
 /// library, record --enable-<name> in dropped-file, drop the flag and
@@ -370,6 +399,16 @@ pub fn configure(
         });
     }
 
+    // configure stdout tee 落盘：样例版 BUILDINFO 的 build
+    // configuration 段要的是 configure 收尾的汇总（特性表+Enabled
+    // 清单），-buildconf 新版只吐旗标。run_tee 每轮截断——最后一轮
+    // （成功轮）的输出留在文件里 / tee configure's stdout to disk:
+    // the sample BUILDINFO's build-configuration section wants
+    // configure's closing summary (the feature table + Enabled
+    // lists), while modern -buildconf emits flags only. run_tee
+    // truncates every round — the last (successful) round's output
+    // is what stays
+    let confout = dropped_file.with_extension("confout.txt");
     const MAX_ROUNDS: u32 = 60;
     let mut round = 0;
     loop {
@@ -379,7 +418,7 @@ pub fn configure(
             args.len()
         ));
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        if sys::run(&cfg, &refs, build_dir).unwrap_or(1) == 0 {
+        if sys::run_tee(&cfg, &refs, build_dir, &confout).unwrap_or(1) == 0 {
             // 体检：退出 0 却没产出 ffbuild/config.mak 的 configure 并没有
             // 真正完成 / sanity: exit 0 without ffbuild/config.mak did not
             // really finish
@@ -684,5 +723,56 @@ pub fn emit_symbols(work: &Path, variant: &str) {
             let _ = fsx::write(&work.join(format!("ffmpeg{variant}.nm.txt")), &text);
         }
         return;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::conf_summary;
+
+    /// 样例形态：ARCH 特性表起、Enabled 清单、License/Creating 收尾 /
+    /// the sample shape: an ARCH feature table, Enabled lists, and a
+    /// License/Creating tail
+    const CONFOUT: &str = "install prefix            /d/a/ffbuild/prefix\n\
+        C compiler                gcc\n\
+        ARCH                      x86 (generic)\n\
+        big-endian                no\n\
+        runtime cpu detection     yes\n\
+        \n\
+        External libraries:\n\
+        bzlib                   libxcb                  zlib\n\
+        \n\
+        Enabled decoders:\n\
+        aac                     h264                    hevc\n\
+        \n\
+        Enabled outdevs:\n\
+        sdl2\n\
+        \n\
+        License: GPL version 3 or later\n\
+        Creating config.mak, config.h, and doc/config.texi...\n";
+
+    #[test]
+    fn slices_from_arch_to_before_license() {
+        let s = conf_summary(CONFOUT);
+        assert!(s.starts_with("ARCH"));
+        assert!(s.contains("Enabled outdevs:"));
+        assert!(s.contains("External libraries:"));
+        assert!(!s.contains("install prefix"));
+        assert!(!s.contains("License:"));
+        assert!(!s.contains("Creating"));
+        assert!(!s.ends_with('\n'));
+    }
+
+    #[test]
+    fn takes_last_arch_block_when_rounds_accumulate() {
+        let two_rounds = format!("ARCH stale\nLicense: x\n{CONFOUT}");
+        let s = conf_summary(&two_rounds);
+        assert!(!s.contains("stale"));
+        assert!(s.contains("Enabled decoders:"));
+    }
+
+    #[test]
+    fn empty_when_no_arch_block() {
+        assert!(conf_summary("configure: error: foo\n").is_empty());
     }
 }

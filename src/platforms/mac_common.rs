@@ -736,15 +736,34 @@ pub fn package() -> Result<(), String> {
         &e.work,
     )
     .unwrap_or_default();
-    let dropped = fsx::read(&e.work.join(format!("dropped-libs{variant}.txt")));
-    let status = fsx::read(&prefix().join(".extras/status.txt"));
-    let swvers = sys::capture("sw_vers", &["-productVersion"], &e.work)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    // build configuration 段用 configure 收尾汇总（tee 落盘的
+    // confout），切不到时回退 -buildconf 原文 / the
+    // build-configuration section uses configure's closing summary
+    // (the tee'd confout), falling back to the -buildconf capture
+    // when no summary could be sliced
+    let confout = fsx::read(&e.work.join(format!("dropped-libs{variant}.confout.txt")));
+    let conf = {
+        let s = crate::ffmpeg::conf_summary(&confout);
+        if s.is_empty() {
+            buildconf.trim().to_string()
+        } else {
+            s
+        }
+    };
+    // 依赖版本清单：.extras/versions.txt（name version 行，map 已排
+    // 序）/ dependency versions: .extras/versions.txt ("name version"
+    // lines, already sorted by the map)
+    let versions = crate::extras::versions_map()
+        .iter()
+        .map(|(n, v)| format!("{n} {v}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     // BUILDINFO.info 版式向发行样例靠齐（结构与 linux_common 同款注
-    // 释）/ the BUILDINFO.info layout follows the release sample (same
-    // structure as linux_common)
+    // 释）——全成功才发布，Platform/Dropped/Extras 诊断尾不占版面 /
+    // the BUILDINFO.info layout follows the release sample (same
+    // structure as linux_common) — a release only ships on full
+    // success, so the Platform/Dropped/Extras diagnostic tail earns
+    // no space
     let vword = if variant.is_empty() {
         "static"
     } else {
@@ -766,16 +785,11 @@ pub fn package() -> Result<(), String> {
         {assets}\
         {vword} build configuration: \n\
         \n\
-        {buildconf}\n\
-        Platform             : {platform} (macOS {swvers})\n\
-        Dropped by configure : {}\n\
-        Extras               :\n{}\n",
-        dropped.replace('\n', " ").trim(),
-        status
-            .lines()
-            .map(|l| format!("  {l}"))
-            .collect::<Vec<_>>()
-            .join("\n"),
+        {conf}\n\
+        \n\
+        {vword} external libraries' versions: \n\
+        \n\
+        {versions}\n"
     );
     fsx::write(&pkg.join("BUILDINFO.info"), &info)?;
 

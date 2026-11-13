@@ -238,8 +238,8 @@ jobs:
       # 从最新驱动 release 下载本平台二进制并校验；产物名带平台后缀，
       # 重命名回调用名 FFmpeg-Builds-Full[.exe]。
       # Download this platform's binary from the newest driver release and
-      # verify it; the solid-7z asset unpacks straight to the invocation
-      # name FFmpeg-Builds-Full[.exe].
+      # verify it; the platform-suffixed asset is a raw binary that renames
+      # straight to the invocation name FFmpeg-Builds-Full[.exe].
       - name: Download Released Driver
         shell: bash
         env:
@@ -250,25 +250,20 @@ jobs:
           gh release download "${{ needs.prepare.outputs.driver_tag }}" \
             -p "FFmpeg-Builds-Full-${{ matrix.platform }}*" -D driver --clobber
           cd driver
+          # Windows 的产物名和调用名都带 .exe —— 显式推导，别用参数展开
+          # （*FFmpeg-Builds-Full-* 的尾 * 会把整个文件名剥光）/
+          # both the asset and the invocation name carry .exe on Windows —
+          # derive explicitly; parameter expansion (*FFmpeg-Builds-Full-*
+          # strips the whole filename via its trailing *)
           exe="FFmpeg-Builds-Full-${{ matrix.platform }}"
           tgt="FFmpeg-Builds-Full"
           if [[ "${{ matrix.kind }}" == windows ]]; then
-            # Windows 驱动产物是固实 7z（调用名二进制在包内）/
-            # the windows driver asset is a solid 7z carrying the
-            # invocation-name binary
-            sha256sum -c -- "$exe.7z.sha256"
-            7z x -y "$exe.7z" >/dev/null
-            rm -f "$exe.7z" "$exe.7z.sha256"
-          else
-            # Windows 的产物名和回调名都带 .exe —— 显式推导，别用参数展开
-            # （*FFmpeg-Builds-Full-* 的尾 * 会把整个文件名剥光）
-            # Both the asset and the callback name carry .exe on Windows —
-            # derive explicitly; parameter expansion (*FFmpeg-Builds-Full-*
-            # strips the whole filename via its trailing *)
-            sha256sum -c -- "$exe.sha256"
-            rm "$exe.sha256"
-            mv "$exe" "$tgt"
+            exe="$exe.exe"
+            tgt="$tgt.exe"
           fi
+          sha256sum -c -- "$exe.sha256"
+          rm -f "$exe.sha256"
+          mv "$exe" "$tgt"
 
       - name: Make Driver Executable (POSIX)
         if: matrix.kind != 'windows'
@@ -899,22 +894,6 @@ jobs:
           merge-multiple: true
           path: artifacts
 
-      # Only FFmpeg's `configure` is used, to list every external library it
-      # knows, for the completeness table in the release notes.
-      - name: Fetch FFmpeg source (for the library list)
-        run: |
-          set -euo pipefail
-          git init -q ffmpeg-src
-          # 仓源顺序同上——官方 git:// 优先，github 兜底 / same repo
-          # order as above — official git:// first, github as fallback
-          fetched=""
-          for repo in git://git.ffmpeg.org/ffmpeg.git https://github.com/FFmpeg/FFmpeg.git; do
-            git -C ffmpeg-src fetch -q --depth 1 "$repo" "$FFMPEG_COMMIT" && { fetched=1; break; }
-          done
-          [[ -n "$fetched" ]] || { echo "::error::fetch $FFMPEG_COMMIT failed on all repos"; exit 1; }
-          git -C ffmpeg-src -c advice.detachedHead=false checkout -q FETCH_HEAD
-          echo "FFMPEG_SRC=$PWD/ffmpeg-src" >> "$GITHUB_ENV"
-
       - name: Create dated release
         run: |
           set -euo pipefail
@@ -989,17 +968,21 @@ jobs:
             # Same-named checksum file; it has to reference the new file name.
             (cd latest && sha256sum -- "$new" > "$new.sha256")
           done
-          # 正文与刚发的日期 tag release 逐字同步（同一份 notes.md；
-          # 里面的链接指向日期 tag 资产，永久有效）
-          # body synced verbatim with the just-published dated release
-          # (the same notes.md; its links point at dated-tag assets,
-          # which stay valid forever)
+          # 正文独立生成：TAG=latest + DIR=latest——脚本按目录里的
+          # ffmpeg-latest-* 名拼 download/latest 链接，产物表固定在
+          # latest 桶的哈希无关资产上，不再逐字复用日期版正文 /
+          # generate the body separately: TAG=latest + DIR=latest —
+          # the script picks the ffmpeg-latest-* names up from the
+          # directory and links them under download/latest, pinning
+          # the artifact table to the bucket's hash-less assets
+          # instead of reusing the dated body verbatim
+          bash .github/scripts/release-notes.sh latest latest > notes-latest.md
           gh release delete latest --cleanup-tag --yes || true
           sleep 10
           gh release create latest \
             --target "$TARGET_REF" \
             --title "Latest" \
-            --notes-file notes.md \
+            --notes-file notes-latest.md \
             --latest \
             latest/*
           # 与 deps.rs 同款定针：tag 删除是最终一致的，create 若抢在

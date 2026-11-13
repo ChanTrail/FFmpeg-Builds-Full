@@ -286,8 +286,17 @@ fn archive_candidates(url: &str, rev: &str) -> Vec<String> {
 
 /// 把规格物化成 <wd>/src 检出 / materialise a spec into <wd>/src
 fn fetch_into(wd: &Path, spec: &Spec) -> Result<PathBuf, String> {
-    let src = if let Some(url) = &spec.archive {
-        net::fetch_tar(wd, url, spec.sha256.as_deref())?
+    // src 之外再带出一个版本痕迹（ver）：git 检出用 describe，归档源
+    // 从包名解析——写进 wd/.srcver 供 BUILDINFO 的 external
+    // libraries' versions 段取用 / alongside src carry a version
+    // trace (ver): git checkouts describe, archives parse the package
+    // name — written to wd/.srcver for BUILDINFO's external
+    // libraries' versions section
+    let (src, ver) = if let Some(url) = &spec.archive {
+        (
+            net::fetch_tar(wd, url, spec.sha256.as_deref())?,
+            archive_version_str(url),
+        )
     } else {
         // 仓源链：git: 主仓 + mirrors: 顺序兜底——每条 URL 走完整
         // 解析+拉取；无子模块的源单 URL 全灭后转该仓主机的归档端点
@@ -305,7 +314,9 @@ fn fetch_into(wd: &Path, spec: &Spec) -> Result<PathBuf, String> {
             .map(String::as_str)
             .chain(spec.mirrors.iter().map(String::as_str))
             .collect();
-        let archive_fallback = |url: &str, rev: &str| -> Option<PathBuf> {
+        // 归档兜底同样带回版本痕迹（决胜 rev）/ the archive fallback
+        // carries the winning rev back as the version trace too
+        let archive_fallback = |url: &str, rev: &str| -> Option<(PathBuf, String)> {
             if spec.submodules {
                 return None;
             }
@@ -319,15 +330,18 @@ fn fetch_into(wd: &Path, spec: &Spec) -> Result<PathBuf, String> {
                     log::warn(&format!(
                         "[sources] {url}@{rev}: git transport failed — archive fallback {au} / git 传输失败转归档 {au}"
                     ));
-                    return Some(s);
+                    return Some((s, rev.to_string()));
                 }
             }
             None
         };
-        // 单 URL 的完整尝试：解析 → 拉取，失败转本仓的归档端点 /
-        // one URL's full attempt: resolve → fetch, falling to this
-        // repo's own archive endpoints on transport death
-        let try_url = |url: &str| -> Result<PathBuf, String> {
+        // 单 URL 的完整尝试：解析 → 拉取，失败转本仓的归档端点；成功
+        // 返 (src, rev)——rev 供 .srcver 在 .git 缺席（归档兜底）时
+        // 兜底 / one URL's full attempt: resolve → fetch, falling to
+        // this repo's own archive endpoints on transport death; on
+        // success returns (src, rev) — rev backs .srcver when .git is
+        // absent (archive fallback)
+        let try_url = |url: &str| -> Result<(PathBuf, String), String> {
             match resolve_git(url, spec.ref_.as_deref()) {
                 // 解析本身已死（ls-remote 停滞）——钉住的 ref 名仍可赌
                 // 归档端点（github/gitlab 接受分支/tag 原名）/ resolution
@@ -345,7 +359,9 @@ fn fetch_into(wd: &Path, spec: &Spec) -> Result<PathBuf, String> {
                         Checkout::Commit(s) => (s.clone(), net::fetch_git_commit(wd, url, s)),
                         Checkout::Tag(t) => (t.clone(), net::fetch_git(wd, url, t, None)),
                     };
-                    git_res.or_else(|e| archive_fallback(url, &rev).ok_or(e))
+                    git_res
+                        .map(|s| (s, rev.clone()))
+                        .or_else(|e| archive_fallback(url, &rev).ok_or(e))
                 }
             }
         };
@@ -356,14 +372,14 @@ fn fetch_into(wd: &Path, spec: &Spec) -> Result<PathBuf, String> {
                 log::warn(&format!("[sources] trying mirror {url} / 换镜像仓 {url}"));
             }
             match try_url(url) {
-                Ok(s) => {
-                    got = Some(s);
+                Ok((s, r)) => {
+                    got = Some((s, r));
                     break;
                 }
                 Err(e) => last_err = e,
             }
         }
-        let src = got.ok_or(last_err)?;
+        let (src, rev) = got.ok_or(last_err)?;
         if spec.submodules {
             // submodule 拉取同属网络传输——收进 git_run 的停滞探测+退
             // 避重试（-c 经 GIT_CONFIG_PARAMETERS 传到子 git 进程）/
@@ -383,10 +399,62 @@ fn fetch_into(wd: &Path, spec: &Spec) -> Result<PathBuf, String> {
                 None,
             )?;
         }
-        src
+        // git 源版本：describe 为准（tag 名或 sha），.git 缺席（归档
+        // 兜底）时退回决胜 rev / git source version: describe wins
+        // (tag name or sha); when .git is absent (archive fallback)
+        // the winning rev stands in
+        let ver = git_describe(&src).filter(|v| !v.is_empty()).unwrap_or(rev);
+        (src, ver)
     };
     normalize_autotools_stamps(&src);
+    // 版本痕迹落盘——侧车文件写失败不值得拖死整个拉取 / persist the
+    // version trace — a sidecar write failure must not sink the whole
+    // fetch
+    let _ = fsx::write(&wd.join(".srcver"), &ver);
     Ok(src)
+}
+
+/// 源码检出的版本串：git describe --tags --always（无 tag 给短 sha），
+/// 非 git 检出（归档兜底树）返回 None / a checkout's version string:
+/// git describe --tags --always (short sha when no tag); non-git
+/// checkouts (archive-fallback trees) yield None
+fn git_describe(src: &Path) -> Option<String> {
+    if !src.join(".git").exists() {
+        return None;
+    }
+    sys::capture("git", &["describe", "--tags", "--always"], src)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// 归档包名 → 版本串：剥扩展后取最后一段数字打头的 - 分段
+/// （gmp-6.3.0 → 6.3.0）；实在分不出就还整个 stem / archive package
+/// name -> version string: strip the extension and take the last
+/// dash-segment starting with a digit (gmp-6.3.0 -> 6.3.0); falls
+/// back to the whole stem when nothing parses
+fn archive_version_str(url: &str) -> String {
+    let base = url
+        .rsplit('/')
+        .next()
+        .unwrap_or(url)
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default();
+    let stem = base
+        .trim_end_matches(".tar.xz")
+        .trim_end_matches(".tar.gz")
+        .trim_end_matches(".tar.bz2")
+        .trim_end_matches(".tar.lz")
+        .trim_end_matches(".tar.zst")
+        .trim_end_matches(".tgz")
+        .trim_end_matches(".tbz2")
+        .trim_end_matches(".zip")
+        .trim_end_matches(".tar");
+    stem.rsplit('-')
+        .find(|s| s.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .unwrap_or(stem)
+        .to_string()
 }
 
 /// autotools 生成物清单：make 的维护者规则会按时间戳对这些文件调
