@@ -606,6 +606,28 @@ fn diagnose_failed_encode(fm: &str, enc: &str, args: &[&str], bin: &Path, rc: i3
 /// smoke_test <bin-dir>：版本/许可证/特性覆盖/真实编码体检
 /// Version/license/feature-coverage/real-encode checks
 pub fn smoke_test(bin: &Path) -> Result<(), String> {
+    // bin 必须绝对化——verify 腿喂相对路径（`pkg/*/bin`），而下游一律
+    // 以 `current_dir(bin)` 派生子进程：POSIX 子进程先 chdir 再解析
+    // prog，相对 prog 在新 cwd 下查无此文件（spawn os error 2）；
+    // Windows 侧 prog 按父 cwd 解析侥幸能跑，但 bin.join(输出) 的相
+    // 对串同样在子进程 cwd 下找不到目录（mkv 落盘 ENOENT）。env_dir
+    // 同款手法（那边实证过 FFBUILD_DIST=dist 同款雷）/ bin must be
+    // made absolute — the verify leg feeds a relative path
+    // (`pkg/*/bin`) and every child below spawns with
+    // `current_dir(bin)`: POSIX children chdir first and then resolve
+    // prog, so the relative prog string isn't found in the new cwd
+    // (spawn os error 2); on Windows prog happens to resolve against
+    // the parent cwd so it runs, but the relative bin.join(output)
+    // misses all the same in the child's cwd (mkv open ENOENT). Same
+    // idiom as env_dir, which carries the same empirical landmine
+    // (FFBUILD_DIST=dist)
+    let bin_owned;
+    let bin = if bin.is_absolute() {
+        bin
+    } else {
+        bin_owned = std::env::current_dir().unwrap_or_default().join(bin);
+        &bin_owned
+    };
     let ext = if bin.join("ffmpeg.exe").is_file() {
         ".exe"
     } else {
