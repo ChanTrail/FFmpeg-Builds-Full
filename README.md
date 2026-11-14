@@ -61,7 +61,6 @@ https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-
 | davs2 / xavs2 | Windows arm64、Linux arm64、macOS | 上游的 aarch64 汇编/内建代码编译不过，实际仅 x86_64 可用 |
 | SVT-JPEG-XS | Windows arm64、Linux arm64、macOS | 上游实现绑定 x86 SIMD，非 x86 平台整库缺席 |
 | lcevcdec / uavs3d | Windows arm64 | 上游提供 linux-arm64 汇编支持，但无 windows-arm64 移植 |
-| libtesseract | Windows arm64 | msys2 clangarm64 的 tesseract 包缺 NEON 对象（DotProductNEON/intSimdMatrixNEON 未定义——上游打包缺陷） |
 | libplacebo | Linux、macOS | 依赖整条 SPIRV-Cross + shaderc 工具链，当前只在 Windows 构建 |
 | Vulkan / OpenCL | macOS | 前缀头文件/加载器 shim 配方仅覆盖 Windows+Linux；系统无 Vulkan loader，OpenCL.framework 已废弃未接入 |
 | NVENC / NVDEC / CUVID / ffnvcodec | macOS | 无 NVIDIA GPU；头文件配方亦仅 Windows+Linux |
@@ -154,7 +153,7 @@ https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-
 | lilv（LV2） | 音频插件宿主 | ✓ | ✓ | ✓ | ✓ | ✓ |
 | LADSPA | 音频插件宿主 | ✓ | ✓ | ✓ | ✓ | ✓ |
 | VapourSynth | 帧服务输入 | ✓ | ✓ | ✓ | ✓ | — |
-| libtesseract | OCR 滤镜 | ✓ | — | ✓ | ✓ | ✓ |
+| libtesseract | OCR 滤镜 | ✓ | ✓ | ✓ | ✓ | ✓ |
 | libqrencode / libquirc | 二维码生成/识别 | ✓ | ✓ | ✓ | ✓ | ✓ |
 | liblensfun | 镜头校正 | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SDL2 | 输出设备 | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -182,7 +181,7 @@ https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-
 
 ### 压缩与系统
 
-zlib、bzip2、xz（lzma）、zstd、brotli、snappy、iconv —— 五平台全有。
+zlib、bzip2、xz（lzma）、snappy、iconv 编入 FFmpeg —— 五平台全有。zstd、brotli 仅为依赖栈成员（zstd 兼作 deps 包 `.tar.zst` 的压缩工具），未启用为 FFmpeg 特性（无 `--enable-libzstd`/`--enable-libbrotli`）。
 Linux 另有：ALSA、PulseAudio、libxcb/X11 全家、V4L2、libdrm；以上均为静态链接。
 
 > 支持性依赖（如 glib/cairo/pango、nettle/hogweed、SDL 的 X11 依赖等）随特性库自动带入，不单独列出。

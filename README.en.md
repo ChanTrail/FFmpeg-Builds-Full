@@ -61,7 +61,6 @@ Not every library lands on all five platforms — each absence is listed below; 
 | davs2 / xavs2 | Windows arm64, Linux arm64, macOS | Upstream's aarch64 assembly/intrinsics do not compile — effectively x86_64-only |
 | SVT-JPEG-XS | Windows arm64, Linux arm64, macOS | Upstream implementation is bound to x86 SIMD — the whole library is absent on non-x86 |
 | lcevcdec / uavs3d | Windows arm64 | Upstream ships linux-arm64 assembly support but no windows-arm64 port |
-| libtesseract | Windows arm64 | The msys2 clangarm64 tesseract package lacks its NEON objects (DotProductNEON/intSimdMatrixNEON undefined — an upstream packaging defect) |
 | libplacebo | Linux, macOS | Requires the whole SPIRV-Cross + shaderc toolchain — currently built on Windows only |
 | Vulkan / OpenCL | macOS | The prefix header/loader shim recipes cover Windows+Linux only; the system has no Vulkan loader and the deprecated OpenCL.framework is not wired in |
 | NVENC / NVDEC / CUVID / ffnvcodec | macOS | No NVIDIA GPU; the header recipes are also Windows+Linux only |
@@ -154,7 +153,7 @@ The tables list the **build inputs** (the `features/` and `sources/` manifests p
 | lilv (LV2) | audio plugin host | ✓ | ✓ | ✓ | ✓ | ✓ |
 | LADSPA | audio plugin host | ✓ | ✓ | ✓ | ✓ | ✓ |
 | VapourSynth | frameserver input | ✓ | ✓ | ✓ | ✓ | — |
-| libtesseract | OCR filter | ✓ | — | ✓ | ✓ | ✓ |
+| libtesseract | OCR filter | ✓ | ✓ | ✓ | ✓ | ✓ |
 | libqrencode / libquirc | QR code generate/detect | ✓ | ✓ | ✓ | ✓ | ✓ |
 | liblensfun | lens correction | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SDL2 | output device | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -182,7 +181,7 @@ The tables list the **build inputs** (the `features/` and `sources/` manifests p
 
 ### Compression & system
 
-zlib, bzip2, xz (lzma), zstd, brotli, snappy, iconv — on all five platforms.
+zlib, bzip2, xz (lzma), snappy, iconv are compiled into FFmpeg — on all five platforms. zstd and brotli exist only as dependency-stack members (zstd doubles as the `.tar.zst` deps-bundle compressor); neither is enabled as an FFmpeg feature (no `--enable-libzstd`/`--enable-libbrotli`).
 Linux additionally: ALSA, PulseAudio, the libxcb/X11 family, V4L2, libdrm; all statically linked.
 
 > Supporting dependencies (e.g. glib/cairo/pango, nettle/hogweed, SDL's X11 deps) are pulled in automatically by the feature libraries and are not listed individually.
