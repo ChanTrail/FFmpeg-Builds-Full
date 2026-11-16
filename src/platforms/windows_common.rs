@@ -469,6 +469,50 @@ pub fn packages() -> Result<(), String> {
         }
     }
 
+    // env 缓存把 $MSYSTEM_PREFIX 子树+本地库回滚到旧快照后，上游已滚动
+    // 的包仍钉死 =旧ver 依赖——-S --needed 只升事务内那一撮，会被未点名
+    // 的陈旧包（实证：gcc 16.2.0-6→-7 时 cc-libs/libquadmath）卡出
+    // "breaks dependency" 整单中止。同步库先刷新（-Qu 才按最新仓库口径
+    // 算陈旧），再把本仓库前缀（mingw-w64-*）的可升级包整批升掉——等价
+    // 仓库级 -Su。msys 核心刻意不碰：/usr 不在缓存内、由 setup-msys2
+    // 每轮现升，升级它等于覆盖在用 DLL。缓存未命中/新装环境里 -Quq
+    // 为空，天然 no-op。
+    // After the env cache rolls the $MSYSTEM_PREFIX subtree + local DB
+    // back to an older snapshot, packages upstream already moved still
+    // pin =oldver deps — `-S --needed` upgrades only the transaction's
+    // own subset and gets blocked by stale un-named packages (observed:
+    // gcc 16.2.0-6→-7 vs cc-libs/libquadmath) with "breaks dependency"
+    // aborting the whole transaction. Refresh the sync db first (so -Qu
+    // measures staleness against live upstream), then batch-upgrade
+    // every upgradable package under this repo's prefix (mingw-w64-*)
+    // — a repo-scoped -Su. The msys core is deliberately untouched:
+    // /usr lives outside the cache and is upgraded by setup-msys2 every
+    // run, so touching it would rewrite in-use DLLs. On a cache miss or
+    // a fresh env, -Quq is empty and this is a no-op.
+    sys::retry(3, || {
+        sys::run_ok(
+            "pacman",
+            &["-Sy", "--noconfirm", "--noprogressbar"],
+            &e.work,
+        )
+    })?;
+    let upgradable: Vec<String> = sys::capture("pacman", &["-Quq"], &e.work)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|n| !n.is_empty() && n.starts_with(e.pkgprefix.as_str()))
+        .map(str::to_string)
+        .collect();
+    if !upgradable.is_empty() {
+        log::log(&format!(
+            "env snapshot stale: upgrading {} {} package(s)",
+            upgradable.len(),
+            e.pacrepo
+        ));
+        let ur: Vec<&str> = upgradable.iter().map(String::as_str).collect();
+        pacman_install(e, &pacover, &ur, 3)?;
+    }
+
     // 住在纯 MSYS 仓库里的工具（不是 mingw-w64-*）。
     // Tools living in the plain MSYS repo (not mingw-w64-*).
     pacman_install(

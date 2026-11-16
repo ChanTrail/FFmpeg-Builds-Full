@@ -358,6 +358,44 @@ jobs:
           restore-keys: |
             env-${{ matrix.platform }}-
 
+      # env 缓存（含 restore-keys 前缀命中）把子树+本地库回滚到旧快照：
+      # 上游已滚动的包钉死 =旧ver 依赖，-S --needed 只升事务内那一撮
+      # 就会被未点名的陈旧包卡出 "breaks dependency" 整单中止（实证：
+      # gcc 16.2.0-6→-7 撞 cc-libs/libquadmath）。先整批升级本仓库
+      # 前缀（mingw-w64-*）的可升级包——仓库级 -Su；msys 核心不碰
+      # （/usr 不在缓存内、由 setup-msys2 每轮现升，升级它等于覆盖
+      # 在用 DLL）。缓存未命中时 -Quq 为空、天然 no-op。驱动在
+      # packages() 里做同一套——本步是与发布版驱动的行为对齐。
+      # An env-cache hit (restore-keys prefix hits included) rolls the
+      # subtree + local DB back to an older snapshot: packages upstream
+      # already moved pin =oldver deps, so `-S --needed` — upgrading
+      # only the transaction's own subset — gets blocked by stale
+      # un-named packages with "breaks dependency" (observed: gcc
+      # 16.2.0-6→-7 vs cc-libs/libquadmath). Batch-upgrade every
+      # upgradable package under this repo's prefix (mingw-w64-*) —
+      # a repo-scoped -Su; the msys core stays untouched (/usr isn't
+      # cached — setup-msys2 upgrades it each run, and touching it
+      # rewrites in-use DLLs). On a cache miss -Quq is empty and the
+      # step is a no-op. The driver does the same in packages() —
+      # this step mirrors the released-driver behaviour.
+      - name: Upgrade stale msystem packages (Windows)
+        if: matrix.kind == 'windows'
+        shell: msys2 {0}
+        env:
+          MSYSTEM: ${{ matrix.msystem }}
+        run: |
+          set -euo pipefail
+          pacman -Sy --noconfirm --noprogressbar
+          mapfile -t upg < <(pacman -Quq | grep '^mingw-w64-' || true)
+          if ((${#upg[@]})); then
+            echo "::group::upgrade ${#upg[@]} stale msystem packages"
+            printf '%s\n' "${upg[@]}"
+            pacman -S --needed --noconfirm --noprogressbar "${upg[@]}"
+            echo "::endgroup::"
+          else
+            echo "env snapshot already current"
+          fi
+
       # ccache 滚动缓存——显式调用模式（驱动按 FFBUILD_CCACHE 给 --cc
       # 加前缀，不走 symlink masquerade）；arm64 腿不设开关（WoA 仿真的
       # rdrand 崩溃有案底）。存侧同样是显式 save 步：ccache 条目按内容
