@@ -1,6 +1,6 @@
 [package]
 name = "FFmpeg-Builds-Full"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["ChanTrail"]
 edition = "2024"
 description = "FFmpeg-Builds-Full native build driver"

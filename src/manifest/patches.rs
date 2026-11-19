@@ -77,6 +77,23 @@ static TABLE: &[Row] = &[
         pin: None,
         body: include_str!("../../patches/zvbi/0001-drop-contrib-subdir.patch"),
     },
+    Row {
+        name: "iconv",
+        // 给 libiconv 补 ISO-6937（DVB 文本编码）：上游不收此 glibc 专有
+        // 编码，但 ffmpeg mpegts 解 SDT/EIT 的 DVB 字符串会请求它；映射表
+        // 经 glibc iconvdata 全量往返实证导出，aliases/canonical/flags 等
+        // 生成物依 Makefile.devel 规则重生成。对 libiconv-1.19.tar.gz 钉死
+        // sha256——源一换版本此补丁必须人工复核 /
+        // add ISO-6937 (the DVB text charset) to libiconv: upstream never
+        // accepted this glibc-only encoding, yet ffmpeg's mpegts requests
+        // it when decoding SDT/EIT DVB strings; the mapping table was
+        // exported empirically via a full ISO_6937→UTF-32 round trip, and
+        // the aliases/canonical/flags artifacts were regenerated per the
+        // Makefile.devel rules. Pinned to libiconv-1.19.tar.gz's sha256 —
+        // bumping the source forces a human re-verification of this patch
+        pin: Some("88dd96a8c0464eca144fc791ae60cd31cd8ee78321e67397e25fc095c4a19aa6"),
+        body: include_str!("../../patches/iconv/0001-add-iso-6937.patch"),
+    },
 ];
 
 /// 校验补丁行 <row> 的钉死版本仍与 <name> 的清单一致
