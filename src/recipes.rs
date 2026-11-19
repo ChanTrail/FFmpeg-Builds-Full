@@ -40,6 +40,15 @@ pub const fn r(
 /// targets must contain —
 /// disambiguation only, e.g. glib appears once per OS)
 const ORDER: &[(&str, &str)] = &[
+    // iconv 必须最先：它是零依赖叶子库，但 libass/libxml2 等消费者的
+    // configure 会探测 iconv——先建 libiconv.a，它们才绑自编实现而非
+    // glibc iconv（后者运行时 dlopen gconv，静态二进制里与内嵌 glibc
+    // 冲突即崩）/ iconv must come FIRST: it is a zero-dependency leaf,
+    // but consumers like libass/libxml2 probe iconv at configure time —
+    // building libiconv.a first binds them to our implementation instead
+    // of glibc iconv (the latter dlopens gconv at runtime and crashes
+    // against the embedded glibc in static binaries)
+    ("iconv", ""),
     ("bzip2", ""),
     ("zstd", ""),
     ("brotli", ""),

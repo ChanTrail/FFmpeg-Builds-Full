@@ -30,6 +30,7 @@ pub mod gmp;
 pub mod gnutls;
 pub mod gsm;
 pub mod harfbuzz;
+pub mod iconv;
 pub mod ilbc;
 pub mod kvazaar;
 pub mod ladspa;
@@ -145,6 +146,7 @@ pub fn recipes() -> Vec<Recipe> {
         gnutls::recipe(),
         gsm::recipe(),
         harfbuzz::recipe(),
+        iconv::recipe(),
         ilbc::recipe(),
         kvazaar::recipe(),
         ladspa::recipe(),
