@@ -702,6 +702,57 @@ pub fn fixup() -> Result<(), String> {
             let _ = std::fs::write(&rmq, out);
         }
     }
+    // -l<名>.<纯数字> 旗标＝ELF soname 漏进 MinGW 包装的回归（实证
+    // pacman rabbitmq-c 0.18.1 的 Libs 写成 -lrabbitmq.4，而归档只有
+    // librabbitmq.{a,dll.a}——ld 直接 cannot find；此类泄漏会随包升级
+    // 复发于任何包，按族修）。判定：.N 变体归档不存在且基名归档存在
+    // 时归一回基名；变体真存在的（libfoo.4.{a,dll.a}）原样保留 /
+    // a "-l<name>.<digits>" flag is an ELF soname leaked into the
+    // MinGW packaging (observed: pacman rabbitmq-c 0.18.1 ships
+    // Libs: -lrabbitmq.4 while only librabbitmq.{a,dll.a} exist — ld
+    // fails outright; this leak family recurs on any package bump, so
+    // heal it generically). Rewrite to the base name when the
+    // .N-variant archive is absent but the base one exists; keep the
+    // flag when a real libfoo.4.{a,dll.a} resolves it
+    for pcf in [&pcdir, &sharepc]
+        .into_iter()
+        .flat_map(|d| fsx::walk(d))
+        .filter(|p| p.extension().map(|x| x == "pc").unwrap_or(false))
+    {
+        let c = fsx::read(&pcf);
+        let mut out = String::with_capacity(c.len());
+        let mut changed = false;
+        for tok in c.split_inclusive(char::is_whitespace) {
+            let (t, tail) = tok.split_at(tok.trim_end().len());
+            let mut rep = t.to_string();
+            if let Some(n) = t.strip_prefix("-l").filter(|n| !n.starts_with(':'))
+                && let Some((base, ver)) = n.rsplit_once('.')
+            {
+                let has_ver = libdir.join(format!("lib{n}.a")).is_file()
+                    || libdir.join(format!("lib{n}.dll.a")).is_file();
+                let has_base = libdir.join(format!("lib{base}.a")).is_file()
+                    || libdir.join(format!("lib{base}.dll.a")).is_file();
+                if !base.is_empty()
+                    && !ver.is_empty()
+                    && ver.chars().all(|ch| ch.is_ascii_digit())
+                    && !has_ver
+                    && has_base
+                {
+                    rep = format!("-l{base}");
+                }
+            }
+            changed |= rep != t;
+            out.push_str(&rep);
+            out.push_str(tail);
+        }
+        if changed {
+            log::log(&format!(
+                "patched {}: normalized soname-leaked -l flag",
+                pcf.file_name().unwrap().to_string_lossy()
+            ));
+            let _ = std::fs::write(&pcf, out);
+        }
+    }
     // libjxl_cms.a 的对象带 dllimport 过的 hwy 调用——真 hwy 归档必须在
     // 链接里 / libjxl_cms.a's objects carry dllimport'd hwy calls — the
     // real hwy archive must be in the link

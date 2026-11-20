@@ -389,6 +389,18 @@ pub fn run_all() -> Result<(), String> {
     // `pkg-config --exists`
     pkgcfg::dedup_fields();
 
+    // iconv 传染归一：快照里缺 -liconv 的 .pc 必须在任何配方探测前
+    // 愈合——缓存提到循环外，让每配方验收后的复扫只吃新产归档
+    // （libxml2/glib 等快照件的 -liconv 缺失实证：linux-arm64-legacy
+    // 的 rsvg-convert 链接死）/ iconv contagion normalize: snapshot
+    // .pc files missing -liconv must heal before any recipe probes
+    // them — hoist the cache out of the loop so the per-recipe
+    // re-scan only pays for newly produced archives (observed:
+    // libxml2/glib snapshot .pc files missing -liconv killed
+    // rsvg-convert's link on linux-arm64-legacy)
+    let mut iconv_cache = Default::default();
+    heal_iconv_contagion(&e.prefix_win, &mut iconv_cache);
+
     let status = state.join("status.txt");
     let flagsf = state.join("flags.txt");
     // (配方名, 失败原因)——原因要进末尾的失败明细与 step summary，
@@ -577,6 +589,11 @@ pub fn run_all() -> Result<(), String> {
                 r.name.to_string(),
                 non_empty(built_version(r.name, r.check)),
             );
+            // 本配方新产的 .pc/归档赶在下游配方探测前归一 iconv 传染
+            // ——缓存热，未重建的归档零成本 / normalize iconv contagion
+            // on this recipe's fresh .pc/archives before downstream
+            // recipes probe — warm cache makes untouched archives free
+            heal_iconv_contagion(&e.prefix_win, &mut iconv_cache);
             log::log(&format!("[extras] {}: ok", r.name));
         } else {
             let reason = match &rc {
@@ -1262,6 +1279,123 @@ fn libs_private_tr(name: &str, libs: &[&str]) {
     pkgcfg::libs_private(name, &pending);
 }
 
+/// iconv 传染归一：凡 .pc 的 -l 所名归档内含改名符号 libiconv（vendored
+/// iconv.h 把 iconv 宏改名 libiconv——选它是因为 glibc iconv 在静态
+/// 二进制里 dlopen gconv 拖入双 glibc 必崩，iconv 配方故必居首），而
+/// .pc 自身没写 -liconv 的，给 Libs.private 补上。上游构建系统在
+/// "libc 有 iconv"时从不记录 -liconv，可对象又全按改名后的名字调
+/// ——库间链接者必死（实证：linux-arm64-legacy 上 cargo 链的
+/// rsvg-convert 撞上 libxml2.a/libglib-2.0.a 的 libiconv_open 未定义；
+/// 26.04 腿靠旧快照 cached 侥幸，ffmpeg 本体由 extra-libs 尾部
+/// -liconv 罩着）。三处都要跑：extras 起头（恢复快照来的坏 pc 赶在
+/// 配方探测前愈合）、每配方验收后（本轮新产归档赶在下游配方探测前
+/// 归一）、postfix（快照持久化与 ffmpeg configure 的兜底）。
+/// `cache` 以 (归档, 长度, mtime) 记忆扫描结果——同归档不重复读，
+/// 重建覆盖写（mtime 变）自动重扫 / iconv contagion normalize:
+/// whenever an archive named by a .pc's -l flag carries the renamed
+/// libiconv symbols (the vendored iconv.h macro-renames iconv ->
+/// libiconv, chosen because glibc iconv would dlopen gconv into a
+/// dual-glibc SIGFPE inside a static binary — hence the iconv recipe
+/// builds first), append -liconv to that .pc's Libs.private when
+/// absent. Upstream build systems never record -liconv once "libc has
+/// iconv" checks out, yet the objects still call the renamed names —
+/// any inter-library linker dies (empirical: cargo-linked
+/// rsvg-convert on linux-arm64-legacy hit undefined libiconv_open
+/// from libxml2.a / libglib-2.0.a; the 26.04 leg got lucky on a
+/// cached snapshot, and ffmpeg's own link rides the tail -liconv in
+/// extra-libs). Runs at three points: stage entry (heals damaged
+/// snapshot .pc files before any recipe probes them), after each
+/// recipe's acceptance (normalizes archives produced this run
+/// before downstream recipes probe them), and postfix (snapshot
+/// persistence + ffmpeg configure backstop). `cache` memoizes by
+/// (archive, len, mtime) so a rebuilt archive (new mtime) rescans
+/// automatically
+fn heal_iconv_contagion(prefix: &Path, cache: &mut HashMap<(PathBuf, u64, u64), bool>) {
+    let libdir = prefix.join("lib");
+    // 提供者缺席时别补旗标——补了 static_libs_ok 反而探出不可解
+    // -liconv / don't append the flag when the provider is absent —
+    // an unresolvable -liconv would fail static_libs_ok
+    if !libdir.join("libiconv.a").is_file() {
+        return;
+    }
+    for pcf in [
+        libdir.join("pkgconfig"),
+        prefix.join("share").join("pkgconfig"),
+    ]
+    .into_iter()
+    .flat_map(|d| fsx::walk(&d))
+    .filter(|p| p.extension().map(|x| x == "pc").unwrap_or(false))
+    {
+        let c = fsx::read(&pcf);
+        // 旗标在哪条字段都算已携带——Libs/Libs.private 任一满足可解
+        // / the flag counts as carried wherever it sits — either Libs
+        // or Libs.private satisfies resolution
+        if c.split_whitespace().any(|t| t == "-liconv") {
+            continue;
+        }
+        let mut dirty = false;
+        for tok in c.split_whitespace() {
+            let Some(n) = tok.strip_prefix("-l") else {
+                continue;
+            };
+            let name = match n.strip_prefix(':') {
+                Some(f) => f.to_string(),
+                None if n.is_empty() => continue,
+                None => format!("lib{n}.a"),
+            };
+            // 提供者自身不参与判定 / the provider itself is not a consumer
+            if name == "libiconv.a" || name == "libcharset.a" {
+                continue;
+            }
+            let a = libdir.join(&name);
+            // (归档, 长度, mtimeµs) 作键——重建覆盖写的归档 mtime 变则
+            // 自动重扫 / keyed on (archive, len, mtime-µs): an archive
+            // rewritten in place rescans via the changed mtime
+            let key = std::fs::metadata(&a).ok().and_then(|m| {
+                m.modified().ok().and_then(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|d| (a.clone(), m.len(), d.as_micros() as u64))
+                })
+            });
+            let Some(key) = key else {
+                continue;
+            };
+            let has = *cache.entry(key).or_insert_with(|| {
+                std::fs::read(&a)
+                    .map(|b| b.windows(8).any(|w| w == b"libiconv"))
+                    .unwrap_or(false)
+            });
+            if has {
+                dirty = true;
+                break;
+            }
+        }
+        if dirty {
+            log::log(&format!(
+                "[extras] {} gets -liconv (archives carry libiconv refs)",
+                pcf.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            // 直写命中的文件——libs_private 按名寻址只够着
+            // lib/pkgconfig，share/pkgconfig 的件会落空 / write the
+            // found file directly — the name-addressed libs_private only
+            // reaches lib/pkgconfig, share/pkgconfig hits would miss
+            let mut c2 = c.clone();
+            let line = "Libs.private:";
+            if let Some(pos) = c2.find(line) {
+                let end = c2[pos..].find('\n').map(|i| pos + i).unwrap_or(c2.len());
+                c2.insert_str(end, " -liconv");
+            } else {
+                if !c2.ends_with('\n') {
+                    c2.push('\n');
+                }
+                c2.push_str("Libs.private: -liconv\n");
+            }
+            let _ = std::fs::write(&pcf, c2);
+        }
+    }
+}
+
 /// extras_postfix：对已装归档和 .pc 文件做去重/修补——针对单个配方看不
 /// 见的链接期问题 / dedup/fixup pass over the installed archives and pc
 /// files for link-time problems no single recipe can see
@@ -1337,6 +1471,10 @@ fn postfix() -> Result<(), String> {
     if e.os == sys::Os::Linux {
         libs_private_tr("soxr", &["-lgomp", "-lm"]);
     }
+
+    // iconv 传染归一（语义见 heal_iconv_contagion）/ iconv contagion
+    // normalize (see heal_iconv_contagion)
+    heal_iconv_contagion(&e.prefix_win, &mut Default::default());
 
     // macOS 的"同名同码"撞名只能靠归档手术——ld64 早把
     // -multiply_defined 打成 obsolete 直接忽略（实证：ffmpeg_g/ffplay_g
