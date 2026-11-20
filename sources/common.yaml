@@ -231,6 +231,17 @@ tesseract:
   git: https://github.com/tesseract-ocr/tesseract.git
 lensfun:
   git: https://github.com/lensfun/lensfun.git
+  # 钉 sha——无 ref 时 CI 门一旦遇红/pending 会回退 latest_tag，而 lensfun
+  # 的 semver 最大 tag 是 v0.3.95（2018 化石）：它的 lf_modifier_create 是
+  # 5 参旧 API（无 lens 形参）且有 lf_db_create——FFmpeg 探测能过、编译
+  # 才炸（7 参调用对不上）。master 的 7 参 API 自 2019 稳定至今，pin 的
+  # 提交 CI 绿。 / pin a sha — with no ref, a red-or-pending CI gate falls
+  # back to latest_tag, and lensfun's semver-max tag is v0.3.95 (a 2018
+  # fossil): its lf_modifier_create is the 5-arg legacy API (no lens arg)
+  # yet carries lf_db_create — FFmpeg's probe passes, then compilation
+  # dies on the 7-arg call sites. master's 7-arg API has been stable
+  # since 2019; the pinned commit's CI is green.
+  ref: 37238fcef563196fb798f6151cb9023968b26c40
 sdl2:
   git: https://github.com/libsdl-org/SDL.git
   ref: SDL2                                           # 默认分支已是 SDL3
