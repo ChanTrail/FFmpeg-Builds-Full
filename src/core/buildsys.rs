@@ -5,6 +5,21 @@ use crate::fsx;
 use crate::sys;
 use std::path::Path;
 
+/// iconv_tail：前缀里存在自编 libiconv.a 时，配方的"自身产出"链接需要
+/// -liconv 收尾——我们的 iconv.h 把 iconv_* 改名成 libiconv_*，经 -I
+/// 前缀吃到它的 TU 全在调改名后符号；dep .a 的未决引用由 ffmpeg 终链
+/// -liconv 兜底，但配方内部 exe 链接（pacat/xmllint/glib 工具这类）不带
+/// 它即 undefined / when our own libiconv.a sits in the prefix, a
+/// recipe's self-produced links need a trailing -liconv — our iconv.h
+/// renames iconv_* to libiconv_*, so every TU consuming it via the -I
+/// prefix calls the renamed symbols; dep .a's dangling refs are settled
+/// by ffmpeg's final-link -liconv, but a recipe's internal exe links
+/// (pacat/xmllint/glib tools and the like) die undefined without it
+fn iconv_tail() -> bool {
+    let e = sys::env();
+    !e.prefix.is_empty() && Path::new(&e.prefix).join("lib/libiconv.a").is_file()
+}
+
 /// cmake_build [args]：cmake 标准配方构建（静态、PIC、关 IPO/LTO）
 /// cmake_build [args]: standard cmake recipe build (static, PIC, IPO/LTO off)
 pub fn cmake_build(src: &Path, args: &[&str]) -> Result<(), String> {
@@ -23,6 +38,17 @@ pub fn cmake_build(src: &Path, args: &[&str]) -> Result<(), String> {
         "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF".into(),
         "-DCMAKE_POLICY_VERSION_MINIMUM=3.5".into(),
     ];
+    // -liconv 进 CMAKE_*_STANDARD_LIBRARIES：cmake 的"标准库"槽恒落
+    // 链接行尾（目标自身库之后）——改名符号的未决引用在此满足；
+    // TRY_COMPILE 探针同样带它，无害 / -liconv via
+    // CMAKE_*_STANDARD_LIBRARIES: cmake's "standard libs" slot always
+    // lands at the link-line tail (after the target's own libs) —
+    // pending renamed-symbol refs resolve there; TRY_COMPILE probes
+    // carry it too, harmlessly
+    if iconv_tail() {
+        v.push("-DCMAKE_C_STANDARD_LIBRARIES=-liconv".into());
+        v.push("-DCMAKE_CXX_STANDARD_LIBRARIES=-liconv".into());
+    }
     if sys::which("ninja").is_some() {
         v.insert(4, "-G".into());
         v.insert(5, "Ninja".into());
@@ -111,6 +137,22 @@ pub fn autotools_build(src: &Path, args: &[&str]) -> Result<(), String> {
 /// it)
 pub fn autotools_build_vars(src: &Path, args: &[&str], mvars: &[&str]) -> Result<(), String> {
     let e = sys::env();
+    // -liconv 经 env LIBS 进所有 automake 链接行尾（LIBS 恒为链接表
+    // 末位，configure 的 @LIBS@ 替换与 make 规则同源）——内部 exe 的
+    // 改名符号引用在此满足；前缀无 libiconv.a 时不设，省得 -liconv
+    // 悬空 / -liconv via env LIBS lands at every automake link-line
+    // tail (LIBS is always the last entry; configure's @LIBS@
+    // substitution and make rules share the source) — renamed-symbol
+    // refs in internal exes resolve there; skipped when no libiconv.a
+    // sits in the prefix, so -liconv never dangles
+    if iconv_tail() {
+        let cur = std::env::var("LIBS").unwrap_or_default();
+        if !cur.contains("-liconv") {
+            // SAFETY：配方串行执行、无并发任务 / SAFETY: recipes run
+            // serially, no concurrent tasks
+            unsafe { std::env::set_var("LIBS", format!("{cur} -liconv").trim()) };
+        }
+    }
     refresh_config_scripts(src)?;
     if !src.join("configure").is_file() {
         if src.join("autogen.sh").is_file() {
@@ -165,6 +207,20 @@ pub fn meson_build(src: &Path, args: &[&str]) -> Result<(), String> {
         "--default-library=static".into(),
         "-Db_lto=false".into(),
     ];
+    // -liconv 进 c_link_args/cpp_link_args：meson 把用户 link args
+    // 放进 --start-group 组内（实证组内重扫即解改名符号）；env
+    // LDFLAGS 必须并入——-Dc_link_args 顶替 LDFLAGS 的 env 初值，不
+    // 并入则 -L 前缀路径全丢、-liconv 也无从定位 / -liconv into
+    // c_link_args/cpp_link_args: meson places user link args inside
+    // --start-group (empirically the group rescan resolves renamed
+    // symbols); env LDFLAGS must be folded in — -Dc_link_args replaces
+    // LDFLAGS' env-derived initial value, and without the fold the -L
+    // prefix path drops and -liconv goes unlocatable too
+    if iconv_tail() {
+        let ld = std::env::var("LDFLAGS").unwrap_or_default();
+        v.push(format!("-Dc_link_args={ld} -liconv"));
+        v.push(format!("-Dcpp_link_args={ld} -liconv"));
+    }
     v.extend(args.iter().map(|s| s.to_string()));
     sys::bash_ok(
         &v.iter()
