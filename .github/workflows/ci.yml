@@ -125,7 +125,7 @@ jobs:
             runner: windows-11-arm
             exe: FFmpeg-Builds-Full.exe
           - platform: linux-x86_64
-            runner: ubuntu-26.04
+            runner: ubuntu-24.04
             exe: FFmpeg-Builds-Full
           - platform: linux-arm64
             runner: ubuntu-26.04-arm
@@ -232,7 +232,7 @@ jobs:
             msystem: CLANGARM64
             msysdir: clangarm64
           - platform: linux-x86_64
-            runner: ubuntu-26.04
+            runner: ubuntu-24.04
             kind: linux
           - platform: linux-arm64
             runner: ubuntu-26.04-arm
@@ -904,6 +904,68 @@ jobs:
           for b in "${bins[@]}"; do
             echo "=== smoke $b ==="
             "$exe" smoke "$b"
+          done
+
+      # x86_64 基线回归门：qemu-user 以特性收紧的 qemu64（纯 SSE2）模拟
+      # 老 CPU——通用 TU 被抬成新 ISA 的产物必在此 SIGILL。mask 逐特性
+      # 试探名字再剔除（qemu 各版本特性名不一，未知名直接报错退出），
+      # 再用"必崩探针"逐条实证沙盒收紧——写死列表曾在 resolute 的 qemu
+      # 上漏掉默认开启的 avx2/fma/popcnt，造成门假绿。lzcnt 不测：
+      # 无 ABM 的 CPU 把它解码成 BSR 而非 #UD / x86_64 baseline
+      # regression gate: qemu-user runs a feature-stripped qemu64 (pure
+      # SSE2) to emulate an old CPU — any generic TU elevated past SSE2
+      # must SIGILL here. The mask is probed feature-name by feature-name
+      # (names vary across qemu versions; unknown names error out), then a
+      # must-crash probe executes each >SSE2 insn separately to prove the
+      # sandbox is tight — a hardcoded list once left resolute's qemu64
+      # defaults (avx2/fma/popcnt) on and gave a false green. lzcnt is
+      # not probed: ABM-less CPUs decode it as BSR, not #UD
+      - name: Baseline ISA gate (qemu64)
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user gcc
+          mask=""
+          for f in sse3 pni ssse3 sse4.1 sse4-1 sse4_1 sse4.2 sse4-2 sse4_2 sse4a \
+                   avx avx2 fma f16c fma4 xop tbm bmi1 bmi2 lzcnt abm popcnt movbe \
+                   aes pclmulqdq rdrand rdseed adx sha_ni sha-ni \
+                   avx512f avx512dq avx512cd avx512bw avx512vl avx512ifma \
+                   avx512vbmi avx512vbmi2 avx512vnni avx512bitalg \
+                   avx512vpopcntdq avx512bf16 avx512fp16 gfni vaes vpclmulqdq \
+                   amx-bf16 amx-int8 amx-tile; do
+            qemu-x86_64 -cpu "qemu64,-$f" /bin/true >/dev/null 2>&1 && mask="$mask,-$f"
+          done
+          echo "qemu64 mask:$mask"
+          cat >/tmp/probe.c <<'EOF'
+          #include <stdlib.h>
+          int main(int argc,char**argv){
+            unsigned long a=0x1234; float f[8]={0}; unsigned char u[16]={0};
+            switch(argc>1?atoi(argv[1]):0){
+            case 1: __asm__ volatile("popcnt %1,%0":"=r"(a):"r"(a)); return 0;
+            case 3: __asm__ volatile("pshufb (%0),%%xmm0"::"r"(u):"xmm0","memory"); return 0;
+            case 4: __asm__ volatile("crc32q %1,%0":"+r"(a):"r"(a)); return 0;
+            case 5: __asm__ volatile("vaddps (%0),%%ymm0,%%ymm0"::"r"(f):"ymm0","memory"); return 0;
+            case 6: __asm__ volatile("vpbroadcastb (%0),%%ymm1"::"r"(u):"ymm1","memory"); return 0;
+            case 7: __asm__ volatile("vmovups (%0),%%ymm0; vmovups (%0),%%ymm1; vfmadd132ps (%0),%%ymm1,%%ymm0"::"r"(f):"ymm0","ymm1","memory"); return 0;
+            case 8: __asm__ volatile("andn %1,%2,%0":"=r"(a):"r"(a),"r"(a)); return 0;
+            case 9: __asm__ volatile("vaddps (%0),%%zmm0,%%zmm0"::"r"(f):"zmm0","memory"); return 0;
+            }
+            return 0;
+          }
+          EOF
+          gcc -O0 -o /tmp/probe /tmp/probe.c
+          for i in 1 3 4 5 6 7 8 9; do
+            qemu-x86_64 -cpu "qemu64$mask" /tmp/probe $i >/dev/null 2>&1 || continue
+            echo "::error::qemu64 sandbox leaks >SSE2 (probe case $i survived)"
+            exit 1
+          done
+          for f in pkg/*/bin/ffmpeg; do
+            echo "=== qemu64: $f ==="
+            qemu-x86_64 -cpu "qemu64$mask" "$f" -version | head -n 3
+            qemu-x86_64 -cpu "qemu64$mask" "$f" -hide_banner \
+              -f lavfi -i testsrc2=d=1:s=64x64:r=5 \
+              -vf zscale=w=32:h=32 -frames:v 3 -f null - </dev/null
           done
 
       # Only builds that passed verification are published; release.yml

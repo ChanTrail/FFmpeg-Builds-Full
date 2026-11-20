@@ -275,7 +275,18 @@ pub fn recipe_sum(r: &Recipe) -> Result<String, String> {
     // position-independent by design (ADRP) and PE has no PIC concept
     // — both ride their existing snapshots without a salt
     let mode = if sys::env().os == sys::Os::Linux && sys::env().arch == sys::Arch::X86_64 {
-        ":pic"
+        // :u24 盐：linux-x86_64 构建腿挪到 ubuntu-24.04 后工具链代数
+        // 整个降档（gcc-16→14、glibc 2.43→2.39）——沿用 resolute 时代
+        // 快照的 .a 会让 gcc-16 编出的 C++ 对象去找 noble 版
+        // 历史快照里残留 -mavx2 污染的 zimg 对象（启动期 SIGILL）。
+        // 必须整树重建一轮 / the :u24 salt: moving the linux-x86_64
+        // leg to ubuntu-24.04 drops the whole toolchain generation
+        // (gcc-16→14, glibc 2.43→2.39) — resolute-era snapshot .a
+        // files would make gcc-16-built C++ objects chase GLIBCXX
+        // symbols absent from noble's libstdc++.a; and the old
+        // snapshot still carries -mavx2-poisoned zimg objects
+        // (startup SIGILL). One full rebuild is mandatory
+        ":pic:u24"
     } else {
         ""
     };
