@@ -113,7 +113,8 @@ const ORDER: &[(&str, &str)] = &[
     // 它的 .pc / libxml2 before fontconfig — its -Dxml-backend=libxml2
     // resolves our libxml-2.0.pc
     ("libxml2", ""),
-    ("fontconfig", ""),
+    ("fontconfig", "linux,mac"),
+    ("fontconfig", "windows"),
     // libass 吃 freetype/fribidi/harfbuzz/fontconfig 全套 /
     // libass consumes the whole freetype/fribidi/harfbuzz/fontconfig set
     ("libass", ""),

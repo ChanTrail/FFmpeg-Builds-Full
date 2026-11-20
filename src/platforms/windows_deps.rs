@@ -141,7 +141,7 @@ pub fn restore() -> Result<(), String> {
     let sig = sig();
     fsx::write(&e.work.join("deps-sig"), &sig)?;
     let ddir = e.work.join("deps");
-    if let Ok(asset) = deps::fetch(&e.plat(), &ddir) {
+    if let Ok(asset) = deps::fetch(&e.plat_pkg(), &ddir) {
         fsx::write(&e.work.join("deps-restored"), &asset)?;
         log::group_begin(&format!("Restore deps overlay ({asset})"));
         let apath = ddir.join(&asset);
@@ -207,6 +207,38 @@ pub fn restore() -> Result<(), String> {
     fsx::rm_rf(&e.prefix_win.join(".extras/status.txt"));
     fsx::rm_rf(&e.prefix_win.join(".extras/done"));
     shaderc_shadow(e);
+    // 配方构建期就要健康的 .pc：fixup 的 Requires 愈合跑在配方之后
+    // （postfix），恢复出的旧损伤会让 meson 的 dependency() 走
+    // pkg-config 失败、CMake 兜底误选 .dll.a 导入库（实证：
+    // harfbuzz.pc `glib-2.0 2.30.0` 裸版本号 → fontconfig 的
+    // freetype2 探测落 cmake 抓到 libfreetype.dll.a）。每轮 restore
+    // 后先愈合再进 extras；heal_req_ops 幂等，健康文件原样过 /
+    // recipes need healthy .pc files at build time: fixup's Requires
+    // healing runs after recipes (postfix), and a restored legacy
+    // lesion makes meson's dependency() fail pkg-config and fall back
+    // to CMake grabbing a .dll.a import lib (observed: harfbuzz.pc's
+    // bare `glib-2.0 2.30.0` sent fontconfig's freetype2 probe to
+    // cmake, which picked libfreetype.dll.a). Heal every pass after
+    // restore, before extras; heal_req_ops is idempotent and healthy
+    // files pass through unchanged
+    for d in [
+        e.prefix_win.join("lib/pkgconfig"),
+        e.prefix_win.join("share/pkgconfig"),
+    ] {
+        for p in fsx::walk(&d) {
+            if p.extension().is_some_and(|x| x == "pc") {
+                let c = fsx::read(&p);
+                let healed = pkgcfg::heal_req_ops(&c);
+                if healed != c {
+                    fsx::write(&p, &healed)?;
+                    log::log(&format!(
+                        "restore-healed Requires ops in {}",
+                        p.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                }
+            }
+        }
+    }
     // 前缀快照 + 时间戳：发布差集与 dirty 检查的基线
     // prefix snapshot + stamp: the publish delta and dirty-check baseline
     fsx::write(
@@ -411,6 +443,13 @@ struct LibScan {
     /// import decls; bare names) — feeds the "bare name has an __imp_
     /// companion" sentinel
     imp_mentions: HashSet<String>,
+    /// implib 性质成员名表：import-object（imp_name）+ dlltool 桩/头/尾
+    /// （__imp_*/_head_*/*_iname 定义者）。自家注入的 shim.o/ffshim.o
+    /// 按名豁免 / member names carrying import-library content: import
+    /// objects (imp_name) plus dlltool stub/head/tail members (they
+    /// define __imp_*/_head_*/*_iname). Our own injected shim.o/ffshim.o
+    /// are exempted by name
+    imp_members: Vec<String>,
 }
 
 fn scan_lib(p: &Path) -> LibScan {
@@ -423,6 +462,7 @@ fn scan_lib(p: &Path) -> LibScan {
         need_imps: HashSet::new(),
         imp_defs: HashSet::new(),
         imp_mentions: HashSet::new(),
+        imp_members: Vec::new(),
     };
     s.mems = coff::members(&s.data);
     for i in 0..s.mems.len() {
@@ -431,6 +471,21 @@ fn scan_lib(p: &Path) -> LibScan {
             continue;
         }
         let st = coff::symtab(&s.data[off..off + len]);
+        // implib 成员判定：短导入对象自报家门；dlltool 桩成员定义
+        // `I __imp_*`、头成员定义 `I _head_*`、尾成员定义 `I __*_iname`
+        // ——三类签名都按定义面认（all_defs）。shim.o/ffshim.o 是 fixup
+        // 自家注入的 `__imp_` 提供者，按名豁免 / implib-member test:
+        // short import objects self-declare; dlltool stub members define
+        // `I __imp_*`, heads `I _head_*`, tails `I __*_iname` — all read
+        // off the defined surface (all_defs). shim.o/ffshim.o are our
+        // own injected __imp_ providers — exempted by name
+        let impish = st.imp_name.is_some()
+            || st.all_defs.iter().any(|d| {
+                d.starts_with("__imp_") || d.starts_with("_head_") || d.ends_with("_iname")
+            });
+        if impish && s.mems[i].name != "shim.o" && s.mems[i].name != "ffshim.o" {
+            s.imp_members.push(s.mems[i].name.clone());
+        }
         for u in &st.undefs {
             s.undefs.insert(u.clone());
             if let Some(n) = u.strip_prefix("__imp_") {
@@ -459,6 +514,48 @@ fn scan_lib(p: &Path) -> LibScan {
         }
     }
     s
+}
+
+/// dlltool 成员名 → implib 基名：`libXsNNN.o`/`libXh.o`/`libXt.o` → `X`
+/// （出自 libX.a）；`X.dllsNNN.o`/`X.dllh.o`/`X.dllt.o` → `X`（出自
+/// libX.dll.a）。非 dlltool 命名 → None——调用方对不可归属成员一律保留。
+/// dlltool member name -> implib base: `libXsNNN.o`/`libXh.o`/`libXt.o`
+/// -> `X` (from libX.a); `X.dllsNNN.o`/`X.dllh.o`/`X.dllt.o` -> `X`
+/// (from libX.dll.a). Non-dlltool names -> None — callers keep any
+/// member whose home implib cannot be attributed.
+fn implib_base(name: &str) -> Option<String> {
+    let stem = name.strip_suffix(".o")?;
+    // X.dlls00000.o / X.dllh.o / X.dllt.o（.dlls 后缀带数字编号）/
+    // X.dlls00000.o / X.dllh.o / X.dllt.o (.dlls carries a numeric tail)
+    for sep in [".dlls", ".dllh", ".dllt"] {
+        if let Some(pos) = stem.find(sep) {
+            let b = &stem[..pos];
+            let rest = &stem[pos + sep.len()..];
+            if !b.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+                return Some(b.to_string());
+            }
+        }
+    }
+    let st = stem.strip_prefix("lib")?;
+    // libXh.o / libXt.o（头/尾成员，基名非空）/ libXh.o / libXt.o
+    // (head/tail members; base must be non-empty)
+    for suf in ['h', 't'] {
+        if let Some(b) = st.strip_suffix(suf)
+            && !b.is_empty()
+        {
+            return Some(b.to_string());
+        }
+    }
+    // libXs00116.o —— 基名本身也可能含 s（ssleay32/ws2_32），只认最后一
+    // 个 's' 且其后是纯数字 / libXs00116.o — bases may contain 's'
+    // themselves (ssleay32/ws2_32), so only the last 's' followed by a
+    // pure digit tail counts
+    let pos = st.rfind('s')?;
+    let (b, tail) = st.split_at(pos);
+    if !b.is_empty() && tail.len() > 1 && tail[1..].chars().all(|c| c.is_ascii_digit()) {
+        return Some(b.to_string());
+    }
+    None
 }
 
 /// 清旧 shim → pc 私有依赖/静态 cflag/系统库 →
@@ -527,7 +624,14 @@ pub fn fixup() -> Result<(), String> {
         log::log("created chromaprint.pc alias (libchromaprint)");
     }
     pkgcfg::require("libaribcaption", &["fontconfig", "freetype2", "harfbuzz"]);
-    pkgcfg::require("fontconfig", &["expat", "freetype2", "iconv"]);
+    // fontconfig 自造配方用 -Dxml-backend=libxml2（与 linux/mac 一
+    // 致）——Requires.private 应引 libxml-2.0 而非 expat；iconv 是
+    // -liconv 形 Libs 记号（token_present 命中即跳过，不重复追加）/
+    // our fontconfig recipe builds with -Dxml-backend=libxml2 (same
+    // as linux/mac) — Requires.private should name libxml-2.0 rather
+    // than expat; iconv is a -liconv Libs token (token_present skips
+    // it when already emitted)
+    pkgcfg::require("fontconfig", &["libxml-2.0", "freetype2", "iconv"]);
     pkgcfg::require("harfbuzz", &["freetype2", "graphite2", "glib-2.0"]);
     // freetype↔harfbuzz 互相循环：freetype2 必须在 -lfreetype 之后再发
     // -lharfbuzz / freetype<->harfbuzz are circular: freetype2 must re-emit
@@ -950,9 +1054,145 @@ pub fn fixup() -> Result<(), String> {
         let mut implib: HashSet<String> = HashSet::new();
         let mut implib_syms: HashSet<String> = HashSet::new();
         let mut prov: HashMap<String, HashSet<String>> = HashMap::new();
+        // 链接行必有真 implib 的 DLL 集合：kernel32/msvcrt 由 gcc specs
+        // 恒带，其余看全前缀 .pc 的 -l token（Libs+Libs.private——
+        // --pkg-config-flags=--static 让两边都上链接行）/ the DLL set
+        // whose real import libs are guaranteed on link lines:
+        // kernel32/msvcrt ride gcc's default specs, the rest are read
+        // off -l tokens across every .pc in the prefix (Libs +
+        // Libs.private — --pkg-config-flags=--static puts both on the
+        // link line)
+        let mut linked: HashSet<String> = ["kernel32", "msvcrt"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        // 复用上面收好的 pcfiles——同一份 .pc 集合，不重复 walk 目录 /
+        // reuse the pcfiles collected above — same .pc set, no second
+        // directory walk
+        for pcf in &pcfiles {
+            for tok in fsx::read(pcf).split_whitespace() {
+                if let Some(x) = tok.strip_prefix("-l") {
+                    // "-l:libX.a" 写法归一回基名 X / normalize the
+                    // "-l:libX.a" spelling back to base X
+                    let b = x
+                        .strip_prefix(':')
+                        .and_then(|f| f.strip_prefix("lib"))
+                        .and_then(|f| f.strip_suffix(".a"))
+                        .map(|f| f.strip_suffix(".dll").unwrap_or(f).to_string())
+                        .unwrap_or_else(|| x.to_string());
+                    linked.insert(b);
+                }
+            }
+        }
         for la in &ars {
             let a = la.file_name().unwrap().to_string_lossy().to_string();
-            let s = scan_lib(la);
+            let mut s = scan_lib(la);
+            // rustc 系 fat staticlib 的内嵌导入库成员剥除：归档同时持有
+            // 普通对象与整套 vendor 的 dlltool 导入成员时（实证
+            // librsvg-2.a 带着 ~26k 个 user32/gdi32/ws2_32/iphlpapi/
+            // shlwapi 等的桩+头+尾，含 4 份重复——内嵌成员占比高达
+            // 77%，按占比判会误杀），内嵌 gio/glib/cairo 对象的
+            // __imp_X 引用在同册内被这些桩就地满足——它们的 .idata$5
+            // 槽在最终 exe 里落进没有任何导入描述符 FirstThunk 覆盖
+            // 的死区：装载器只重写描述符区间内的槽，死区槽残留链接期
+            // 的名称表 RVA（实证 ffplay.exe 24 个死槽：
+            // CreateWindowExW 槽内容 0x0ffdf7aa 是名字串中段，
+            // SDL_CreateWindow→WIN_CreateWindow 首条 call *%r15
+            // 跳进去即段错误——ffplay 播放任何流都崩）。剥除后引用
+            // 顺延到链接顺序靠后的真 implib，IAT 正常绑定。
+            // 门控三道：
+            //  1) 非 implib 成员 ≥50——真导入库（libuser32.a、*.dll.a、
+            //     libicu.a）自身几乎全是桩、普通对象寥寥，按绝对量区分
+            //     而非占比（77% 内嵌占比会让占比判误杀 fat lib）；
+            //  2) 成员基名 ≠ 归档自身 implib 基名——libX.a 永远保自家
+            //     X 桩，只剥它混入的外来桩；
+            //  3) 基名 ∈ linked——链接行必有真 implib 的家族才剥；
+            //     rustc vendor 的 api-ms-win-*/bcryptprimitives 桩
+            //     既没有对应 implib 文件也没有 .pc 发 -l，剥了就是
+            //     undefined，按名保留；非 dlltool 命名的 vendor 成员
+            //     同样不动。
+            // / strip import-library members embedded inside rust-style
+            // fat staticlibs: when an archive holds regular objects AND
+            // a whole vendored dlltool import set (empirical: ~26k
+            // user32/gdi32/ws2_32/iphlpapi/shlwapi stubs+heads+tails in
+            // librsvg-2.a, in 4 copies — a 77% share that any ratio test
+            // would wrongly call "a real import lib"), embedded
+            // gio/glib/cairo objects' __imp_X refs get satisfied
+            // intra-archive — the stubs' .idata$5 slots land in a dead
+            // zone no import descriptor's FirstThunk covers in the
+            // final exe. The loader only rewrites slots inside
+            // descriptor runs, so a dead slot keeps its link-time
+            // name-table RVA (empirical: 24 dead slots in ffplay.exe —
+            // CreateWindowExW's held 0x0ffdf7aa, mid-name-string — and
+            // SDL_CreateWindow -> WIN_CreateWindow's first `call *%r15`
+            // segfaulted into it; every stream/file playback crashed).
+            // Stripping the embedded providers lets the refs resolve at
+            // real implibs later on the line so the IAT binds normally.
+            // Three gates:
+            //  1) >=50 non-implib members — real import libs
+            //     (libuser32.a, *.dll.a, libicu.a) are nearly pure stubs
+            //     with a handful of aux objects, so count absolute
+            //     non-implib members rather than a ratio (a fat lib's
+            //     77% embedded share defeats any ratio test);
+            //  2) member base != the archive's own implib base —
+            //     libX.a always keeps its own X stubs, only foreign
+            //     stubs it picked up are candidates;
+            //  3) base ∈ linked — only families whose real implibs are
+            //     guaranteed on link lines get stripped; rustc-vendored
+            //     api-ms-win-*/bcryptprimitives stubs have no implib
+            //     file and no .pc -l so they stay (undefined refs
+            //     otherwise), as does any vendored member whose name
+            //     doesn't parse as dlltool
+            let own_base = a
+                .strip_prefix("lib")
+                .and_then(|n| n.strip_suffix(".a"))
+                .map(|n| n.strip_suffix(".dll").unwrap_or(n).to_string());
+            let nonimp = s.mems.len().saturating_sub(s.imp_members.len());
+            if !s.imp_members.is_empty() && nonimp >= 50 {
+                let drops: HashSet<&str> = s
+                    .imp_members
+                    .iter()
+                    .filter(|n| {
+                        implib_base(n)
+                            .map(|b| {
+                                linked.contains(&b)
+                                    && own_base.as_ref().map(|o| &b != o).unwrap_or(true)
+                            })
+                            .unwrap_or(false)
+                    })
+                    .map(String::as_str)
+                    .collect();
+                if !drops.is_empty() {
+                    let n = drops.len();
+                    let out = coff::write_filtered(&s.data, &mut |m: &coff::Member| {
+                        !drops.contains(m.name.as_str())
+                    });
+                    drop(drops);
+                    // 重写产物落同目录临时名再 rename——跨盘 rename 会
+                    // 败 / the rewrite lands on a same-dir temp name
+                    // before rename — cross-volume renames fail
+                    let tmp = la.with_file_name(format!("{}.striptmp", a));
+                    if out.len() > 8
+                        && std::fs::write(&tmp, &out).is_ok()
+                        && std::fs::rename(&tmp, la).is_ok()
+                    {
+                        // `/` 索引未随车——ranlib 重建 / the `/` index
+                        // was not carried — ranlib rebuilds it
+                        let _ = sys::run(&t.ranlib, &[&la.to_string_lossy()], &e.work);
+                        log::log(&format!(
+                            "stripped {n} embedded import-lib member(s) from {a} \
+                             (refs now resolve at real implibs — dead-IAT-slot fix)"
+                        ));
+                        // 剥后重扫——need/prov 必须看干净面，剥掉的 __imp_
+                        // 提供者不再算数 / rescan after the strip —
+                        // need/prov must see the clean surface; removed
+                        // __imp_ providers no longer count
+                        s = scan_lib(la);
+                    } else {
+                        let _ = std::fs::remove_file(&tmp);
+                    }
+                }
+            }
             need.extend(s.need_imps.iter().cloned());
             implib_syms.extend(s.imp_defs.iter().cloned());
             if !s.imp_defs.is_empty() {
@@ -1596,7 +1836,7 @@ pub fn extras_stage() -> Result<(), String> {
 /// postfix surgery and pacman rewrite identical bytes every run).
 pub fn save() -> Result<(), String> {
     let e = sys::env();
-    let platform = e.plat();
+    let platform = e.plat_pkg();
     let before = e.work.join("deps-before.txt");
     let stamp = e.work.join("deps-stamp");
     if !before.is_file() || !stamp.is_file() {

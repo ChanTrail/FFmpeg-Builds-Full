@@ -17,7 +17,7 @@ Every build ships **four variants**: static (default, no suffix), shared (`-shar
 https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-latest-<platform>[-shared|-debug|-shared-debug].<ext>
 ```
 
-`<platform>`: `windows-x86_64`, `windows-arm64`, `linux-x86_64`, `linux-arm64`, `macos-arm64`; Windows ships `.7z` (solid archive), the others `.tar.xz`. All four variants have their own latest links.
+`<platform>`: `windows-x86_64`, `windows-arm64`, `linux-x86_64`, `linux-x86_64-legacy`, `linux-arm64`, `linux-arm64-legacy`, `macos-arm64`; Windows ships `.7z` (solid archive), the others `.tar.xz`. All four variants have their own latest links.
 
 **Dated releases**: tagged `YYYYMMDD` (a same-day rebuild appends `-HHMM`), the newest 30 are kept (about 3 months). Every archive ships:
 
@@ -34,7 +34,9 @@ https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-
 | Windows x86_64 | `-windows-x86_64.7z` | `windows-latest`, MSYS2 UCRT64 | Windows 10+ |
 | Windows arm64 | `-windows-arm64.7z` | `windows-11-arm`, MSYS2 CLANGARM64 | Windows 11 ARM64 |
 | Linux x86_64 | `-linux-x86_64.tar.xz` | `ubuntu-26.04` | any x86_64 Linux (fully static, no glibc requirement) |
+| Linux x86_64 legacy | `-linux-x86_64-legacy.tar.xz` | `ubuntu-24.04` | any x86_64 Linux (fully static; old-distro compatible build) |
 | Linux arm64 | `-linux-arm64.tar.xz` | `ubuntu-26.04-arm` | any arm64 Linux (fully static, no glibc requirement) |
+| Linux arm64 legacy | `-linux-arm64-legacy.tar.xz` | `ubuntu-24.04-arm` | any arm64 Linux (fully static; old-distro compatible build) |
 | macOS arm64 | `-macos-arm64.tar.xz` | `macos-latest` | macOS 14+ (Apple Silicon) |
 
 How static the artifacts are: Windows and Linux ship **fully static** binaries (every dependency plus the runtime/glibc is linked in); macOS ships **all-static dependencies + system libraries dynamic** — Apple does not ship a static libSystem, so a fully static executable cannot exist on macOS (VideoToolbox/AVFoundation and friends are dynamic frameworks by nature).
@@ -49,6 +51,8 @@ How static the artifacts are: Windows and Linux ship **fully static** binaries (
 | Device capture | gdigrab / ddagrab / dshow | gdigrab / ddagrab / dshow | xcbgrab / V4L2 / ALSA / PulseAudio / KMS | xcbgrab / V4L2 / ALSA / PulseAudio / KMS | AVFoundation |
 | GPU filters | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL | Vulkan / OpenCL | CoreImage (Metal) |
 | Audio plugin hosts | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA |
+
+The Linux `-legacy` build tracks share the exact feature set of their same-arch default tracks — only the toolchain generation differs (ubuntu-24.04 vs 26.04), not the enabled libraries.
 
 #### Per-architecture absences and why
 

@@ -421,10 +421,13 @@ jobs:
 
           # Belt and braces: refuse to publish unless every platform is present,
           # built from the pinned commit, with its checksum — all four
-          # variants (static/shared/debug/shared-debug) per platform,
-          # 40 files total.
+          # variants (static/shared/debug/shared-debug) per platform;
+          # 两个 Linux 各出 latest/-legacy 双轨共 7 个平台 = 56 个文件 /
+          # the two Linuxes each ship dual latest/-legacy tracks = 7
+          # platforms = 56 files
           files=()
-          for p in windows-x86_64 windows-arm64 linux-x86_64 linux-arm64 macos-arm64; do
+          for p in windows-x86_64 windows-arm64 linux-x86_64 linux-x86_64-legacy \
+                   linux-arm64 linux-arm64-legacy macos-arm64; do
             ext="tar.xz"
             [[ "$p" == windows-* ]] && ext="7z"
             for v in "" "-shared" "-debug" "-shared-debug"; do
@@ -478,7 +481,10 @@ jobs:
           # URL 名即形态 / all four variants
           # (default/-shared/-debug/-shared-debug) land in latest — the
           # URL spells out the shape
-          re='^ffmpeg-[0-9a-f]{10}-(windows-x86_64|windows-arm64|linux-x86_64|linux-arm64|macos-arm64)(-shared|-debug|-shared-debug)?\.(7z|tar\.xz)$'
+          # legacy 腿的平台名也要进正则——漏了会以 "unexpected archive
+          # name" 拦停 / legacy platform names must be in the regex too
+          # —— a miss aborts the release on "unexpected archive name"
+          re='^ffmpeg-[0-9a-f]{10}-(windows-x86_64|windows-arm64|linux-x86_64|linux-x86_64-legacy|linux-arm64|linux-arm64-legacy|macos-arm64)(-shared|-debug|-shared-debug)?\.(7z|tar\.xz)$'
           for f in artifacts/*.7z artifacts/*.tar.xz; do
             name="$(basename "$f")"
             [[ "$name" =~ $re ]] || { echo "::error::unexpected archive name $name"; exit 1; }

@@ -205,12 +205,36 @@ jobs:
             kind: windows
             msystem: CLANGARM64
             msysdir: clangarm64
+          # Linux 双轨：默认腿是最新镜像（latest——新工具链、新特性）
+          # -legacy 腿编在 ubuntu-24.04（老 glibc/老 ISA 兼容产物）。
+          # 两条腿共用同一份已发布驱动（Driver-Latest 的
+          # FFmpeg-Builds-Full-<arch> 编在老镜像上，两侧都能跑），
+          # driver 字段是它指向发布资产名的别名；deps/产物/日志命名
+          # 空间靠 FFBUILD_PLAT_SUFFIX 分册。
+          # Dual Linux tracks: the default leg rides the newest image
+          # (latest toolchain/features) while -legacy legs build on
+          # ubuntu-24.04 (old-glibc/old-ISA compatible products). Both
+          # legs share one published driver (Driver-Latest's
+          # FFmpeg-Builds-Full-<arch> is built on the old image so it
+          # launches on either); the driver field aliases its release
+          # asset name. deps/product/log namespaces are split via
+          # FFBUILD_PLAT_SUFFIX.
           - platform: linux-x86_64
+            runner: ubuntu-26.04
+            kind: linux
+          - platform: linux-x86_64-legacy
             runner: ubuntu-24.04
             kind: linux
+            driver: linux-x86_64
+            suffix: -legacy
           - platform: linux-arm64
             runner: ubuntu-26.04-arm
             kind: linux
+          - platform: linux-arm64-legacy
+            runner: ubuntu-24.04-arm
+            kind: linux
+            driver: linux-arm64
+            suffix: -legacy
           - platform: macos-arm64
             runner: macos-latest
             kind: macos
@@ -247,15 +271,19 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p driver
+          # -legacy 腿吃默认平台名的已发布驱动（产物按 arch 出一份，
+          # matrix.driver 是它的别名）/ -legacy legs pull the released
+          # driver under the default platform name (one asset per arch;
+          # matrix.driver aliases it)
           gh release download "${{ needs.prepare.outputs.driver_tag }}" \
-            -p "FFmpeg-Builds-Full-${{ matrix.platform }}*" -D driver --clobber
+            -p "FFmpeg-Builds-Full-${{ matrix.driver || matrix.platform }}*" -D driver --clobber
           cd driver
           # Windows 的产物名和调用名都带 .exe —— 显式推导，别用参数展开
           # （*FFmpeg-Builds-Full-* 的尾 * 会把整个文件名剥光）/
           # both the asset and the invocation name carry .exe on Windows —
           # derive explicitly; parameter expansion (*FFmpeg-Builds-Full-*
           # strips the whole filename via its trailing *)
-          exe="FFmpeg-Builds-Full-${{ matrix.platform }}"
+          exe="FFmpeg-Builds-Full-${{ matrix.driver || matrix.platform }}"
           tgt="FFmpeg-Builds-Full"
           if [[ "${{ matrix.kind }}" == windows ]]; then
             exe="$exe.exe"
@@ -536,12 +564,24 @@ jobs:
           # 不给 restore-keys：key 里哈希了钉版清单（cargo-c、pip 清单、
           # rustup channel、.deb URL），一改自动冷装；前缀回退反而会把
           # 旧版二进制恢复回来，而"二进制在场即跳过"探针会把它当成新版。
+          # key 还带 runner——/opt/pyenv 的 venv 跨 python 次版本不可
+          # 移植：26.04 建的 venv 恢复到 24.04 上 console script 全报
+          # ModuleNotFoundError（实证 linux-x86_64 迁移腿全灭）；不带
+          # runner 的旧 key 会让错版 venv 每轮被恢复再被驱动的
+          # --version 探针原地重建，永远缓存不命中。
           # No restore-keys on purpose: the key hashes the pin manifest
           # (cargo-c, the pip list, the rustup channel, the .deb URLs), so
           # a bump of any pinned version cold-installs; a prefix fallback
           # would restore the OLD binaries and the "skip if binary
-          # exists" probes would take them for the new version.
-          key: tools-${{ matrix.platform }}-${{ hashFiles('packages/linux-tools.yaml') }}
+          # exists" probes would take them for the new version. The key
+          # also carries the runner — /opt/pyenv's venv is not portable
+          # across python minor versions: a 26.04-built venv restored
+          # onto 24.04 leaves every console script dying with
+          # ModuleNotFoundError (empirical: the migrated linux-x86_64
+          # leg went all-red); a runner-less key would keep restoring
+          # the wrong venv each run, making the driver's --version
+          # probe rebuild it in place every single time.
+          key: tools-${{ matrix.platform }}-${{ matrix.runner }}-${{ hashFiles('packages/linux-tools.yaml') }}
 
       # ccache 滚动缓存——显式调用模式（驱动按 FFBUILD_CCACHE 给 --cc
       # 加前缀）；ffmpeg 跟 master 但跨 run 大部分文件不变，预处理
@@ -572,6 +612,10 @@ jobs:
           FFBUILD_DIST: ${{ github.workspace }}/dist
           GH_TOKEN: ${{ github.token }}
           FFBUILD_CCACHE: "1"
+          # -legacy 腿的 deps/产物命名空间后缀（默认腿为空）/ the
+          # -legacy leg's deps/artifact namespace suffix (empty on
+          # default legs)
+          FFBUILD_PLAT_SUFFIX: ${{ matrix.suffix }}
           CCACHE_DIR: ${{ runner.temp }}/ffmpeg-ccache
           CCACHE_MAXSIZE: 2G
         run: |
@@ -582,7 +626,8 @@ jobs:
           # deps 恢复/上传全体静默跳过；GITHUB_STEP_SUMMARY 丢了
           # 失败明细进不了 run 页；GITHUB_ACTIONS 丢了驱动的 CI 输出
           # 闸门判不出来，日志回全量模式；CCACHE_DIR/FFBUILD_CCACHE
-          # 丢了 ccache 静默失效。
+          # 丢了 ccache 静默失效；FFBUILD_PLAT_SUFFIX 丢了 -legacy 腿
+          # 的 deps/产物名会撞默认腿。
           # apt, /opt and the /usr/local install all want root. sudo-rs on
           # newer runners silently ignores -E, so pass env through
           # `sudo env` explicitly — a lost FFBUILD_DIST sends artifacts to
@@ -590,8 +635,10 @@ jobs:
           # disables deps restore/upload, a lost GITHUB_STEP_SUMMARY
           # silently drops the failure details from the run page, a lost
           # GITHUB_ACTIONS leaves the driver's CI output gate disengaged
-          # and the log back at full volume, and lost CCACHE_DIR /
-          # FFBUILD_CCACHE silently disables ccache.
+          # and the log back at full volume, lost CCACHE_DIR /
+          # FFBUILD_CCACHE silently disables ccache, and a lost
+          # FFBUILD_PLAT_SUFFIX collides the -legacy leg's deps/artifact
+          # names with the default leg's.
           sudo env FFBUILD_WORK="$FFBUILD_WORK" FFBUILD_DIST="$FFBUILD_DIST" \
             GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
             GITHUB_SHA="$GITHUB_SHA" \
@@ -600,6 +647,7 @@ jobs:
             FFMPEG_SHA="$FFMPEG_SHA" \
             FFMPEG_REF="${FFMPEG_REF:-}" FFMPEG_REPO="${FFMPEG_REPO:-}" \
             FFBUILD_SHARED="${FFBUILD_SHARED:-}" FFBUILD_DEBUG="${FFBUILD_DEBUG:-}" \
+            FFBUILD_PLAT_SUFFIX="$FFBUILD_PLAT_SUFFIX" \
             FFBUILD_CCACHE="$FFBUILD_CCACHE" CCACHE_DIR="$CCACHE_DIR" \
             CCACHE_MAXSIZE="$CCACHE_MAXSIZE" \
             ./driver/FFmpeg-Builds-Full build-all
@@ -609,12 +657,16 @@ jobs:
         env:
           FFBUILD_WORK: /ffmpeg-${{ matrix.platform }}
           GH_TOKEN: ${{ github.token }}
+          # 同 Build 步：save-deps 的命名空间也要后缀分册 / same as the
+          # Build step: save-deps namespacing wants the suffix too
+          FFBUILD_PLAT_SUFFIX: ${{ matrix.suffix }}
         # sudo-rs 不认 -E —— env 显式透传 / sudo-rs ignores -E — pass env
         # through `sudo env` explicitly
         run: |
           sudo env FFBUILD_WORK="$FFBUILD_WORK" GH_TOKEN="$GH_TOKEN" \
             GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" \
             GITHUB_ACTIONS="$GITHUB_ACTIONS" \
+            FFBUILD_PLAT_SUFFIX="$FFBUILD_PLAT_SUFFIX" \
             ./driver/FFmpeg-Builds-Full save-deps
 
       # ccache 条目按内容寻址、单条原子写——取消留下的半截目录仍是有效
@@ -800,10 +852,22 @@ jobs:
             runner: windows-latest
           - platform: windows-arm64
             runner: windows-11-arm
+          # 验证腿与各构建腿 1:1——legacy 产物在 24.04 干净机上冒烟
+          # （正是它的目标环境）；driver 字段是共享已发布 Driver
+          # 产物的别名 / verify legs map 1:1 to build legs — legacy
+          # products smoke on a clean 24.04 machine (their exact
+          # target environment); the driver field aliases the shared
+          # released Driver asset
           - platform: linux-x86_64
             runner: ubuntu-26.04
+          - platform: linux-x86_64-legacy
+            runner: ubuntu-24.04
+            driver: linux-x86_64
           - platform: linux-arm64
             runner: ubuntu-26.04-arm
+          - platform: linux-arm64-legacy
+            runner: ubuntu-24.04-arm
+            driver: linux-arm64
           - platform: macos-arm64
             runner: macos-latest
     steps:
@@ -818,8 +882,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p driver
+          # -legacy 腿吃默认平台名的已发布驱动 / -legacy legs pull the
+          # released driver under the default platform name
           gh release download "${{ needs.prepare.outputs.driver_tag }}" \
-            -p "FFmpeg-Builds-Full-${{ matrix.platform }}*" -D driver --clobber
+            -p "FFmpeg-Builds-Full-${{ matrix.driver || matrix.platform }}*" -D driver --clobber
           (cd driver && sha256sum -c -- *.sha256 && rm -f *.sha256)
 
       - name: Download build
@@ -894,8 +960,13 @@ jobs:
       # sandbox is tight — a hardcoded list once left resolute's qemu64
       # defaults (avx2/fma/popcnt) on and gave a false green. lzcnt is
       # not probed: ABM-less CPUs decode it as BSR, not #UD
+      # 基线门卡全部 x86_64 腿（latest + legacy）——两条腿产的都是
+      # "通用 x86_64" 产物，通用 TU 被抬成 >SSE2 在任何一条腿上都是
+      # 缺陷 / the baseline gate covers every x86_64 leg (latest +
+      # legacy) — both ship "generic x86_64" products and a >SSE2
+      # generic TU is a defect on either
       - name: Baseline ISA gate (qemu64)
-        if: matrix.platform == 'linux-x86_64'
+        if: startsWith(matrix.platform, 'linux-x86_64')
         run: |
           set -euo pipefail
           sudo apt-get update -qq
@@ -1001,10 +1072,13 @@ jobs:
 
           # Belt and braces: refuse to publish unless every platform is present,
           # built from the pinned commit, with its checksum — all four
-          # variants (static/shared/debug/shared-debug) per platform,
-          # 40 files total.
+          # variants (static/shared/debug/shared-debug) per platform;
+          # 两个 Linux 各出 latest/-legacy 双轨共 7 个平台 = 56 个文件 /
+          # the two Linuxes each ship dual latest/-legacy tracks = 7
+          # platforms = 56 files
           files=()
-          for p in windows-x86_64 windows-arm64 linux-x86_64 linux-arm64 macos-arm64; do
+          for p in windows-x86_64 windows-arm64 linux-x86_64 linux-x86_64-legacy \
+                   linux-arm64 linux-arm64-legacy macos-arm64; do
             ext="tar.xz"
             [[ "$p" == windows-* ]] && ext="7z"
             for v in "" "-shared" "-debug" "-shared-debug"; do
@@ -1058,7 +1132,10 @@ jobs:
           # URL 名即形态 / all four variants
           # (default/-shared/-debug/-shared-debug) land in latest — the
           # URL spells out the shape
-          re='^ffmpeg-[0-9a-f]{10}-(windows-x86_64|windows-arm64|linux-x86_64|linux-arm64|macos-arm64)(-shared|-debug|-shared-debug)?\.(7z|tar\.xz)$'
+          # legacy 腿的平台名也要进正则——漏了会以 "unexpected archive
+          # name" 拦停 / legacy platform names must be in the regex too
+          # —— a miss aborts the release on "unexpected archive name"
+          re='^ffmpeg-[0-9a-f]{10}-(windows-x86_64|windows-arm64|linux-x86_64|linux-x86_64-legacy|linux-arm64|linux-arm64-legacy|macos-arm64)(-shared|-debug|-shared-debug)?\.(7z|tar\.xz)$'
           for f in artifacts/*.7z artifacts/*.tar.xz; do
             name="$(basename "$f")"
             [[ "$name" =~ $re ]] || { echo "::error::unexpected archive name $name"; exit 1; }

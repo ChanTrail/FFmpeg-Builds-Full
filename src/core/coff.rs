@@ -19,6 +19,13 @@ pub struct Member {
     pub off: usize,
     /// 数据长度 / payload length
     pub len: usize,
+    /// 整条记录（60B 头 + 数据 + 偶对齐填充）在归档内的起点——归档重写
+    /// 时逐字节拷贝的区间起点 / start of the member's whole record
+    /// (60-byte header + data + even pad) — where a verbatim archive
+    /// rewrite copies from
+    pub rec_off: usize,
+    /// 整条记录长度（含填充）/ full record length (pad included)
+    pub rec_len: usize,
 }
 
 fn u16le(b: &[u8], o: usize) -> u16 {
@@ -91,6 +98,8 @@ pub fn members(data: &[u8]) -> Vec<Member> {
                     name,
                     off: body + n,
                     len: size - n,
+                    rec_off: p,
+                    rec_len: 60 + size + (size & 1),
                 });
             }
         } else if raw == "/" || raw == "//" || raw.starts_with("/SYM64") {
@@ -102,6 +111,8 @@ pub fn members(data: &[u8]) -> Vec<Member> {
                     name,
                     off: body,
                     len: size,
+                    rec_off: p,
+                    rec_len: 60 + size + (size & 1),
                 });
             }
         } else {
@@ -109,9 +120,139 @@ pub fn members(data: &[u8]) -> Vec<Member> {
                 name: raw.trim_end_matches('/').to_string(),
                 off: body,
                 len: size,
+                rec_off: p,
+                rec_len: 60 + size + (size & 1),
             });
         }
         p += 60 + size + (size & 1);
+    }
+    out
+}
+
+/// 按谓词过滤重写归档：`!<arch>\n` 头 + `//` 长名表原样保留 + 谓词通过
+/// 的成员记录逐字节拷贝（顺序不变——链接语义不动）。`/` 符号索引与
+/// `__.SYMDEF*` 在任何成员增删后必然失期（全体偏移都变了），一律丢给
+/// 调用方 ranlib 重建；自身索引缺失时输出也无索引，语义一致。
+/// Rewrite an archive keeping members the predicate accepts: `!<arch>\n`
+/// magic + the `//` long-name table verbatim + raw records whose Member
+/// passes `keep` (original order preserved — link semantics unmoved).
+/// The `/` symbol index and `__.SYMDEF*` go stale on any membership
+/// change (every offset shifts), so they are always dropped for the
+/// caller to rebuild via ranlib; an index-less input likewise yields an
+/// index-less output, same semantics.
+/// 返回空 Vec = 输入不是归档——调用方按"无改动"处理 / an empty Vec
+/// means the input was no archive — callers treat it as "no change".
+pub fn write_filtered(data: &[u8], keep: &mut dyn FnMut(&Member) -> bool) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    if data.len() < 8 || &data[..8] != b"!<arch>\n" {
+        return out;
+    }
+    out.extend_from_slice(b"!<arch>\n");
+    // 先取 `//` 名表（/NNN 成员名解析要靠它，且记录本身要原样携带）/
+    // find the `//` name table first — `/NNN` name resolution needs it
+    // and the record itself rides along verbatim
+    let mut strtab: (usize, usize) = (0, 0);
+    let mut strrec: (usize, usize) = (0, 0);
+    let mut p = 8usize;
+    while p + 60 <= data.len() {
+        let hdr = &data[p..p + 60];
+        if &hdr[58..60] != b"`\n" {
+            break;
+        }
+        let size = atoi(&hdr[48..58]);
+        let raw = std::str::from_utf8(&hdr[..16]).unwrap_or("").trim_end();
+        if raw == "//" {
+            strtab = (p + 60, size);
+            strrec = (p, 60 + size + (size & 1));
+        }
+        p += 60 + size + (size & 1);
+    }
+    let str_get = |off: usize| -> Option<String> {
+        let (so, sl) = strtab;
+        if off >= sl || so + off >= data.len() {
+            return None;
+        }
+        let b = &data[so + off..];
+        let end = b
+            .iter()
+            .position(|&c| c == b'\n' || c == 0)
+            .unwrap_or(b.len());
+        let s = std::str::from_utf8(&b[..end])
+            .ok()?
+            .trim_end_matches('/')
+            .to_string();
+        Some(s)
+    };
+    if strrec.1 > 0 && strrec.0 + strrec.1 <= data.len() {
+        out.extend_from_slice(&data[strrec.0..strrec.0 + strrec.1]);
+    }
+    let mut p = 8usize;
+    while p + 60 <= data.len() {
+        let hdr = &data[p..p + 60];
+        if &hdr[58..60] != b"`\n" {
+            break;
+        }
+        let size = atoi(&hdr[48..58]);
+        let rec_len = 60 + size + (size & 1);
+        let raw = std::str::from_utf8(&hdr[..16]).unwrap_or("").trim_end();
+        let body = p + 60;
+        // 索引/名表成员：`//` 已在上面原样落盘，`/`（与 BSD `__.SYMDEF*`）
+        // 丢弃待 ranlib 重建 / index/name-table members: `//` already
+        // landed above; `/` (and BSD `__.SYMDEF*`) are dropped for
+        // ranlib to rebuild
+        if raw == "/" || raw == "//" || raw.starts_with("/SYM64") || raw.starts_with("__.SYMDEF") {
+            p += rec_len;
+            continue;
+        }
+        let m = if let Some(n) = raw
+            .strip_prefix("#1/")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            if n > size || body + n > data.len() {
+                p += rec_len;
+                continue;
+            }
+            Member {
+                name: String::from_utf8_lossy(&data[body..body + n]).to_string(),
+                off: body + n,
+                len: size - n,
+                rec_off: p,
+                rec_len,
+            }
+        } else if let Some(off) = raw.strip_prefix('/').and_then(|s| s.parse::<usize>().ok()) {
+            // 长名解析失败的成员按"无条件保留"处理——宁可带一个谓词没看见
+            // 的成员，也不能静默丢数据 / members whose long name fails to
+            // resolve are kept unconditionally — better to carry one the
+            // predicate never saw than to silently drop data
+            match str_get(off) {
+                Some(name) => Member {
+                    name,
+                    off: body,
+                    len: size,
+                    rec_off: p,
+                    rec_len,
+                },
+                None => {
+                    if p + rec_len <= data.len() {
+                        out.extend_from_slice(&data[p..p + rec_len]);
+                    }
+                    p += rec_len;
+                    continue;
+                }
+            }
+        } else {
+            Member {
+                name: raw.trim_end_matches('/').to_string(),
+                off: body,
+                len: size,
+                rec_off: p,
+                rec_len,
+            }
+        };
+        if keep(&m) && p + rec_len <= data.len() {
+            out.extend_from_slice(&data[p..p + rec_len]);
+        }
+        p += rec_len;
     }
     out
 }

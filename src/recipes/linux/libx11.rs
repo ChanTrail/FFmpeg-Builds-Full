@@ -15,9 +15,29 @@ pub fn recipe() -> Recipe {
 /// 构建 libX11 静态库 / Build libX11 statically
 fn body(ctx: &Ctx) -> Result<(), String> {
     let src = ctx.src()?;
-    // --disable-specs：文档要 xmlto/xorg-sgml-doctools；--without-locale
-    // 之类一律不动（运行时 locale 表是数据文件照常装）/ --disable-specs:
-    // docs want xmlto/xorg-sgml-doctools; locale data files still install
-    // as usual
-    buildsys::autotools_build(&src, &["--disable-specs"])
+    // XErrorDB、XKeysymDB、X11 locale 表都是运行时数据文件——默认
+    // $datadir/X11/* 烤 /opt/ffbuild，用户机上 XGetErrorDatabaseText
+    // 只能吐 "Unknown error"、XIM 找不到 compose 表。datadir 指系
+    // 统标准位（Debian/Fedora/Arch 一致 /usr/share/X11）；同时是安
+    // 装目录，经 DESTDIR stage 防写脏构建机（$libdir/X11/locale 的
+    // xlibi18n 模块 .so 静态链里本就跑不动，随 stage 丢弃无害）/
+    // XErrorDB, XKeysymDB and the X11 locale tables are all runtime
+    // data files — the default $datadir/X11/* bakes /opt/ffbuild, so
+    // on user machines XGetErrorDatabaseText can only emit "Unknown
+    // error" and XIM finds no compose table. Point datadir at the
+    // system-standard spot (/usr/share/X11 across Debian/Fedora/
+    // Arch); it doubles as the install dir, so stage via DESTDIR to
+    // keep the build machine clean (the $libdir/X11/locale xlibi18n
+    // .so modules can't load in a static link anyway — dropping that
+    // staged copy is harmless)
+    buildsys::autotools_build_destdir(
+        &src,
+        &[
+            "--disable-specs",
+            "--datadir=/usr/share",
+            "--datarootdir=/usr/share",
+        ],
+        &[],
+        &src.join("x11stage"),
+    )
 }

@@ -71,9 +71,29 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     // feature-type options while plain required:false optionals ignore
     // it — empirically libdbus/libsystemd/libx11/libasyncns still made
     // libpulsecommon's NEEDED list
-    buildsys::meson_build(
+    // 运行期路径全按系统标准位烤：sysconfdir→PA_MACHINE_ID=
+    // /etc/machine-id 与 PA_DEFAULT_CONFIG_DIR=/etc/pulse（client.conf），
+    // localstatedir→PA_SYSTEM_RUNTIME_PATH=/var/run/pulse（系统模式
+    // native 套接字兜底；per-user 的走 XDG_RUNTIME_DIR 不受影响），
+    // bindir→PA_BINARY=/usr/bin/pulseaudio（autospawn 回退）。默认
+    // 否则全是 /opt/ffbuild 前缀——用户机上客户端连系统守护、读
+    // 机器 id、拉配置、自启全落空。这些目录同时是安装目录，经
+    // destdir stage 避免写脏构建机 / bake runtime paths at the
+    // system-standard spots: sysconfdir→PA_MACHINE_ID=/etc/machine-id
+    // and PA_DEFAULT_CONFIG_DIR=/etc/pulse (client.conf),
+    // localstatedir→PA_SYSTEM_RUNTIME_PATH=/var/run/pulse (system-mode
+    // native socket fallback; the per-user path goes through
+    // XDG_RUNTIME_DIR regardless), bindir→PA_BINARY=/usr/bin/pulseaudio
+    // (autospawn fallback). The defaults bake /opt/ffbuild — on user
+    // machines the system-daemon socket, machine id, config and
+    // autospawn all miss. These dirs double as install dirs — stage via
+    // destdir so the build machine stays clean
+    buildsys::meson_build_destdir(
         &src,
         &[
+            "-Dsysconfdir=/etc",
+            "-Dlocalstatedir=/var",
+            "-Dbindir=/usr/bin",
             "-Dauto_features=disabled",
             "-Ddaemon=false",
             // v17.0 的选项型谱：doxygen/tests/man/daemon 全是布尔
@@ -120,6 +140,7 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-Dadrian-aec=false",
             "-Dbluez5-ofono-headset=false",
         ],
+        &src.join("pastage"),
     )?;
     // deps 缓存会把 .so 时代的旧 prefix 整体还原——libpulse.so.0 /
     // libpulsecommon-17.0.so 等残留 meson install 只装不卸，链接器

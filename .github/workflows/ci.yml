@@ -124,11 +124,17 @@ jobs:
           - platform: windows-arm64
             runner: windows-11-arm
             exe: FFmpeg-Builds-Full.exe
+          # Linux 驱动编在老镜像：latest+legacy 两条构建腿共用同一
+          # Driver-<p> 产物（动态 glibc——编在新镜像上它就在 legacy
+          # 腿的 24.04 runner 上跑不起来）/ Linux drivers build on the
+          # OLD image: the latest+legacy build legs share one
+          # Driver-<p> artifact (dynamic glibc — a driver built on the
+          # new image cannot launch on the legacy leg's 24.04 runner)
           - platform: linux-x86_64
             runner: ubuntu-24.04
             exe: FFmpeg-Builds-Full
           - platform: linux-arm64
-            runner: ubuntu-26.04-arm
+            runner: ubuntu-24.04-arm
             exe: FFmpeg-Builds-Full
           - platform: macos-arm64
             runner: macos-latest
@@ -231,12 +237,35 @@ jobs:
             kind: windows
             msystem: CLANGARM64
             msysdir: clangarm64
+          # Linux 双轨：默认腿是最新镜像（latest——新工具链、新特性）
+          # -legacy 腿编在 ubuntu-24.04（老 glibc/老 ISA 兼容产物）。
+          # 两条腿共用同一份 Driver 产物（编在老镜像上，两侧都能跑），
+          # deps/产物/日志命名空间靠 FFBUILD_PLAT_SUFFIX 分册——同名
+          # 会互相覆盖快照、甚至把错工具链前缀恢复回来。
+          # Dual Linux tracks: the default leg rides the newest image
+          # (latest toolchain/features) while -legacy legs build on
+          # ubuntu-24.04 (old-glibc/old-ISA compatible products). Both
+          # legs share one Driver artifact (built on the old image so
+          # it launches on either). deps/product/log namespaces are
+          # split via FFBUILD_PLAT_SUFFIX — same-name legs would
+          # clobber each other's snapshots or restore the wrong
+          # toolchain's prefix.
           - platform: linux-x86_64
+            runner: ubuntu-26.04
+            kind: linux
+          - platform: linux-x86_64-legacy
             runner: ubuntu-24.04
             kind: linux
+            driver: linux-x86_64
+            suffix: -legacy
           - platform: linux-arm64
             runner: ubuntu-26.04-arm
             kind: linux
+          - platform: linux-arm64-legacy
+            runner: ubuntu-24.04-arm
+            kind: linux
+            driver: linux-arm64
+            suffix: -legacy
           - platform: macos-arm64
             runner: macos-latest
             kind: macos
@@ -263,12 +292,15 @@ jobs:
         uses: actions/checkout@v7
 
       # 驱动吃本趟 driver job 的 artifact——CI 测的就是这版代码，不是
-      # 已发布 release / the driver is this run's own artifact — CI
-      # exercises the current code, not a published release
+      # 已发布 release。matrix.driver 是 -legacy 腿指向共享 Driver
+      # 产物的别名（无该字段时回落平台本名）/ the driver is this
+      # run's own artifact — CI exercises the current code, not a
+      # published release. matrix.driver lets -legacy legs alias the
+      # shared Driver artifact (absent -> the platform name itself)
       - name: Download Driver
         uses: actions/download-artifact@v8
         with:
-          name: Driver-${{ matrix.platform }}
+          name: Driver-${{ matrix.driver || matrix.platform }}
           path: driver
 
       - name: Make Driver Executable (POSIX)
@@ -547,12 +579,24 @@ jobs:
           # 不给 restore-keys：key 里哈希了钉版清单（cargo-c、pip 清单、
           # rustup channel、.deb URL），一改自动冷装；前缀回退反而会把
           # 旧版二进制恢复回来，而"二进制在场即跳过"探针会把它当成新版。
+          # key 还带 runner——/opt/pyenv 的 venv 跨 python 次版本不可
+          # 移植：26.04 建的 venv 恢复到 24.04 上 console script 全报
+          # ModuleNotFoundError（实证 linux-x86_64 迁移腿全灭）；不带
+          # runner 的旧 key 会让错版 venv 每轮被恢复再被驱动的
+          # --version 探针原地重建，永远缓存不命中。
           # No restore-keys on purpose: the key hashes the pin manifest
           # (cargo-c, the pip list, the rustup channel, the .deb URLs), so
           # a bump of any pinned version cold-installs; a prefix fallback
           # would restore the OLD binaries and the "skip if binary
-          # exists" probes would take them for the new version.
-          key: tools-${{ matrix.platform }}-${{ hashFiles('packages/linux-tools.yaml') }}
+          # exists" probes would take them for the new version. The key
+          # also carries the runner — /opt/pyenv's venv is not portable
+          # across python minor versions: a 26.04-built venv restored
+          # onto 24.04 leaves every console script dying with
+          # ModuleNotFoundError (empirical: the migrated linux-x86_64
+          # leg went all-red); a runner-less key would keep restoring
+          # the wrong venv each run, making the driver's --version
+          # probe rebuild it in place every single time.
+          key: tools-${{ matrix.platform }}-${{ matrix.runner }}-${{ hashFiles('packages/linux-tools.yaml') }}
 
       # ccache 滚动缓存——显式调用模式（驱动按 FFBUILD_CCACHE 给 --cc
       # 加前缀）；ffmpeg 跟 master 但跨 run 大部分文件不变，预处理
@@ -591,6 +635,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FFMPEG_SHA: ${{ needs.prepare.outputs.sha }}
           FFBUILD_CCACHE: "1"
+          # -legacy 腿的 deps/产物命名空间后缀（默认腿为空）/ the
+          # -legacy leg's deps/artifact namespace suffix (empty on
+          # default legs)
+          FFBUILD_PLAT_SUFFIX: ${{ matrix.suffix }}
           CCACHE_DIR: ${{ runner.temp }}/ffmpeg-ccache
           CCACHE_MAXSIZE: 2G
         run: |
@@ -601,7 +649,8 @@ jobs:
           # deps 恢复/上传全体静默跳过；GITHUB_STEP_SUMMARY 丢了
           # 失败明细进不了 run 页；GITHUB_ACTIONS 丢了驱动的 CI 输出
           # 闸门判不出来，日志回全量模式；FFMPEG_SHA 丢了退化成各腿
-          # 自解的 HEAD；CCACHE_DIR/FFBUILD_CCACHE 丢了 ccache 静默失效。
+          # 自解的 HEAD；CCACHE_DIR/FFBUILD_CCACHE 丢了 ccache 静默失效；
+          # FFBUILD_PLAT_SUFFIX 丢了 -legacy 腿的 deps/产物名会撞默认腿。
           # apt, /opt and the /usr/local install all want root. sudo-rs on
           # newer runners silently ignores -E, so pass env through
           # `sudo env` explicitly — a lost FFBUILD_DIST sends artifacts to
@@ -610,8 +659,10 @@ jobs:
           # silently drops the failure details from the run page, a lost
           # GITHUB_ACTIONS leaves the driver's CI output gate disengaged
           # and the log back at full volume, and a lost FFMPEG_SHA
-          # degrades every leg to resolving its own HEAD, and lost
-          # CCACHE_DIR / FFBUILD_CCACHE silently disables ccache.
+          # degrades every leg to resolving its own HEAD, lost
+          # CCACHE_DIR / FFBUILD_CCACHE silently disables ccache, and a
+          # lost FFBUILD_PLAT_SUFFIX collides the -legacy leg's
+          # deps/artifact names with the default leg's.
           sudo env FFBUILD_WORK="$FFBUILD_WORK" FFBUILD_DIST="$FFBUILD_DIST" \
             GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
             GITHUB_SHA="$GITHUB_SHA" \
@@ -620,6 +671,7 @@ jobs:
             FFMPEG_SHA="$FFMPEG_SHA" \
             FFMPEG_REF="${FFMPEG_REF:-}" FFMPEG_REPO="${FFMPEG_REPO:-}" \
             FFBUILD_SHARED="${FFBUILD_SHARED:-}" FFBUILD_DEBUG="${FFBUILD_DEBUG:-}" \
+            FFBUILD_PLAT_SUFFIX="$FFBUILD_PLAT_SUFFIX" \
             FFBUILD_CCACHE="$FFBUILD_CCACHE" CCACHE_DIR="$CCACHE_DIR" \
             CCACHE_MAXSIZE="$CCACHE_MAXSIZE" \
             ./driver/FFmpeg-Builds-Full build-all
@@ -629,12 +681,16 @@ jobs:
         env:
           FFBUILD_WORK: /ffmpeg-${{ matrix.platform }}
           GH_TOKEN: ${{ github.token }}
+          # 同 Build 步：save-deps 的命名空间也要后缀分册 / same as the
+          # Build step: save-deps namespacing wants the suffix too
+          FFBUILD_PLAT_SUFFIX: ${{ matrix.suffix }}
         # sudo-rs 不认 -E —— env 显式透传 / sudo-rs ignores -E — pass env
         # through `sudo env` explicitly
         run: |
           sudo env FFBUILD_WORK="$FFBUILD_WORK" GH_TOKEN="$GH_TOKEN" \
             GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" \
             GITHUB_ACTIONS="$GITHUB_ACTIONS" \
+            FFBUILD_PLAT_SUFFIX="$FFBUILD_PLAT_SUFFIX" \
             ./driver/FFmpeg-Builds-Full save-deps
 
       # ccache 条目按内容寻址、单条原子写——取消留下的半截目录仍是有效
@@ -835,17 +891,28 @@ jobs:
             runner: windows-latest
           - platform: windows-arm64
             runner: windows-11-arm
+          # 验证腿与各构建腿 1:1——legacy 产物在 24.04 干净机上冒烟
+          # （正是它的目标环境）；driver 字段是共享 Driver 产物的别名 /
+          # verify legs map 1:1 to build legs — legacy products smoke
+          # on a clean 24.04 machine (their exact target environment);
+          # the driver field aliases the shared Driver artifact
           - platform: linux-x86_64
             runner: ubuntu-26.04
+          - platform: linux-x86_64-legacy
+            runner: ubuntu-24.04
+            driver: linux-x86_64
           - platform: linux-arm64
             runner: ubuntu-26.04-arm
+          - platform: linux-arm64-legacy
+            runner: ubuntu-24.04-arm
+            driver: linux-arm64
           - platform: macos-arm64
             runner: macos-latest
     steps:
       - name: Download driver artifact (for `smoke`)
         uses: actions/download-artifact@v8
         with:
-          name: Driver-${{ matrix.platform }}
+          name: Driver-${{ matrix.driver || matrix.platform }}
           path: driver
 
       - name: Download build
@@ -920,8 +987,15 @@ jobs:
       # sandbox is tight — a hardcoded list once left resolute's qemu64
       # defaults (avx2/fma/popcnt) on and gave a false green. lzcnt is
       # not probed: ABM-less CPUs decode it as BSR, not #UD
+      # 基线门卡全部 x86_64 腿（latest + legacy）——两条腿产的都是
+      # "通用 x86_64" 产物，通用 TU 被抬成 >SSE2 在任何一条腿上都是
+      # 缺陷；amd64v3 是 Ubuntu 的独立实验归档，不是 runner/gcc 默认
+      # 基线 / the baseline gate covers every x86_64 leg (latest +
+      # legacy) — both ship "generic x86_64" products and a >SSE2
+      # generic TU is a defect on either; amd64v3 is Ubuntu's
+      # separate opt-in archive, not the runner/gcc default baseline
       - name: Baseline ISA gate (qemu64)
-        if: matrix.platform == 'linux-x86_64'
+        if: startsWith(matrix.platform, 'linux-x86_64')
         run: |
           set -euo pipefail
           sudo apt-get update -qq

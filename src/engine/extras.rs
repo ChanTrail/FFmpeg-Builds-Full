@@ -773,7 +773,7 @@ fn step_summary_failures(e: &sys::Env, failed: &[(String, String)]) {
     }
     let mut md = format!(
         "## deps extras — {} — failed recipes / 失败配方\n\n",
-        e.plat()
+        e.plat_pkg()
     );
     for (n, why) in failed {
         md.push_str(&format!("- **{n}** — {why}\n"));

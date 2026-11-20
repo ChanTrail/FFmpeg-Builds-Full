@@ -30,8 +30,12 @@ SERVER="${GITHUB_SERVER_URL:-https://github.com}"
 REPO="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must be set}"
 BASE="$SERVER/$REPO/releases/download/$TAG"
 
-# 全部目标平台清单 / All target platforms
-PLATFORMS=(windows-x86_64 windows-arm64 linux-x86_64 linux-arm64 macos-arm64)
+# 全部目标平台清单——两个 Linux 各出 latest/-legacy 双轨（legacy 是
+# ubuntu-24.04 老 glibc 兼容构建）/ All target platforms — both Linuxes
+# ship dual latest/-legacy tracks (legacy = ubuntu-24.04 old-glibc
+# compatible builds)
+PLATFORMS=(windows-x86_64 windows-arm64 linux-x86_64 linux-x86_64-legacy \
+           linux-arm64 linux-arm64-legacy macos-arm64)
 
 COMMIT_LINE_ZH="每个文件名中包含其构建所用的上游提交的前 10 位哈希。"
 COMMIT_LINE_EN="The first 10 digits of the upstream commit each file was built from are part of its name."

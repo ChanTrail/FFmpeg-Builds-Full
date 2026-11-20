@@ -137,7 +137,6 @@ pub fn recipes() -> Vec<Recipe> {
         davs2::recipe(),
         ffnvcodec::recipe(),
         flite::recipe(),
-        fontconfig::recipe(),
         freetype::recipe(),
         frei0r::recipe(),
         fribidi::recipe(),
@@ -232,7 +231,10 @@ pub fn recipes() -> Vec<Recipe> {
         zstd::recipe(),
         zvbi::recipe(),
     ];
-    // glib 是双表项模块（mac+windows）/ glib is the two-entry module
+    // glib/fontconfig 是双表项模块（posix+windows 各一行）/
+    // glib and fontconfig are two-entry modules (one posix row + one
+    // windows row each)
     v.extend(glib::recipes());
+    v.extend(fontconfig::recipes());
     v
 }

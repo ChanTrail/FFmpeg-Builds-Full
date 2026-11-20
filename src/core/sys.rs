@@ -59,6 +59,21 @@ impl Env {
         };
         format!("{os}-{}", self.arch.name())
     }
+
+    /// 打包/产物命名空间的平台名：plat() + FFBUILD_PLAT_SUFFIX。同架构
+    /// 的 legacy 构建腿（ubuntu-24.04 老工具链）与最新腿要分开发
+    /// deps 快照、ffmpeg 压缩包与日志——同名会互相覆盖/错工具链恢复。
+    /// manifest 键（features/sources）不受后缀影响，仍走 plat()。
+    /// Platform name for the packaging/artifact namespace: plat() +
+    /// FFBUILD_PLAT_SUFFIX. A same-arch legacy build leg (ubuntu-24.04
+    /// toolchain) and the latest leg publish deps snapshots, ffmpeg
+    /// archives and logs under separate names — a shared name would
+    /// clobber / restore the wrong toolchain's prefix. Manifest keys
+    /// (features/sources) ignore the suffix and keep using plat().
+    pub fn plat_pkg(&self) -> String {
+        let suffix = std::env::var("FFBUILD_PLAT_SUFFIX").unwrap_or_default();
+        format!("{}{suffix}", self.plat())
+    }
 }
 
 /// 全局运行环境：一次探测、全局只读（gomp 例外，探测后写入）

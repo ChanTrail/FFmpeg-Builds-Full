@@ -17,7 +17,7 @@
 https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-latest-<platform>[-shared|-debug|-shared-debug].<ext>
 ```
 
-`<platform>`：`windows-x86_64`、`windows-arm64`、`linux-x86_64`、`linux-arm64`、`macos-arm64`；Windows 为 `.7z`（固实压缩），其余为 `.tar.xz`。四个变体各有独立的 latest 链接。
+`<platform>`：`windows-x86_64`、`windows-arm64`、`linux-x86_64`、`linux-x86_64-legacy`、`linux-arm64`、`linux-arm64-legacy`、`macos-arm64`；Windows 为 `.7z`（固实压缩），其余为 `.tar.xz`。四个变体各有独立的 latest 链接。
 
 **带日期的 Release**：标签 `YYYYMMDD`（同日多次构建附加 `-HHMM`），保留最近 30 个（约 3 个月）。每个压缩包附带：
 
@@ -34,7 +34,9 @@ https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-
 | Windows x86_64 | `-windows-x86_64.7z` | `windows-latest`，MSYS2 UCRT64 | Windows 10+ |
 | Windows arm64 | `-windows-arm64.7z` | `windows-11-arm`，MSYS2 CLANGARM64 | Windows 11 ARM64 |
 | Linux x86_64 | `-linux-x86_64.tar.xz` | `ubuntu-26.04` | 任意 x86_64 Linux（全静态，无 glibc 要求） |
+| Linux x86_64 legacy | `-linux-x86_64-legacy.tar.xz` | `ubuntu-24.04` | 任意 x86_64 Linux（全静态；旧发行版兼容构建） |
 | Linux arm64 | `-linux-arm64.tar.xz` | `ubuntu-26.04-arm` | 任意 arm64 Linux（全静态，无 glibc 要求） |
+| Linux arm64 legacy | `-linux-arm64-legacy.tar.xz` | `ubuntu-24.04-arm` | 任意 arm64 Linux（全静态；旧发行版兼容构建） |
 | macOS arm64 | `-macos-arm64.tar.xz` | `macos-latest` | macOS 14+（Apple Silicon） |
 
 产物静态程度：Windows 与 Linux 为**全静态**二进制（依赖库与运行库/glibc 全部编入）；macOS 为**依赖全静态 + 仅系统库动态**——Apple 不发行静态 libSystem，macOS 上不存在全静态可执行文件（VideoToolbox/AVFoundation 等系统框架也只能动态加载）。
@@ -49,6 +51,8 @@ https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-
 | 设备采集 | gdigrab / ddagrab / dshow | gdigrab / ddagrab / dshow | xcbgrab / V4L2 / ALSA / PulseAudio / KMS | xcbgrab / V4L2 / ALSA / PulseAudio / KMS | AVFoundation |
 | GPU 滤镜 | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL | Vulkan / OpenCL | CoreImage（Metal） |
 | 音频插件宿主 | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA |
+
+Linux 的 `-legacy` 构建轨与同架构默认轨共用同一份特性清单——差异只在构建工具链世代（ubuntu-24.04 vs 26.04），启用的库与功能一致。
 
 #### 各平台缺席项及原因
 

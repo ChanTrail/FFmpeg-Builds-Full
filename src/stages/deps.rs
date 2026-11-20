@@ -163,9 +163,14 @@ pub fn ensure_release() -> Result<(), String> {
     // (timestamped names, 3 newest per platform, newest on top, `—` for
     // gaps). Assets are grouped by deps-<platform>-* and download URLs
     // are composed directly.
-    const PLATS: [&str; 5] = [
+    // legacy 腿（*-legacy 后缀，老工具链构建）与默认腿分册发布 /
+    // the -legacy legs (older-toolchain builds) publish in a separate
+    // namespace from the default legs
+    const PLATS: [&str; 7] = [
         "linux-arm64",
+        "linux-arm64-legacy",
         "linux-x86_64",
+        "linux-x86_64-legacy",
         "macos-arm64",
         "windows-arm64",
         "windows-x86_64",
@@ -217,7 +222,7 @@ pub fn ensure_release() -> Result<(), String> {
          ### 滚动续跑点 / Rolling resume points\n\n\
          有进展但未全绿时的最新前缀，每轮覆盖；恢复后按标记续跑。\n\
          Latest incomplete prefix per platform, clobbered each dirty run; restore resumes via markers.\n\n\
-         | {header} |\n|---|---|---|---|---|\n| {} |\n\n\
+         | {header} |\n|---|---|---|---|---|---|---|\n| {} |\n\n\
          ### 完成快照 / Complete snapshots\n\n\
          FFmpeg 构建前全部脚本与库构建成功时打的全量前缀 —— 时间戳命名，每平台保留最近 3 个（最新的在上）。\n\
          Full prefix published only when every build step before the FFmpeg compile was green — timestamp-named, 3 newest kept per platform (newest on top).\n\n\

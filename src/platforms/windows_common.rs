@@ -872,7 +872,11 @@ pub fn package() -> Result<(), String> {
             }
         }
     }
-    let platform = e.plat();
+    // 产物名带 FFBUILD_PLAT_SUFFIX：suffix 腿与默认腿同架构同名会
+    // 在 release 命名空间里互踩 / the artifact name carries
+    // FFBUILD_PLAT_SUFFIX: a suffixed leg and the default leg share the
+    // arch and would shadow each other in the release namespace
+    let platform = e.plat_pkg();
     // 变体后缀：shared/debug 产物与静态版同名互踩——同一驱动目录下
     // 两种形态并存，名字必须可分辨（顺序固定 -shared-debug）/
     // variant suffixes: shared/debug artifacts would shadow the

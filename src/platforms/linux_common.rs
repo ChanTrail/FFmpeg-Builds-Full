@@ -330,15 +330,34 @@ pub fn packages() -> Result<(), String> {
     let pins = tool_pins()?;
 
     // meson/ninja/cmake 装进 virtualenv（系统 Python 是 "externally
-    // managed"）；/opt/pyenv 走 CI tool-cache：二进制在场即跳过
-    // meson, ninja, cmake & co. live in a virtualenv (the system Python is
-    // externally managed); /opt/pyenv rides the CI tool-cache: present
-    // binaries skip creation + pip
-    if !(Path::new("/opt/pyenv/bin/meson").is_file()
-        && Path::new("/opt/pyenv/bin/ninja").is_file()
-        && Path::new("/opt/pyenv/bin/cmake").is_file())
-    {
-        sys::run_ok("python3", &["-m", "venv", "/opt/pyenv"], &e.work)?;
+    // managed"）；/opt/pyenv 走 CI tool-cache：能跑才跳过——venv 跨
+    // python 次版本不可移植（console script 的 python3 经 /usr/bin/
+    // python3 链到当前解释器，而 site-packages 目录名钉在创建时的次
+    // 版本上：26.04 建的 3.13 venv 恢复到 24.04 上脚本能跑却找不着
+    // 3.12 的模块目录，meson/cmake 全体 ModuleNotFoundError——实证
+    // 整条 linux-x86_64 迁移腿 60+ 配方全灭于"文件存在即跳过"探针），
+    // 所以探测必须实跑 --version 而不是看文件在不在 / meson, ninja,
+    // cmake & co. live in a virtualenv (the system Python is
+    // externally managed); /opt/pyenv rides the CI tool-cache: skip
+    // only when the tools actually RUN — a venv is not portable across
+    // python minor versions (each console script's python3 chains to
+    // the current interpreter via /usr/bin/python3 while the
+    // site-packages dir pins the creation-time minor: a 3.13 venv
+    // built on 26.04 restored onto 24.04 runs scripts against a
+    // missing 3.12 module dir — every meson/cmake call died with
+    // ModuleNotFoundError, empirically wiping out 60+ recipes on the
+    // migrated linux-x86_64 leg where the existence probe skipped
+    // reinstall). Probe by running --version, not by is_file
+    let venv_ok = ["meson", "ninja", "cmake"].iter().all(|t| {
+        sys::run(&format!("/opt/pyenv/bin/{t}"), &["--version"], &e.work)
+            .map(|c| c == 0)
+            .unwrap_or(false)
+    });
+    if !venv_ok {
+        // --clear 原地重建：目录是缓存挂载点，删掉再建反而悬空 /
+        // rebuild in place with --clear: the dir is a cache mount
+        // point — removing it outright leaves a dangling path
+        sys::run_ok("python3", &["-m", "venv", "--clear", "/opt/pyenv"], &e.work)?;
         let mut args = vec!["install", "--quiet"];
         args.extend(pins.pip.iter().map(String::as_str));
         sys::run_ok("/opt/pyenv/bin/pip", &args, &e.work)?;
@@ -420,7 +439,11 @@ fn deps_sig() -> String {
         &e.repo_root.join("sources").to_string_lossy(),
         &e.repo_root.join("features").to_string_lossy(),
         &crate::deps::toolchain(),
-        e.plat().as_str(),
+        // 资产域签名带后缀：legacy 腿的快照与 latest 腿分册，签名跟着
+        // 资产走 / the asset-domain signature carries the suffix: the
+        // legacy leg's snapshots live in a separate namespace from the
+        // latest leg's, so the signature travels with the asset
+        e.plat_pkg().as_str(),
     ])
 }
 
@@ -447,7 +470,7 @@ pub fn restore() -> Result<(), String> {
     let e = sys::env();
     let ddir = e.work.join("deps-dl");
     fsx::install_d(&ddir)?;
-    let restored = match crate::deps::fetch(&e.plat(), &ddir) {
+    let restored = match crate::deps::fetch(&e.plat_pkg(), &ddir) {
         Ok(a) => a,
         Err(_) => {
             log::log("no deps snapshot available; building the prefix from scratch");
@@ -503,7 +526,7 @@ pub fn restore() -> Result<(), String> {
 /// fooled by "finished with failures" markers inside old snapshots)
 pub fn save() -> Result<(), String> {
     let e = sys::env();
-    let platform = e.plat().to_string();
+    let platform = e.plat_pkg().to_string();
     let restored = fsx::read(&e.work.join("deps-restored")).trim().to_string();
     // status 在 restore 已清——" ok"/" failed" 行只可能来自本轮：有进度
     // 但未全绿时 partial 快照才能发出去（此前 dirty=false 恒真跳过，
@@ -868,7 +891,11 @@ pub fn package() -> Result<(), String> {
             }
         }
     }
-    let platform = e.plat();
+    // 产物名带 FFBUILD_PLAT_SUFFIX：legacy 腿与 latest 腿同架构同名
+    // 会在 release 命名空间里互踩 / the artifact name carries
+    // FFBUILD_PLAT_SUFFIX: the legacy leg and the latest leg share the
+    // arch and would shadow each other in the release namespace
+    let platform = e.plat_pkg();
     // 变体后缀：shared/debug 产物与静态版同名互踩——同一驱动目录下
     // 两种形态并存，名字必须可分辨（顺序固定 -shared-debug）/
     // variant suffixes: shared/debug artifacts would shadow the

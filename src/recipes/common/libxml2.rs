@@ -5,6 +5,7 @@
 use crate::buildsys;
 use crate::extras::{Ctx, Recipe};
 use crate::recipes::r;
+use crate::sys;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
@@ -21,6 +22,7 @@ pub fn recipe() -> Recipe {
 
 /// 构建 libxml2 / Build libxml2
 fn body(ctx: &Ctx) -> Result<(), String> {
+    let e = sys::env();
     let src = ctx.src()?;
     // macOS SDK 只给 libxml2.tbd 动态桩——没有 .pc、没有归档。前缀缺
     // libxml-2.0 时死的是两条链：
@@ -74,6 +76,19 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-Ddocs=disabled",
             "-Dmodules=disabled",
             "-Dzlib=disabled",
+            // XML_SYSCONFDIR 决定默认编目 /etc/xml/catalog 的查找路径，
+            // 默认 prefix/etc → 烤 /opt/ffbuild/etc/xml/catalog。按 OS
+            // 指系统位（meson 绝对值原样生效；sysconfdir 下无安装目
+            // 标，免 stage）/ XML_SYSCONFDIR pins the default catalog
+            // lookup /etc/xml/catalog; the default prefix/etc bakes
+            // /opt/ffbuild/etc/xml/catalog. Point at the OS-standard
+            // spot (meson honors absolute dir values verbatim; nothing
+            // installs into sysconfdir, so no staging needed)
+            if e.os == crate::sys::Os::Mac {
+                "-Dsysconfdir=/opt/homebrew/etc"
+            } else {
+                "-Dsysconfdir=/etc"
+            },
             "--wrap-mode=nofallback",
         ],
     )

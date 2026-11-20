@@ -20,9 +20,37 @@ fn iconv_tail() -> bool {
     !e.prefix.is_empty() && Path::new(&e.prefix).join("lib/libiconv.a").is_file()
 }
 
-/// cmake_build [args]：cmake 标准配方构建（静态、PIC、关 IPO/LTO）
-/// cmake_build [args]: standard cmake recipe build (static, PIC, IPO/LTO off)
-pub fn cmake_build(src: &Path, args: &[&str]) -> Result<(), String> {
+/// merge_stage_prefix：把 stage 下镜像 $prefix 的子树合进真前缀
+/// （meson --destdir / make DESTDIR / cmake DESTDIR 三种 stage 产出同
+/// 形：绝对安装路径在 stage 下镜像成相对路径）；$prefix 之外的那份
+/// （指向系统标准目录的运行时路径产物）丢弃 / merge the stage's
+/// mirrored $prefix subtree back into the real prefix (all three stage
+/// mechanisms — meson --destdir, automake DESTDIR, cmake DESTDIR —
+/// produce the same shape: absolute install paths mirrored as relative
+/// paths under the stage); anything outside $prefix (the artifacts
+/// destined for system-standard runtime paths) is dropped
+fn merge_stage_prefix(stage: &Path, cwd: &Path) -> Result<(), String> {
+    let e = sys::env();
+    let staged = stage.join(e.prefix.trim_start_matches('/'));
+    if staged.is_dir() {
+        let dst = Path::new(&e.prefix);
+        crate::fsx::install_d(dst)?;
+        sys::bash_ok(
+            &format!(
+                "cp -a {}/. {}",
+                shell_quote(&staged.to_string_lossy()),
+                shell_quote(&dst.to_string_lossy())
+            ),
+            cwd,
+        )?;
+    }
+    Ok(())
+}
+
+/// cmake_setup_build：cmake_build/cmake_build_destdir 共用的
+/// configure+build 两半 / the configure+build halves shared by
+/// cmake_build and cmake_build_destdir
+fn cmake_setup_build(src: &Path, args: &[&str]) -> Result<(), String> {
     let e = sys::env();
     let mut v: Vec<String> = vec![
         "-S".into(),
@@ -60,10 +88,35 @@ pub fn cmake_build(src: &Path, args: &[&str]) -> Result<(), String> {
         "cmake",
         &["--build", "build", "-j", &e.jobs.to_string()],
         src,
-    )?;
+    )
+}
+
+/// cmake_build [args]：cmake 标准配方构建（静态、PIC、关 IPO/LTO）
+/// cmake_build [args]: standard cmake recipe build (static, PIC, IPO/LTO off)
+pub fn cmake_build(src: &Path, args: &[&str]) -> Result<(), String> {
+    cmake_setup_build(src, args)?;
     // 生成器自己的 install 目标任何 cmake 版本都认（cmake --install 要 3.15+）
     // the generator's own install target works on any cmake vintage
     sys::run_ok("cmake", &["--build", "build", "--target", "install"], src)
+}
+
+/// cmake_build_destdir [args, stage]：同 cmake_build 但 install 经
+/// DESTDIR 落进 stage，再只把 stage 里 $prefix 子树合进真前缀。用于
+/// -DCMAKE_INSTALL_*DIR= 指向系统标准路径（/usr/share 等运行期正解）
+/// 的配方——不此处理 install 会写脏构建机的系统目录 / Same as
+/// cmake_build but installs through DESTDIR into `stage`, then merges
+/// only the stage's $prefix subtree into the real prefix. For recipes
+/// whose -DCMAKE_INSTALL_*DIR point at system-standard paths
+/// (/usr/share — the correct runtime lookups) — without this, install
+/// would dirty the build machine's system dirs
+pub fn cmake_build_destdir(src: &Path, args: &[&str], stage: &Path) -> Result<(), String> {
+    cmake_setup_build(src, args)?;
+    // DESTDIR 是 cmake_install.cmake 原生认的 env——Make/Ninja 两生成
+    // 器通吃 / DESTDIR is natively honored by cmake_install.cmake —
+    // works for both the Make and Ninja generators
+    let _g = sys::EnvGuard::set(&[("DESTDIR", stage.to_string_lossy().to_string())]);
+    sys::run_ok("cmake", &["--build", "build", "--target", "install"], src)?;
+    merge_stage_prefix(stage, src)
 }
 
 /// refresh_config_scripts：内置 config.guess/config.sub 不认识当今三元组时
@@ -126,16 +179,10 @@ pub fn autotools_build(src: &Path, args: &[&str]) -> Result<(), String> {
     autotools_build_vars(src, args, &[])
 }
 
-/// autotools_build_vars [args, mvars]：同 autotools_build，另把 mvars
-/// 作为命令行变量传给 make 与 make install（命令行变量压过 Makefile
-/// 赋值——例如 xvid 的 `$(LN_S)` 探测出来是不带 -f 的 `ln -s`，撞
-/// 已存在文件即 Error，传 LN_S="ln -sf" 可解）
-/// Same as autotools_build, plus mvars forwarded as command-line
-/// variables to both `make` and `make install` (command-line vars beat
-/// Makefile assignments — e.g. xvid's `$(LN_S)` resolves to a
-/// flag-less `ln -s` that dies on existing files; LN_S="ln -sf" fixes
-/// it)
-pub fn autotools_build_vars(src: &Path, args: &[&str], mvars: &[&str]) -> Result<(), String> {
+/// autotools_config_make：configure+make 两半，供 autotools_build*
+/// 共享 / the configure+make halves shared by the autotools_build*
+/// family
+fn autotools_config_make(src: &Path, args: &[&str], mvars: &[&str]) -> Result<(), String> {
     let e = sys::env();
     // -liconv 经 env LIBS 进所有 automake 链接行尾（LIBS 恒为链接表
     // 末位，configure 的 @LIBS@ 替换与 make 规则同源）——内部 exe 的
@@ -185,15 +232,56 @@ pub fn autotools_build_vars(src: &Path, args: &[&str], mvars: &[&str]) -> Result
         "make",
         &mk.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
         src,
-    )?;
+    )
+}
+
+/// autotools_build_vars [args, mvars]：同 autotools_build，另把 mvars
+/// 作为命令行变量传给 make 与 make install（命令行变量压过 Makefile
+/// 赋值——例如 xvid 的 `$(LN_S)` 探测出来是不带 -f 的 `ln -s`，撞
+/// 已存在文件即 Error，传 LN_S="ln -sf" 可解）
+/// Same as autotools_build, plus mvars forwarded as command-line
+/// variables to both `make` and `make install` (command-line vars beat
+/// Makefile assignments — e.g. xvid's `$(LN_S)` resolves to a
+/// flag-less `ln -s` that dies on existing files; LN_S="ln -sf" fixes
+/// it)
+pub fn autotools_build_vars(src: &Path, args: &[&str], mvars: &[&str]) -> Result<(), String> {
+    autotools_config_make(src, args, mvars)?;
     let mut mi: Vec<&str> = vec!["install"];
     mi.extend(mvars.iter().copied());
     sys::run_ok("make", &mi, src)
 }
 
-/// meson_build [args]：meson 标准配方构建（静态、关 LTO）
-/// meson_build [args]: standard meson recipe build (static, LTO off)
-pub fn meson_build(src: &Path, args: &[&str]) -> Result<(), String> {
+/// autotools_build_destdir [args, mvars, stage]：同
+/// autotools_build_vars 但 install 经 DESTDIR 落进 stage，再只把
+/// stage 里 $prefix 子树合进真前缀。用于 --datadir/--sysconfdir 指向
+/// 系统标准路径（/usr/share、/etc 等运行期正解）的配方——不此处理
+/// install 会写脏构建机的系统目录 / Same as autotools_build_vars but
+/// installs through DESTDIR into `stage`, then merges only the stage's
+/// $prefix subtree into the real prefix. For recipes whose
+/// --datadir/--sysconfdir point at system-standard paths (/usr/share,
+/// /etc — the correct runtime lookups) — without this, install would
+/// dirty the build machine's system dirs
+pub fn autotools_build_destdir(
+    src: &Path,
+    args: &[&str],
+    mvars: &[&str],
+    stage: &Path,
+) -> Result<(), String> {
+    autotools_config_make(src, args, mvars)?;
+    let mut mi: Vec<String> = vec!["install".into(), format!("DESTDIR={}", stage.display())];
+    mi.extend(mvars.iter().map(|s| s.to_string()));
+    sys::run_ok(
+        "make",
+        &mi.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        src,
+    )?;
+    merge_stage_prefix(stage, src)
+}
+
+/// meson_setup_compile：meson_build/meson_build_destdir 共用的
+/// setup+compile 两半 / the setup+compile halves shared by meson_build
+/// and meson_build_destdir
+fn meson_setup_compile(src: &Path, args: &[&str]) -> Result<(), String> {
     let e = sys::env();
     // -Db_lto=false：gcc LTO 字节码锁版本，依赖归档整体链进 ffmpeg 无用
     // gcc LTO bytecode is version-locked; dep-side LTO buys nothing
@@ -233,8 +321,43 @@ pub fn meson_build(src: &Path, args: &[&str]) -> Result<(), String> {
         "meson",
         &["compile", "-C", "build", "-j", &e.jobs.to_string()],
         src,
-    )?;
+    )
+}
+
+/// meson_build [args]：meson 标准配方构建（静态、关 LTO）
+/// meson_build [args]: standard meson recipe build (static, LTO off)
+pub fn meson_build(src: &Path, args: &[&str]) -> Result<(), String> {
+    meson_setup_compile(src, args)?;
     sys::run_ok("meson", &["install", "-C", "build"], src)
+}
+
+/// meson_build_destdir [args, stage]：同 meson_build 但 install 先经
+/// --destdir 落进 stage，再只把 stage 里 $prefix 子树合进真前缀。
+/// 用于 `-D*-dir` 指向系统标准路径（/etc/fonts、/var/cache 等运行
+/// 期正解）的配方——不此处理，install 会把文件写进构建机的 /etc
+/// 污染系统目录；stage 里 $prefix 之外的部分（即系统目录那份）直接
+/// 丢弃。
+/// Same as meson_build but installs through --destdir into `stage`,
+/// then merges only the stage's $prefix subtree into the real prefix.
+/// For recipes whose `-D*-dir` options point at system-standard paths
+/// (/etc/fonts, /var/cache — the correct runtime lookups) — without
+/// this, install would write those files into the build machine's
+/// real system dirs; the non-$prefix part of the stage (the system
+/// copy) is dropped.
+pub fn meson_build_destdir(src: &Path, args: &[&str], stage: &Path) -> Result<(), String> {
+    meson_setup_compile(src, args)?;
+    sys::run_ok(
+        "meson",
+        &[
+            "install",
+            "-C",
+            "build",
+            "--destdir",
+            &stage.to_string_lossy(),
+        ],
+        src,
+    )?;
+    merge_stage_prefix(stage, src)
 }
 
 /// shell_quote：把单个参数包成 bash 单引号串 / quote one arg for bash

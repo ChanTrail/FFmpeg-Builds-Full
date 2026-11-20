@@ -242,7 +242,10 @@ fn deps_sig() -> String {
         &e.repo_root.join("sources").to_string_lossy(),
         &e.repo_root.join("features").to_string_lossy(),
         &crate::deps::toolchain(),
-        e.plat().as_str(),
+        // 资产域签名带后缀：legacy 腿的快照与 latest 腿分册 / the
+        // asset-domain signature carries the suffix — the legacy leg's
+        // snapshots live in a separate namespace from the latest leg's
+        e.plat_pkg().as_str(),
     ])
 }
 
@@ -263,7 +266,7 @@ pub fn restore() -> Result<(), String> {
     let e = sys::env();
     let ddir = e.work.join("deps-dl");
     fsx::install_d(&ddir)?;
-    let restored = match crate::deps::fetch(&e.plat(), &ddir) {
+    let restored = match crate::deps::fetch(&e.plat_pkg(), &ddir) {
         Ok(a) => a,
         Err(_) => {
             log::log("no deps snapshot available; building the workspace from scratch");
@@ -312,7 +315,7 @@ pub fn restore() -> Result<(), String> {
 /// as Windows/Linux)
 pub fn save() -> Result<(), String> {
     let e = sys::env();
-    let platform = e.plat().to_string();
+    let platform = e.plat_pkg().to_string();
     let ws = prefix();
     if !ws.is_dir() {
         log::log("no workspace to publish");
@@ -558,7 +561,11 @@ pub fn package() -> Result<(), String> {
             }
         }
     }
-    let platform = e.plat();
+    // 产物名带 FFBUILD_PLAT_SUFFIX：legacy 腿与 latest 腿同架构同名
+    // 会在 release 命名空间里互踩 / the artifact name carries
+    // FFBUILD_PLAT_SUFFIX: the legacy leg and the latest leg share the
+    // arch and would shadow each other in the release namespace
+    let platform = e.plat_pkg();
     // 变体后缀：shared/debug 产物与静态版同名互踩——同一驱动目录下
     // 两种形态并存，名字必须可分辨（顺序固定 -shared-debug）/
     // variant suffixes: shared/debug artifacts would shadow the

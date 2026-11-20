@@ -45,18 +45,48 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-DGLIB_STATIC_COMPILATION -DGOBJECT_STATIC_COMPILATION -DGIO_STATIC_COMPILATION -DGMODULE_STATIC_COMPILATION",
         ),
     ]);
-    buildsys::cmake_build(
-        &src,
-        &[
-            "-DBUILD_STATIC=ON",
-            "-DBUILD_TESTS=OFF",
-            "-DBUILD_LENSTOOL=OFF",
-            "-DBUILD_DOC=OFF",
-            "-DINSTALL_PYTHON_MODULE=OFF",
-            "-DINSTALL_HELPER_SCRIPTS=OFF",
-            "-DPYTHON=FALSE",
-        ],
-    )?;
+    // 镜头库 XML 是运行时数据——lfDatabase::SystemLocation=
+    // SYSTEM_DB_PATH（CMake_INSTALL_FULL_DATAROOTDIR/lensfun）默认
+    // 烤 /opt/ffbuild/share/lensfun，用户机上查不到库，lensfun 滤镜
+    // 全灭。指系统标准位：Linux 全系发行版 /usr/share/lensfun（
+    // liblensfun-data 提供），macOS 随 Homebrew 约定 /opt/homebrew/
+    // share/lensfun；SYSTEM_DB_UPDATE_PATH 上游已硬 /var，用户侧
+    // ~/.local/share/lensfun 搜索链不受影响。DATAROOTDIR 兼安装目
+    // 录，经 destdir stage 防写脏构建机。Windows 分支按上游相对
+    // DATAROOTDIR 原样（模块相对寻址语义不同）/ the lens DB is
+    // runtime data — lfDatabase::SystemLocation=SYSTEM_DB_PATH
+    // (CMAKE_INSTALL_FULL_DATAROOTDIR/lensfun) defaults to baked
+    // /opt/ffbuild/share/lensfun; user machines can't find it and the
+    // lensfun filter is dead. Point at system-standard locations:
+    // /usr/share/lensfun on every Linux distro (liblensfun-data),
+    // /opt/homebrew/share/lensfun on macOS per Homebrew convention;
+    // SYSTEM_DB_UPDATE_PATH is already /var upstream and the user-side
+    // ~/.local/share/lensfun chain is untouched. DATAROOTDIR doubles
+    // as the install dir — stage via destdir so the build machine
+    // stays clean. Windows keeps upstream's relative DATAROOTDIR
+    // (module-relative resolution semantics differ)
+    let mut args = vec![
+        "-DBUILD_STATIC=ON",
+        "-DBUILD_TESTS=OFF",
+        "-DBUILD_LENSTOOL=OFF",
+        "-DBUILD_DOC=OFF",
+        "-DINSTALL_PYTHON_MODULE=OFF",
+        "-DINSTALL_HELPER_SCRIPTS=OFF",
+        "-DPYTHON=FALSE",
+    ];
+    let dataroot: String;
+    if e.os == crate::sys::Os::Mac {
+        dataroot = "-DCMAKE_INSTALL_DATAROOTDIR=/opt/homebrew/share".into();
+        args.push(dataroot.as_str());
+    } else if e.os == crate::sys::Os::Linux {
+        dataroot = "-DCMAKE_INSTALL_DATAROOTDIR=/usr/share".into();
+        args.push(dataroot.as_str());
+    }
+    if e.os == crate::sys::Os::Windows {
+        buildsys::cmake_build(&src, &args)?;
+    } else {
+        buildsys::cmake_build_destdir(&src, &args, &src.join("lfstage"))?;
+    }
     // 上游不总装 .pc；FFmpeg 靠 pkg-config 探测
     // upstream does not always install a .pc; FFmpeg probes by pkg-config
     let pcd = e.prefix_win.join("lib/pkgconfig");
