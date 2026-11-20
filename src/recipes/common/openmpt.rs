@@ -25,6 +25,21 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     // 核心解码器自带 vorbis/ogg 支持由 vorbis 配方兜 /
     // no peripheral backends (portaudio/pulseaudio/sndfile/flac/mpg123)
     // — vorbis/ogg support in the core comes via the vorbis recipe
+    //
+    // openmpt123/examples/tests 是 AC_ARG_ENABLE 开关——旧写法
+    // --without-* 设的是 with_* 变量、是死旗，三个可执行目标一直在
+    // 建；openmpt123 的链接经 libopenmpt.la 的 dependency_libs 解
+    // -lvorbisfile，而 vorbis 走 cmake 不产 .la——libtool 只能抓到
+    // 裸 .a，传递链 -lvorbis -logg 无人带上（vorbis_synthesis_*
+    // /ogg_* 全 undefined）。示例 CLI 反正不发布，整条关掉 /
+    // openmpt123/examples/tests are AC_ARG_ENABLE switches — the old
+    // --without-* spellings only set with_* vars, dead flags, so all
+    // three executable targets kept building; openmpt123's link
+    // resolves -lvorbisfile through libopenmpt.la's dependency_libs,
+    // but our vorbis is cmake-built and ships no .la — libtool can
+    // only reach the bare .a and the transitive -lvorbis -logg never
+    // arrives (vorbis_synthesis_*/ogg_* all undefined). The example
+    // CLI is never shipped anyway — turn the whole trio off
     buildsys::autotools_build(
         &src,
         &[
@@ -34,9 +49,9 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "--without-sndfile",
             "--without-flac",
             "--without-mpg123",
-            "--without-ltdl",
-            "--without-examples",
-            "--without-tests",
+            "--disable-openmpt123",
+            "--disable-examples",
+            "--disable-tests",
         ],
     )
 }
