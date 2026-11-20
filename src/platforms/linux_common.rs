@@ -758,7 +758,27 @@ pub fn ffmpeg_plan() -> Result<crate::ffmpeg::ConfJob, String> {
         // GCC≥13's libstdc++.a __floating_to_chars references
         // fegetround/fesetround, and static archives scan in order without
         // backtracking — -lm earlier leaves the openal probe undefined
-        format!("--extra-libs={gomp} -lpthread -lz -lstdc++ -lm"),
+        //
+        // -liconv 殿后（零依赖叶库）：上游 configure 在 --disable-autodetect
+        // 下把 libc_iconv 无条件 enable 且无对应开关——--enable-iconv 时其
+        // check_func_headers iconv.h iconv 探针只验 libc 符号，但前缀里我们
+        // 的 iconv.h 把 iconv 宏改名为 libiconv：探针链测没有 -liconv 必
+        // undefined 而失败、编译期 .c 又全按改名后名字调 libiconv_*——
+        // -liconv 进 extralibs 尾部后，探针与最终链接都由自编 libiconv.a
+        // 满足；否则要么回退 glibc iconv（gconv dlopen 双 glibc→SIGFPE），
+        // 要么改名符号无处解析直接链接失败 / -liconv brings up the rear
+        // (a zero-dependency leaf): upstream configure unconditionally
+        // enables libc_iconv under --disable-autodetect with no matching
+        // switch — under --enable-iconv its check_func_headers iconv.h
+        // iconv probe only tests the libc symbol, but our prefix's iconv.h
+        // macro-renames iconv to libiconv: without -liconv the probe link
+        // must fail with undefined references, while .c files compiled
+        // against that header all call libiconv_* — with -liconv in the
+        // extralibs tail, both the probe and the final link resolve to our
+        // own libiconv.a; otherwise it either falls back to glibc iconv
+        // (gconv dlopen dual-glibc -> SIGFPE) or the renamed symbols go
+        // unresolved and the link fails outright
+        format!("--extra-libs={gomp} -lpthread -lz -lstdc++ -lm -liconv"),
     ]);
     // FFBUILD_DEBUG 非空 = 真·调试构建：--enable-debug=3 全开调试
     // 信息、--disable-optimizations 关掉全部优化、--disable-stripping
