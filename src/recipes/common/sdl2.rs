@@ -40,6 +40,58 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             crate::fsx::write(&xh, &s.replace(old, "#include <X11/Xlib.h>"))?;
         }
     }
+    // SDL 的 pc 生成 bug：sdlchecks.cmake 把 find_library 的全路径
+    // 塞进 EXTRA_LIBS（SDL_*_SHARED=OFF 直链后端时 X11/Xext 正走
+    // 这一路），而 listtostr 对每个元素无条件加 -l 前缀 → sdl2.pc
+    // 流出 "-l/opt/ffbuild/lib/libXext.a" 畸形旗标，static_libs_ok
+    // 与一切下游链接者必死。按语义重发：绝对路径与已带 - 前缀的项
+    // 原样通过，裸名才补 -l / SDL's pc generation bug: sdlchecks.cmake
+    // stuffs find_library's absolute paths into EXTRA_LIBS (X11/Xext
+    // take exactly that path with *_SHARED=OFF direct linkage), and
+    // listtostr unconditionally prepends -l to every element →
+    // sdl2.pc emits the malformed "-l/opt/ffbuild/lib/libXext.a",
+    // fatal to static_libs_ok and every downstream linker. Re-emit
+    // by semantics: absolute paths and dash-prefixed items pass
+    // through verbatim, bare names get -l
+    let cml = src.join("CMakeLists.txt");
+    if cml.is_file() {
+        let orig = crate::fsx::read(&cml);
+        let mut s = orig.clone();
+        // 正序与逆序两个调用点都在发 -l 前缀——2.0.22 起并存 /
+        // both the forward and reversed emit sites prefix -l — they
+        // coexist since 2.0.22
+        let old = "listtostr(EXTRA_LIBS _EXTRA_LIBS \"-l\")";
+        if s.contains(old) {
+            let new = concat!(
+                "set(_EXTRA_LIBS \"\")\n",
+                "foreach(_SDL_EXLIB ${EXTRA_LIBS})\n",
+                "  if(IS_ABSOLUTE \"${_SDL_EXLIB}\" OR \"${_SDL_EXLIB}\" MATCHES \"^-\")\n",
+                "    set(_EXTRA_LIBS \"${_EXTRA_LIBS} ${_SDL_EXLIB}\")\n",
+                "  else()\n",
+                "    set(_EXTRA_LIBS \"${_EXTRA_LIBS} -l${_SDL_EXLIB}\")\n",
+                "  endif()\n",
+                "endforeach()"
+            );
+            s = s.replace(old, new);
+        }
+        let old = "listtostrrev(EXTRA_LIBS _EXTRA_LIBS \"-l\")";
+        if s.contains(old) {
+            let new = concat!(
+                "set(_EXTRA_LIBS \"\")\n",
+                "foreach(_SDL_EXLIB ${EXTRA_LIBS})\n",
+                "  if(IS_ABSOLUTE \"${_SDL_EXLIB}\" OR \"${_SDL_EXLIB}\" MATCHES \"^-\")\n",
+                "    set(_EXTRA_LIBS \"${_SDL_EXLIB} ${_EXTRA_LIBS}\")\n",
+                "  else()\n",
+                "    set(_EXTRA_LIBS \"-l${_SDL_EXLIB} ${_EXTRA_LIBS}\")\n",
+                "  endif()\n",
+                "endforeach()"
+            );
+            s = s.replace(old, new);
+        }
+        if s != orig {
+            crate::fsx::write(&cml, &s)?;
+        }
+    }
     buildsys::cmake_build(
         &src,
         &[

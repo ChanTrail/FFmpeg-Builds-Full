@@ -589,10 +589,15 @@ pub fn run_all() -> Result<(), String> {
                 r.name.to_string(),
                 non_empty(built_version(r.name, r.check)),
             );
-            // 本配方新产的 .pc/归档赶在下游配方探测前归一 iconv 传染
-            // ——缓存热，未重建的归档零成本 / normalize iconv contagion
-            // on this recipe's fresh .pc/archives before downstream
-            // recipes probe — warm cache makes untouched archives free
+            // 本配方新产的 .pc/归档赶在下游配方探测前归一：键行愈合
+            // （-l+绝对路径畸形、重复键行——SDL 的 listtostr 病就是
+            // 实证）+ iconv 传染——缓存热，未重建的归档零成本 /
+            // normalize this recipe's fresh .pc/archives before
+            // downstream recipes probe: key-line healing (-l+abspath
+            // malformation, duplicate key lines — SDL's listtostr
+            // disease is empirical) + iconv contagion — warm cache
+            // makes untouched archives free
+            pkgcfg::dedup_fields();
             heal_iconv_contagion(&e.prefix_win, &mut iconv_cache);
             log::log(&format!("[extras] {}: ok", r.name));
         } else {

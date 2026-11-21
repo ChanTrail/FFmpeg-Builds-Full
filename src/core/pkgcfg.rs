@@ -318,13 +318,42 @@ fn repair_frameworks(line: &str) -> String {
     out.join(" ")
 }
 
-/// 发射前治愈键行：先周期折叠（旧 bug 的翻倍值），再 -framework 复原
-/// （token 级去重的断配对）；两阶段幂等，健康行原样通过
-/// Heal a key line before emit: repetition collapse first (the old bug's
-/// doubled values), then -framework re-pairing (the token-level dedup's
-/// broken pairings); both idempotent, healthy lines pass through
+/// 剥掉错贴到绝对路径上的 -l 前缀：上游（SDL 的 listtostr 是实证）把
+/// find_library 的全路径结果混进待加 -l 的清单，产出
+/// "-l/opt/.../libXext.a" 这种 ld 永远解不开的记号；绝对路径本身
+/// 就是合法的链接输入，剥前缀即复原。只动 "-l/" 开头的 token：
+/// "-l:libX.a" 精确名形式与 -lm 裸名都不受影响 / Strip an -l prefix
+/// wrongly pasted onto an absolute path: upstreams (SDL's listtostr,
+/// empirical) mix find_library's full-path results into the
+/// to-be-"-l"-prefixed list, producing "-l/opt/.../libXext.a" tokens
+/// ld can never resolve; the absolute path itself is already a valid
+/// link input, so dropping the prefix restores it. Only touches
+/// tokens starting "-l/": the "-l:libX.a" exact-name form and bare
+/// names like -lm are unaffected
+fn repair_lflag_path(line: &str) -> String {
+    if !line.contains("-l/") {
+        return line.to_string();
+    }
+    line.split_whitespace()
+        .map(|t| match t.strip_prefix("-l/") {
+            Some(rest) if !rest.is_empty() => format!("/{rest}"),
+            _ => t.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// 发射前治愈键行：先周期折叠（旧 bug 的翻倍值），再 -l+绝对路径
+/// 剥前缀（上游 find_library 全路径混入 -l 清单的畸形），最后
+/// -framework 复原（token 级去重的断配对）；三阶段幂等，健康行
+/// 原样通过 / Heal a key line before emit: repetition collapse first
+/// (the old bug's doubled values), then -l+absolute-path prefix
+/// stripping (upstream malformed output mixing find_library full
+/// paths into the -l list), then -framework re-pairing (the
+/// token-level dedup's broken pairings); all idempotent, healthy
+/// lines pass through
 fn heal_key_line(line: &str) -> String {
-    let r = collapse_repeats(line);
+    let r = repair_lflag_path(&collapse_repeats(line));
     if r.contains("-framework") {
         repair_frameworks(&r)
     } else {
