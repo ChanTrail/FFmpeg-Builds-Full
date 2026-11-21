@@ -244,7 +244,26 @@ lensfun:
   ref: 37238fcef563196fb798f6151cb9023968b26c40
 sdl2:
   git: https://github.com/libsdl-org/SDL.git
-  ref: SDL2                                           # 默认分支已是 SDL3
+  ref: release-2.32.10    # SDL2 维护线最新 tag。branch 浮动 CI 红时
+                          # fallback 会钉到 2.0.22-RC3 这类老 tag——实证
+                          # macOS 腿 SDL_spinlock.c 调 SDK 26 已除名的
+                          # OSAtomicCompareAndSwap32Barrier 编译死；
+                          # 2.32.10 顺带带原生 Requires.private 发射与
+                          # 修正过的 SDL_STATIC_LIBS 组装（-lSDL2 不再
+                          # 双份殿后）。xinput2.h 的 XGenericEventCookie
+                          # 撞型与本配方 listtostr 补丁在新版均仍适用
+                          #（两处均为守卫式，命中才动）/ latest tag on
+                          # the SDL2 maintenance line. When the floating
+                          # branch's CI is red, the tag fallback can land
+                          # on ancient tags like 2.0.22-RC3 — empirical:
+                          # the macOS leg died compiling SDL_spinlock.c's
+                          # OSAtomicCompareAndSwap32Barrier, removed from
+                          # SDK 26. 2.32.10 also emits Requires.private
+                          # natively and composes SDL_STATIC_LIBS sanely
+                          # (no duplicate trailing -lSDL2). The xinput2.h
+                          # XGenericEventCookie clash and this recipe's
+                          # listtostr patch still apply (both guarded,
+                          # only act when the pattern matches)
 
 # ================= glib / GNOME 依赖栈 =================
 pcre2:
