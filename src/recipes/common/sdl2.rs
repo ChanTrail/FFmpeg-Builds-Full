@@ -47,6 +47,55 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-DSDL_STATIC=ON",
             "-DSDL_TEST=OFF",
             "-DSDL_TESTS=OFF",
+            // 全静态二进制里的 dlopen 是双 libc 地雷：SDL 默认
+            // *_SHARED=ON 把后端做成运行时 dlopen 系统 .so——
+            // 1) find_library 解析到本 prefix 的 .a 时直接把归档名
+            //    烘成 soname（实测 ffplay 里 libX11.a/libpulse.a），
+            //    dlopen 永远失败 → 后端先天死亡；
+            // 2) 烘成真 soname 的后端（libasound.so.2/GL/udev/dbus）
+            //    在用户机上载系统库 → 拖入第二份 libc.so.6/libstdc++
+            //    → SIGSEGV/SIGFPE（死相随版本骰子随机）。
+            // 全部改直链：在库者静态并入 libSDL2.a，缺库后端自动
+            // 禁用；ffplay 走 X11/wayland(无→xwayland)+pulse，
+            // GL/vulkan 本就走软件渲染回退，一并关掉断 mesa→DRI→
+            // libstdc++ 链 / dlopen in a fully-static binary is a
+            // dual-libc landmine: SDL's default *_SHARED=ON dlopens
+            // system .so's at runtime — (1) when find_library
+            // resolves our prefix's .a it bakes the archive NAME as
+            // the soname (observed libX11.a/libpulse.a inside ffplay)
+            // which can never dlopen → backend born dead; (2) real
+            // sonames (libasound.so.2/GL/udev/dbus) pull a second
+            // libc.so.6/libstdc++ into the process on user machines
+            // → SIGSEGV/SIGFPE depending on version dice. Force
+            // direct linkage: found libs fold into libSDL2.a,
+            // missing-lib backends auto-disable; ffplay uses
+            // X11 (+xwayland) & pulse; GL/vulkan already software-
+            // fallback, disable to sever the mesa→DRI→libstdc++ chain
+            "-DSDL_X11_SHARED=OFF",
+            "-DSDL_WAYLAND_SHARED=OFF",
+            "-DSDL_WAYLAND_LIBDECOR_SHARED=OFF",
+            "-DSDL_KMSDRM_SHARED=OFF",
+            "-DSDL_ALSA_SHARED=OFF",
+            "-DSDL_PULSEAUDIO_SHARED=OFF",
+            "-DSDL_PIPEWIRE_SHARED=OFF",
+            "-DSDL_JACK_SHARED=OFF",
+            "-DSDL_SNDIO_SHARED=OFF",
+            "-DSDL_ESD_SHARED=OFF",
+            "-DSDL_ARTS_SHARED=OFF",
+            "-DSDL_NAS_SHARED=OFF",
+            "-DSDL_FUSIONSOUND_SHARED=OFF",
+            "-DSDL_LIBSAMPLERATE_SHARED=OFF",
+            "-DSDL_OPENGL=OFF",
+            "-DSDL_OPENGLES=OFF",
+            "-DSDL_VULKAN=OFF",
+            // dbus/ibus/fcitx/udev 也是 dlopen 系统库（libdbus→
+            // libsystemd 链尤深），ffplay 无需屏保抑制/IME/手柄热插
+            // dbus/ibus/fcitx/udev likewise dlopen system libs (the
+            // libdbus→libsystemd chain is especially deep); ffplay
+            // needs no screensaver-inhibit/IME/gamepad-hotplug
+            "-DSDL_DBUS=OFF",
+            "-DSDL_IBUS=OFF",
+            "-DSDL_LIBUDEV=OFF",
         ],
     )
 }
