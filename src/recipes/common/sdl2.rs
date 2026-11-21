@@ -148,6 +148,98 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-DSDL_DBUS=OFF",
             "-DSDL_IBUS=OFF",
             "-DSDL_LIBUDEV=OFF",
+            // 直链后 check_library_exists 的裸 -l 链测缺传递依赖
+            // （libasound.a 要 -lm/-lrt/-ldl 才链接过，缺了 SDL 就把
+            // ALSA 后端静默关死——"snd_pcm_recover in asound - not
+            // found" 实证）。给全部链测补基线库，只增不误 / with
+            // direct linkage, check_library_exists' bare -l probes
+            // lack transitives (libasound.a needs -lm/-lrt/-ldl to
+            // link, without which SDL silently kills the ALSA
+            // backend — "snd_pcm_recover in asound - not found",
+            // empirical). Feed baseline libs into all link checks —
+            // additive only
+            "-DCMAKE_REQUIRED_LIBRARIES=m;dl;rt;pthread",
         ],
-    )
+    )?;
+
+    // linux 限定：SDL 把后端裸记号（find_library 全路径 / -l 名）
+    // 连同重复两份的 -lSDL2 全塞 Libs:——pkgconf 去重保尾部，把
+    // -lSDL2 推到所有私有依赖之后（顺序死，实证：pa_*/X* 全
+    // undefined），且后端库的传递链（xcb/pulsecommon）毫无记录
+    // （缺链死）。把可映射的后端记号换成 Requires.private 模块：
+    // pkg-config --static 拓扑展开整条私有链，天然排在 -lSDL2
+    // 之后；-lSDL2 自身去重保首位 / Linux only: SDL stuffs raw
+    // backend tokens (find_library full paths / -l names) into
+    // Libs: along with a duplicated -lSDL2 — pkgconf dedup keeps
+    // the last one, stranding -lSDL2 behind every private dep
+    // (order death — pa_*/X* all undefined, empirical), and
+    // backend transitives (xcb/pulsecommon) go unrecorded (missing
+    // chain death). Swap mappable backend tokens for
+    // Requires.private modules: pkg-config --static expands the
+    // whole private chain topologically, naturally after -lSDL2;
+    // -lSDL2 itself dedups keeping the first spot
+    let e = crate::sys::env();
+    if e.os == crate::sys::Os::Linux {
+        let pc = e.prefix_win.join("lib").join("pkgconfig").join("sdl2.pc");
+        if pc.is_file() {
+            let c = crate::fsx::read(&pc);
+            let mut reqs: Vec<&str> = Vec::new();
+            let mut out = String::new();
+            for line in c.lines() {
+                let val = line
+                    .strip_prefix("Libs.private:")
+                    .or_else(|| line.strip_prefix("Libs:"));
+                if let Some(v) = val {
+                    let mut toks: Vec<&str> = Vec::new();
+                    for t in v.split_whitespace() {
+                        // 归档全路径取文件名后再比对 / compare archive
+                        // full paths by basename
+                        let base = t.rsplit('/').next().unwrap_or(t);
+                        let m = match base {
+                            "libX11.a" | "-lX11" => Some("x11"),
+                            "libXext.a" | "-lXext" => Some("xext"),
+                            "libXfixes.a" | "-lXfixes" => Some("xfixes"),
+                            "libasound.a" | "-lasound" => Some("alsa"),
+                            "libpulse.a" | "-lpulse" => Some("libpulse"),
+                            "libpulse-simple.a" | "-lpulse-simple" => Some("libpulse-simple"),
+                            _ => None,
+                        };
+                        match m {
+                            Some(m) => {
+                                if !reqs.contains(&m) {
+                                    reqs.push(m);
+                                }
+                            }
+                            // 裸记号去重保首位——-lSDL2 由此归位 /
+                            // dedup remaining tokens keeping first —
+                            // this is what reseats -lSDL2
+                            None => {
+                                if !toks.contains(&t) {
+                                    toks.push(t);
+                                }
+                            }
+                        }
+                    }
+                    out.push_str(if line.starts_with("Libs.private:") {
+                        "Libs.private:"
+                    } else {
+                        "Libs:"
+                    });
+                    for t in toks {
+                        out.push(' ');
+                        out.push_str(t);
+                    }
+                    out.push('\n');
+                } else {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            if !reqs.is_empty() {
+                out.push_str(&format!("Requires.private: {}\n", reqs.join(" ")));
+            }
+            crate::fsx::write(&pc, &out)?;
+        }
+    }
+    Ok(())
 }
