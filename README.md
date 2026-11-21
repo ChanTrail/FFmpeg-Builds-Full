@@ -33,13 +33,13 @@ https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-
 |:--|:--|:--|:--|
 | Windows x86_64 | `-windows-x86_64.7z` | `windows-latest`，MSYS2 UCRT64 | Windows 10+ |
 | Windows arm64 | `-windows-arm64.7z` | `windows-11-arm`，MSYS2 CLANGARM64 | Windows 11 ARM64 |
-| Linux x86_64 | `-linux-x86_64.tar.xz` | `ubuntu-26.04` | 任意 x86_64 Linux（全静态，无 glibc 要求） |
-| Linux x86_64 legacy | `-linux-x86_64-legacy.tar.xz` | `ubuntu-24.04` | 任意 x86_64 Linux（全静态；旧发行版兼容构建） |
+| Linux x86_64 | `-linux-x86_64.tar.xz` | `ubuntu-26.04` | x86-64-v3+ CPU（amd64v3 工具链默认产物，≈Haswell/2013 起）；全静态无 glibc 要求 |
+| Linux x86_64 legacy | `-linux-x86_64-legacy.tar.xz` | `ubuntu-24.04` | 任意 x86-64 CPU（SSE2 基线）+ 内核≥3.2 + 任意用户态；实测 ubuntu 16.04 可跑 |
 | Linux arm64 | `-linux-arm64.tar.xz` | `ubuntu-26.04-arm` | 任意 arm64 Linux（全静态，无 glibc 要求） |
-| Linux arm64 legacy | `-linux-arm64-legacy.tar.xz` | `ubuntu-24.04-arm` | 任意 arm64 Linux（全静态；旧发行版兼容构建） |
+| Linux arm64 legacy | `-linux-arm64-legacy.tar.xz` | `ubuntu-24.04-arm` | 任意 ARMv8+（Cortex-A53 实测）+ 内核≥3.7 + 任意用户态 |
 | macOS arm64 | `-macos-arm64.tar.xz` | `macos-latest` | macOS 14+（Apple Silicon） |
 
-产物静态程度：Windows 与 Linux 为**全静态**二进制（依赖库与运行库/glibc 全部编入）；macOS 为**依赖全静态 + 仅系统库动态**——Apple 不发行静态 libSystem，macOS 上不存在全静态可执行文件（VideoToolbox/AVFoundation 等系统框架也只能动态加载）。
+产物静态程度：Windows 与 Linux 为**全静态**二进制（依赖库与运行库/glibc 全部编入）；macOS 为**依赖全静态 + 仅系统库动态**——Apple 不发行静态 libSystem，macOS 上不存在全静态可执行文件（VideoToolbox/AVFoundation 等系统框架也只能动态加载）。`-shared` 变体把 av 库放出成 .so/.dll 旁位自解析、外欠系统 libc：legacy 轨实测需 glibc≥2.34（≈Ubuntu 22.04+，更老用户态请用静态包），latest 轨需与构建发行版（26.04）同代或更新的 glibc。
 
 ### 平台特性
 
@@ -52,7 +52,7 @@ https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-
 | GPU 滤镜 | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL | Vulkan / OpenCL | CoreImage（Metal） |
 | 音频插件宿主 | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA |
 
-Linux 的 `-legacy` 构建轨与同架构默认轨共用同一份特性清单——差异只在构建工具链世代（ubuntu-24.04 vs 26.04），启用的库与功能一致。
+Linux 的 `-legacy` 构建轨与同架构默认轨共用同一份特性清单——启用库与功能一致，差异只在基线世代：默认轨乘 runner 最新工具链（26.04 的 amd64v3 归档 gcc 默认 `-march=x86-64-v3`），`-legacy` 轨钉老基线（x86_64=SSE2、arm64=ARMv8.0；内含的 AVX2/AVX-512 等 SIMD 代码全部走 cpuid 运行时分发，老 CPU 自动回落 C 路径——qemu64/cortex-a53 仿真实测通过）。静态变体内嵌的 glibc 以 `.note.ABI-tag` 声明内核下限 x86_64≥3.2、arm64≥3.7，对发行版用户态零要求。
 
 #### 各平台缺席项及原因
 

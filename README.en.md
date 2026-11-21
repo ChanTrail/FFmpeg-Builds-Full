@@ -33,13 +33,13 @@ https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-
 |:--|:--|:--|:--|
 | Windows x86_64 | `-windows-x86_64.7z` | `windows-latest`, MSYS2 UCRT64 | Windows 10+ |
 | Windows arm64 | `-windows-arm64.7z` | `windows-11-arm`, MSYS2 CLANGARM64 | Windows 11 ARM64 |
-| Linux x86_64 | `-linux-x86_64.tar.xz` | `ubuntu-26.04` | any x86_64 Linux (fully static, no glibc requirement) |
-| Linux x86_64 legacy | `-linux-x86_64-legacy.tar.xz` | `ubuntu-24.04` | any x86_64 Linux (fully static; old-distro compatible build) |
+| Linux x86_64 | `-linux-x86_64.tar.xz` | `ubuntu-26.04` | x86-64-v3+ CPU (amd64v3 toolchain default output, ≈Haswell/2013+); fully static, no glibc requirement |
+| Linux x86_64 legacy | `-linux-x86_64-legacy.tar.xz` | `ubuntu-24.04` | any x86-64 CPU (SSE2 baseline) + kernel ≥3.2 + any userland; verified on ubuntu 16.04 |
 | Linux arm64 | `-linux-arm64.tar.xz` | `ubuntu-26.04-arm` | any arm64 Linux (fully static, no glibc requirement) |
-| Linux arm64 legacy | `-linux-arm64-legacy.tar.xz` | `ubuntu-24.04-arm` | any arm64 Linux (fully static; old-distro compatible build) |
+| Linux arm64 legacy | `-linux-arm64-legacy.tar.xz` | `ubuntu-24.04-arm` | any ARMv8+ (verified under cortex-a53) + kernel ≥3.7 + any userland |
 | macOS arm64 | `-macos-arm64.tar.xz` | `macos-latest` | macOS 14+ (Apple Silicon) |
 
-How static the artifacts are: Windows and Linux ship **fully static** binaries (every dependency plus the runtime/glibc is linked in); macOS ships **all-static dependencies + system libraries dynamic** — Apple does not ship a static libSystem, so a fully static executable cannot exist on macOS (VideoToolbox/AVFoundation and friends are dynamic frameworks by nature).
+How static the artifacts are: Windows and Linux ship **fully static** binaries (every dependency plus the runtime/glibc is linked in); macOS ships **all-static dependencies + system libraries dynamic** — Apple does not ship a static libSystem, so a fully static executable cannot exist on macOS (VideoToolbox/AVFoundation and friends are dynamic frameworks by nature). The `-shared` variants instead split the av libraries out as sibling .so/.dll files and owe the system libc: the legacy track needs glibc ≥2.34 (≈Ubuntu 22.04+ — use the static package on older userlands), and the latest track needs a glibc as new as or newer than its build distro (26.04).
 
 ### Platform features
 
@@ -52,7 +52,7 @@ How static the artifacts are: Windows and Linux ship **fully static** binaries (
 | GPU filters | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL | Vulkan / OpenCL | CoreImage (Metal) |
 | Audio plugin hosts | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA |
 
-The Linux `-legacy` build tracks share the exact feature set of their same-arch default tracks — only the toolchain generation differs (ubuntu-24.04 vs 26.04), not the enabled libraries.
+The Linux `-legacy` build tracks share the exact feature set of their same-arch default tracks — the enabled libraries are identical; only the baseline generation differs. The default track rides the runner's newest toolchain (the amd64v3 archive's gcc on 26.04 defaults to `-march=x86-64-v3`), while `-legacy` pins the old baseline (SSE2 on x86_64, ARMv8.0 on arm64; the bundled AVX2/AVX-512 and other SIMD code paths all dispatch through cpuid at runtime, so old CPUs fall back to the C paths — verified under qemu64/cortex-a53 emulation). The glibc baked into the static variants declares kernel floors of ≥3.2 (x86_64) / ≥3.7 (arm64) via `.note.ABI-tag`, and owes nothing to the distro userland.
 
 #### Per-architecture absences and why
 
