@@ -36,6 +36,28 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "--disable-specs",
             "--datadir=/usr/share",
             "--datarootdir=/usr/share",
+            // loadable-xcursor 默认随 dlopen 可用而开：CrGlCur.c 的
+            // _XNoticeCreateBitmap 在每次 XCreatePixmap 时惰性
+            // dlopen("libXcursor.so.1")——静态进程拉进系统
+            // libXcursor→libXrender→libxcb→libc.so.6 整条依赖链
+            // → 第二份 glibc 的 __pthread_early_init 拿不到 auxv
+            // → SIGFPE（x86_64-legacy gdb 实证：SDL_ShowCursor→
+            // XCreateBitmapFromData→_XNoticeCreateBitmap→
+            // open_library→dlopen）。关掉后 CrPixmap.c 的 no-op
+            // 变体接管，仅损失"Xcursor 主题光标跟踪自建位图"，
+            // ffplay 用不到 / loadable-xcursor defaults ON with
+            // dlopen present: CrGlCur.c's _XNoticeCreateBitmap
+            // lazily dlopens libXcursor.so.1 on every
+            // XCreatePixmap — a static process then drags in the
+            // whole system chain libXcursor→libXrender→libxcb→
+            // libc.so.6 → second glibc's __pthread_early_init gets
+            // no auxv → SIGFPE (x86_64-legacy gdb evidence:
+            // SDL_ShowCursor→XCreateBitmapFromData→
+            // _XNoticeCreateBitmap→open_library→dlopen). Disabled,
+            // CrPixmap.c's no-op variant takes over — only
+            // Xcursor-theme tracking of self-made bitmaps is lost,
+            // which ffplay never uses
+            "--disable-loadable-xcursor",
         ],
         &[],
         &src.join("x11stage"),

@@ -725,14 +725,23 @@ pub fn ffmpeg_plan() -> Result<crate::ffmpeg::ConfJob, String> {
     let gomp = e.gomp.read().unwrap().clone();
     args.extend([
         "--extra-cflags=-DLIBTWOLAME_STATIC".into(),
-        // xevd/xeve 同族源码撞名（padding/prefetch_for_mc 等共享 mc/recon
-        // 非 static 符号），静态归档同链必 multiple definition——windows
-        // 在 fixup 改名去重，这里用 GNU ld 的宽容开关兜底 / xevd and
-        // xeve share source files whose non-static symbols collide
-        // (padding, prefetch_for_mc, ... mc/recon helpers) — statically
-        // archiving both into one link is a guaranteed multiple
-        // definition; windows dedupes by renaming in fixup, here GNU
-        // ld's tolerant switch is the umbrella
+        // xevd/xeve 等"同名同码"撞名对已在 postfix 做 ELF 等长字节改
+        // 名（与 mac byte_rename、windows redefine_sym 同效）。旗标暂
+        // 留的原因：同次 postfix 的全量审计（audit_dup_defs）预期还会
+        // 照出 rust compiler_builtins∩libgcc 内建例程一族（__divti3、
+        // __udivti3…）——同算法同语义、摘旗标则必炸，属有意共存；以及
+        // 一切未知的 prefix↔系统归档撞名。待审计回来的白名单外撞名清
+        // 零即可摘旗标，撞名从此硬错误暴露 / the "same-name same-code"
+        // pairs (xevd/xeve...) now get an ELF equal-length byte rename
+        // in postfix (same effect as mac byte_rename / windows
+        // redefine_sym). The flag stays for now because the same
+        // postfix's full audit (audit_dup_defs) is expected to surface
+        // the rust compiler_builtins∩libgcc intrinsic family
+        // (__divti3, __udivti3...) — same algorithm same semantics,
+        // intentional coexistence that a flag drop would fatal — plus
+        // any unknown prefix↔system collisions. Once the audit comes
+        // back with zero off-whitelist collisions the flag can drop
+        // and collisions become hard errors
         // -static 全静态：连 glibc 家族也打进二进制（-static-libgcc/
         // -static-libstdc++ 是 -static 的子集，删掉）。前缀库全是 .a，
         // 剩余 -l 只剩 libc/libm/libpthread/libdl/librt/libresolv/
