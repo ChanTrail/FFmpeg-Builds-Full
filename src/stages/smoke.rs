@@ -1,8 +1,8 @@
 //! 冒烟测试：对解压后的 FFmpeg 构建做体检
 //! Smoke test: sanity-check an extracted FFmpeg build
-//! 在每个发布的平台上运行，只依赖 ffmpeg/ffprobe 二进制本身。
-//! Runs on every shipped platform; relies only on the ffmpeg/ffprobe
-//! binaries themselves.
+//! 在每个发布的平台上运行，只依赖 ffmpeg/ffprobe/ffplay 二进制本身。
+//! Runs on every shipped platform; relies only on the
+//! ffmpeg/ffprobe/ffplay binaries themselves.
 //!
 //! 覆盖面由 features 清单驱动：resolve() 的 enabled 集（清单意图 × 库
 //! 探测）就是"本构建该有哪些特性"的期望——每个启用特性都要 (a) 在
@@ -321,10 +321,11 @@ const FLAG_ONLY: &[&str] = &[
     "libxcb-xfixes",
     // sdl2 上游已移除 outdev（master 的 outdev_list.c 无 sdl 条目），
     // 现在只喂 ffplay_deps——唯一可观察面是 --enable 旗标本身（ffplay
-    // 存在性由必需二进制检查覆盖）/ sdl2's outdev was removed upstream
-    // (no sdl entry in master's outdev_list.c) — it now only feeds
-    // ffplay_deps; the flag itself is the only observable face (ffplay's
-    // existence is covered by the required-bins check)
+    // 存在性与真跑由下方 ffplay 段覆盖）/ sdl2's outdev was removed
+    // upstream (no sdl entry in master's outdev_list.c) — it now only
+    // feeds ffplay_deps; the flag itself is the only observable face
+    // (ffplay existence and a real headless run are covered by the
+    // ffplay section below)
     "sdl2",
     // 压缩/字符集底座——不注册任何可名列的组件 / compression/charset
     // plumbing — no nameable component face
@@ -958,6 +959,92 @@ pub fn smoke_test(bin: &Path) -> Result<(), String> {
             "feature '{feat}' enabled but its exercise ({comp}) failed (exit {rc})"
         ));
         failed.push(format!("{feat}/{comp}"));
+    }
+
+    // --- ffprobe 深度体检：show_format+show_streams 走完整
+    // demux→probe 管线；json/xml 两种 writer 顺带压住 libxml2 后端
+    // ——此前 ffprobe 只被查过一次 codec_name / ffprobe deep check:
+    // show_format+show_streams exercise the whole demux→probe
+    // pipeline, and the json/xml writers additionally pin the libxml2
+    // backend — previously ffprobe only ever got a single codec_name
+    // query
+    for (of, needle) in [("json", "\"codec_name\""), ("xml", "<?xml")] {
+        let o = sys::capture(
+            &fp,
+            &[
+                "-v",
+                "error",
+                "-show_format",
+                "-show_streams",
+                "-of",
+                of,
+                &out.to_string_lossy(),
+            ],
+            bin,
+        )
+        .unwrap_or_default();
+        if o.contains(needle) {
+            println!("ffprobe: -of {of} ok");
+        } else {
+            annotate_error(&format!(
+                "ffprobe -of {of} on the smoke mkv missed '{needle}'"
+            ));
+            failed.push(format!("ffprobe/{of}"));
+        }
+    }
+
+    // --- ffplay 体检：sdl2 启用时是必交产物。dummy 音视频驱动让真跑
+    // 在无显示环境成立——SDL init + demux + decode + 软件渲染整条播
+    // 放管线（静态包 dlopen 雷区曾让连 -version 都必炸的正是它：
+    // vulkan shim 构造函数、SDL 后端 soname、libX11→libXcursor 惰性
+    // 链全在这条路径上）/ ffplay check: a required deliverable when
+    // sdl2 is enabled. SDL's dummy video/audio drivers make a real run
+    // viable headless — SDL init + demux + decode + software-render
+    // playback end to end (this is exactly the component static-
+    // package dlopen landmines used to kill even on -version: the
+    // vulkan shim constructor, SDL backend sonames, and the
+    // libX11→libXcursor lazy chain all sit on this path)
+    let ffplay = bin.join(format!("ffplay{ext}"));
+    let fpl = ffplay.to_string_lossy().to_string();
+    let mut run_ffplay = |required: bool| {
+        let rc = sys::cmd(
+            &fpl,
+            &[
+                "-v",
+                "error",
+                "-autoexit",
+                "-t",
+                "0.5",
+                &out.to_string_lossy(),
+            ],
+        )
+        .env("SDL_VIDEODRIVER", "dummy")
+        .env("SDL_AUDIODRIVER", "dummy")
+        .status()
+        .map(|s| sys::exit_code(&s))
+        .unwrap_or(1);
+        if rc == 0 {
+            println!("ffplay: headless playback ok");
+        } else if required {
+            annotate_error(&format!("ffplay headless playback failed (exit {rc})"));
+            failed.push("ffplay".to_string());
+        } else {
+            annotate_warn(&format!("ffplay headless playback failed (exit {rc})"));
+        }
+    };
+    if version_enabled.contains("sdl2") {
+        if !ffplay.is_file() {
+            annotate_error("--enable-sdl2 is in ffmpeg -version but ffplay is absent");
+            failed.push("ffplay (missing)".to_string());
+        } else {
+            run_ffplay(true);
+        }
+    } else if ffplay.is_file() {
+        // sdl2 缺席但包里仍带了 ffplay——照跑不误（坏二进制就是 bug，
+        // 降级为警告防极端环境误伤）/ ffplay shipped despite sdl2 off —
+        // still worth a run (a broken binary is a bug regardless; warn
+        // level to avoid exotic-environment false positives)
+        run_ffplay(false);
     }
 
     // --- 编码→解码 roundtrip：成对第三方组件各验一半 /

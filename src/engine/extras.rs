@@ -991,6 +991,37 @@ pub(crate) fn byte_rename(
             if let Some(&t) = map.get(&data[start..i]) {
                 data[start..i].copy_from_slice(t);
                 hit = true;
+                continue;
+            }
+            // LLVM 字符串表后缀合并：符号名可以是更长字符串的尾巴——
+            // 定义成员的 .strtab 存 `.text._RNv…alloc\0` 一整串，st_name
+            // 指向 `.` 之后（实证：rust 静态库定义 st_name 前字节是 0x2e，
+            // 引用成员是 0x00）。只认 NUL 边界的整词匹配会漏掉定义名——
+            // 引用改成 zRNv…、定义仍 _RNv…，librav1e 链测 zRNv…___rust_
+            // alloc/panic 全家 undefined（arm64-legacy CI 实证，本地
+            // ELF 复现一致）。逐 '.' 位置探后缀，命中则就地补尾——等长
+            // 替换让 `.text._RNv…` 变 `.text.zRNv…`：节名无害，符号名
+            // 后缀正确读出新名 / LLVM strtab suffix merging: a symbol
+            // name can be the TAIL of a longer string — the defining
+            // member's .strtab stores one `.text._RNv…alloc\0` blob with
+            // st_name pointing past the `.` (empirical: def st_name is
+            // preceded by 0x2e, refs by 0x00). Whole-token matching
+            // alone misses definitions — refs go zRNv… while defs stay
+            // _RNv… and the -lrav1e link test dies on the zRNv…___rust_
+            // alloc/panic family (arm64-legacy CI, reproduced locally
+            // on real ELF). Probe every post-'.' suffix and patch the
+            // tail in place — equal-length rewrite turns
+            // `.text._RNv…` into `.text.zRNv…`: a harmless section
+            // name whose symbol-name suffix now resolves to the new name
+            for k in start..i {
+                if data[k] == b'.'
+                    && k + 1 < i
+                    && let Some(&t) = map.get(&data[k + 1..i])
+                {
+                    data[k + 1..i].copy_from_slice(t);
+                    hit = true;
+                    break;
+                }
             }
         }
         hit
@@ -1255,6 +1286,152 @@ fn macho_def_names(lib: &Path) -> HashSet<String> {
 /// defined/weak symbol matching the name (with optional _ prefix)
 fn nm_has(lib: &Path, sym: &str, dir: &Path) -> bool {
     crate::ar::has_sym(lib, sym, dir)
+}
+
+/// ELF 归档的强全局定义集（nm --defined-only 的大写
+/// T/D/R/B/G/S/A 行 + i ifunc + u GNU_UNIQUE——这些撞名才会触发
+/// multiple definition；W/V 弱符号与 C common 本就合法共存、
+/// 小写局部名跨归档不可见，全都不进）/ strong-global defined set
+/// of an ELF archive (uppercase T/D/R/B/G/S/A rows of
+/// nm --defined-only plus 'i' ifunc and 'u' GNU_UNIQUE — only these
+/// can fire multiple-definition; W/V weaks and C commons coexist
+/// legally and lowercase locals are invisible across archives, so
+/// all are excluded)
+fn elf_def_names(lib: &Path, dir: &Path) -> std::collections::BTreeSet<String> {
+    let out =
+        sys::capture("nm", &["--defined-only", &lib.to_string_lossy()], dir).unwrap_or_default();
+    out.lines()
+        .filter(|l| {
+            l.split_whitespace()
+                .nth(1)
+                .map(|t| t.len() == 1 && "TDRBGSAIiu".contains(t))
+                .unwrap_or(false)
+        })
+        .filter_map(|l| l.split_whitespace().nth(2))
+        .map(String::from)
+        .collect()
+}
+
+/// linux 全量撞名审计：-Wl,--allow-multiple-definition 会把"两个
+/// 强定义"静默成"首册胜出"——谁的第二份被丢进垃圾桶无人知晓，
+/// 同名不同码时甚至可能选错实现（zmq∩ssh 的 sha1_init 实证）。本
+/// 函数把旗标掩盖的世界照出来：prefix 全部 .a + gcc 尾链会真用的
+/// 系统归档（-print-file-name 解析 libc/libm/libstdc++/libgcc/
+/// libgomp 等），逐符号枚举提供方，>1 提供者的全量落日志。
+/// 只诊断不手术——报告回来的白名单外撞名决定摘旗标的时机 /
+/// linux full-collision audit: -Wl,--allow-multiple-definition
+/// silently turns "two strong definitions" into "first archive
+/// wins" — nobody ever sees whose second copy got binned, and
+/// same-name-different-code can pick the wrong impl (zmq∩ssh
+/// sha1_init, empirical). This fn illuminates what the flag
+/// hides: every prefix .a plus the system archives the gcc tail
+/// actually links (libc/libm/libstdc++/libgcc/libgomp... resolved
+/// via -print-file-name), enumerating providers per symbol and
+/// dumping every multi-provider one. Diagnostic only — the
+/// whitelist-surplus collisions it reports decide when the flag
+/// can come off
+fn audit_dup_defs(libdir: &Path, dir: &Path) {
+    let e = sys::env();
+    // 符号 -> 提供方清单（prefix 用文件名，系统归档加 sys: 前缀）/
+    // symbol -> provider list (prefix archives by filename, system
+    // archives with a sys: prefix)
+    let mut prov: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    let mut scanned = 0usize;
+    let mut feed = |p: &Path, label: &str| {
+        let defs = elf_def_names(p, dir);
+        if defs.is_empty() {
+            log::warn(&format!(
+                "[extras] audit: {label} yielded no strong defs (nm failed?)"
+            ));
+        }
+        for s in defs {
+            prov.entry(s).or_default().push(label.to_string());
+        }
+        scanned += 1;
+    };
+    if let Ok(rd) = std::fs::read_dir(libdir) {
+        for en in rd.flatten() {
+            let n = en.file_name().to_string_lossy().to_string();
+            if n.ends_with(".a") {
+                feed(&en.path(), &n);
+            }
+        }
+    }
+    for l in [
+        "libc.a",
+        "libm.a",
+        "libpthread.a",
+        "libdl.a",
+        "librt.a",
+        "libresolv.a",
+        "libatomic.a",
+        "libgomp.a",
+        "libstdc++.a",
+        "libgcc.a",
+        "libgcc_eh.a",
+    ] {
+        let r = sys::capture(&e.cc, &["-print-file-name", l], dir).unwrap_or_default();
+        let r = r.trim().replace('\r', "");
+        let p = Path::new(&r);
+        if p.is_file() {
+            feed(p, &format!("sys:{l}"));
+        }
+    }
+    let dups: Vec<(&String, &Vec<String>)> = prov
+        .iter()
+        .filter(|(_, v)| {
+            // 同一提供方只出现一次不算撞（BTreeMap 的 push 可能重名
+            // 追加——同册内部撞名是另一层病灶，nm 成员级粒度才可
+            // 见，暂不在本审计内）/ a single provider listed once is
+            // no collision (push can append duplicates — intra-
+            // archive same-name defs are a different lesion only
+            // visible at member granularity, out of this audit's
+            // scope)
+            v.iter().collect::<std::collections::BTreeSet<_>>().len() > 1
+        })
+        .collect();
+    log::log(&format!(
+        "[extras] audit: scanned {scanned} archives, {} unique strong defs, \
+         {} multi-provider symbol(s) masked by --allow-multiple-definition",
+        prov.len(),
+        dups.len()
+    ));
+    // 先按"提供方对"聚合——上万撞名里逐符号列举必被 cap 吞掉大头
+    // （实证：arm64-legacy 13608 撞名只见前 300），对级计数几行就照出
+    // 家系分布（vendor 拷贝、内建例程族、误并依赖），再落逐符号细节 /
+    // aggregate by provider pair first — a symbol-by-symbol dump at
+    // tens of thousands of entries gets decapitated by the cap
+    // (empirical: 13608 collisions on arm64-legacy, only 300 visible);
+    // pair-level counts expose the family distribution in a handful of
+    // lines — vendored copies, builtin families, mis-merged deps — the
+    // per-symbol detail follows
+    let mut pairs: std::collections::BTreeMap<Vec<String>, usize> =
+        std::collections::BTreeMap::new();
+    for (_, libs) in &dups {
+        let mut u: Vec<String> = libs.iter().map(|s| s.to_string()).collect();
+        u.sort();
+        u.dedup();
+        *pairs.entry(u).or_insert(0) += 1;
+    }
+    let mut pv: Vec<(Vec<String>, usize)> = pairs.into_iter().collect();
+    pv.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    for (libs, n) in &pv {
+        log::log(&format!(
+            "[extras] audit pair {}: {n} shared symbol(s)",
+            libs.join(" ∩ ")
+        ));
+    }
+    const CAP: usize = 300;
+    for (s, libs) in dups.iter().take(CAP) {
+        log::warn(&format!("[extras] dupdef {s} <- {}", libs.join(", ")));
+    }
+    if dups.len() > CAP {
+        log::warn(&format!(
+            "[extras] audit: ... and {} more dupdef symbols beyond the {CAP}-line cap",
+            dups.len() - CAP
+        ));
+    }
 }
 
 /// postfix 专属显迹 libs_private：目标 .pc 缺席时落一行跳过；token 已在
@@ -1625,6 +1802,94 @@ fn postfix() -> Result<(), String> {
         }
     }
 
+    // linux 的三对"同名"撞名——与 mac/windows 同源：libxevd∩libxeve 共
+    // 享 mc/recon 源（padding/prefetch_for_mc…）；librsvg-2∩librav1e
+    // 嵌同一 rustc 的 std/alloc 单态化；libzmq∩libssh 撞 sha1_init
+    // 一族（zmq 自带 sha1.c vs libssh md_mbedcrypto 胶水——实现不同，
+    // -Wl,--allow-multiple-definition 的"首册静默胜出"在这里可能选
+    // 错实现，不只是链接洁癖）。与 mac 相同的语义：b 册交集符号等长
+    // 改名，首字符换 z/y/x/q 中第一个不与两册现存名冲突的——ELF 无
+    // 前导下划线，故换首字符而非前缀 / linux's three same-name
+    // collision pairs — same sources as mac/windows: libxevd∩libxeve
+    // share mc/recon sources (padding, prefetch_for_mc...);
+    // librsvg-2∩librav1e embed one rustc's std/alloc monomorphs;
+    // libzmq∩libssh collide on the sha1_init family (zmq's bundled
+    // sha1.c vs libssh's md_mbedcrypto glue — DIFFERENT
+    // implementations, so --allow-multiple-definition's
+    // first-archive-wins can silently pick the wrong impl — not mere
+    // link hygiene). Same semantics as mac: rename b's intersecting
+    // symbols equal-length, first char swapped to whichever of
+    // z/y/x/q doesn't collide in either archive — ELF has no leading
+    // underscore so we mutate the first char rather than a prefix
+    if e.os == sys::Os::Linux {
+        for (a, b) in [
+            ("libxevd.a", "libxeve.a"),
+            ("librsvg-2.a", "librav1e.a"),
+            ("libzmq.a", "libssh.a"),
+        ] {
+            let (pa, pb) = (libdir.join(a), libdir.join(b));
+            if !(pa.is_file() && pb.is_file()) {
+                continue;
+            }
+            let sa = elf_def_names(&pa, &e.work);
+            let sb = elf_def_names(&pb, &e.work);
+            if sa.is_empty() || sb.is_empty() {
+                log::log(&format!(
+                    "[extras] dedup pair {a}∩{b}: defined sets {} vs {}; skipped",
+                    sa.len(),
+                    sb.len()
+                ));
+                continue;
+            }
+            let shared: Vec<String> = sa.intersection(&sb).cloned().collect();
+            if shared.is_empty() {
+                log::log(&format!(
+                    "[extras] dedup pair {a}∩{b}: no shared symbols; skipped"
+                ));
+                continue;
+            }
+            let mut pairs: Vec<(String, String)> = Vec::new();
+            for s in &shared {
+                if s.len() < 2 {
+                    log::warn(&format!(
+                        "[extras] {a}∩{b}: shared name '{s}' too short to rename; skipped"
+                    ));
+                    continue;
+                }
+                // 首个不与两册现存名冲突的候选首字符 / first
+                // candidate initial that collides in neither
+                // archive
+                let tgt = ['z', 'y', 'x', 'q']
+                    .iter()
+                    .map(|c| format!("{c}{}", &s[1..]))
+                    .find(|t| !sa.contains(t) && !sb.contains(t));
+                let Some(tgt) = tgt else {
+                    log::warn(&format!(
+                        "[extras] {a}∩{b}: no free rename target for '{s}'; skipped"
+                    ));
+                    continue;
+                };
+                pairs.push((s.clone(), tgt));
+            }
+            if pairs.is_empty() {
+                continue;
+            }
+            let refs: Vec<(&str, &str)> = pairs
+                .iter()
+                .map(|(o, n)| (o.as_str(), n.as_str()))
+                .collect();
+            let n = byte_rename(&pb, &refs, &e.work)?;
+            if n > 0 {
+                let _ = sys::run(&e.ranlib, &[&pb.to_string_lossy()], &e.work);
+            }
+            log::log(&format!(
+                "[extras] renamed {} {a}-shared symbol(s) in {b} across {n} member(s) \
+                 (first char -> z/y/x/q)",
+                pairs.len()
+            ));
+        }
+    }
+
     // GnuTLS 的 ARM AES 汇编与 OpenSSL aesv8-armx 同源——导出 aes_v8_* 名
     // 完全相同，静态链接撞车。等长改名 aes_v8_ -> gnaes8_
     // GnuTLS's ARM AES asm and OpenSSL's aesv8-armx come from the same
@@ -1791,6 +2056,15 @@ fn postfix() -> Result<(), String> {
             ),
         )?;
         log::log(&format!("[extras] wrote flite.pc ({flibs})"));
+    }
+
+    // linux 全量撞名审计：改名手术落完之后跑，报告的才是旗标仍掩盖
+    // 的世界（含 prefix↔系统归档对——audit 函数注释有机制与用法）/
+    // linux full-collision audit: runs after every archive surgery so
+    // it reports exactly what the flag still hides (including
+    // prefix↔system pairs — mechanism & usage in audit_dup_defs)
+    if e.os == sys::Os::Linux {
+        audit_dup_defs(&libdir, &e.work);
     }
 
     // windows 的重活（Requires.private 补齐、.pc 系统库修补、impshim、
