@@ -62,6 +62,20 @@ static TABLE: &[Row] = &[
         body: include_str!("../../patches/ffmpeg/0002-libxavs2-fps-param.patch"),
     },
     Row {
+        name: "ffmpeg",
+        // ffplay 增补 chantrail_* 私有选项：chantrail_as 窗口按
+        // 显示宽高比定尺寸、chantrail_nokeepaspect 拉伸去黑边、
+        // chantrail_volume SDL 0-128 刻度启动音量、
+        // chantrail_render_driver → SDL_HINT_RENDER_DRIVER（视频
+        // 输出设备偏好落地）/ adds chantrail_* private options to
+        // ffplay: _as sizes the window to display aspect,
+        // _nokeepaspect stretches sans letterbox, _volume is the
+        // SDL 0-128 startup volume and _render_driver →
+        // SDL_HINT_RENDER_DRIVER backing the video-output-device pref
+        pin: None,
+        body: include_str!("../../patches/ffmpeg/0003-ffplay-chantrail-opts.patch"),
+    },
+    Row {
         name: "gmp",
         // 对 gmp-6.3.0.tar.xz 钉死 sha256——源一换版本此补丁必须人工复核 /
         // pinned to gmp-6.3.0.tar.xz's sha256 — bumping the source forces a

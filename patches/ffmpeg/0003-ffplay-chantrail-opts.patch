@@ -1,0 +1,94 @@
+diff --git a/fftools/ffplay.c b/fftools/ffplay.c
+index 00e64d2..f35c67a 100644
+--- a/fftools/ffplay.c
++++ b/fftools/ffplay.c
+@@ -355,6 +355,18 @@ static int alwaysontop;
+ static int startup_volume = 100;
+ static int show_status = -1;
+ static int av_sync_type = AV_SYNC_AUDIO_MASTER;
++
++/* chantrail 私有选项：chantrail_as 按显示宽高比定窗口尺寸、
++ * chantrail_nokeepaspect 拉伸铺满去黑边、chantrail_volume 走
++ * SDL 0-128 音量刻度、chantrail_render_driver 映射
++ * SDL_HINT_RENDER_DRIVER / chantrail private options: _as sizes
++ * the window to display aspect, _nokeepaspect stretches sans
++ * letterbox, _volume is the SDL 0-128 startup scale and
++ * _render_driver maps to SDL_HINT_RENDER_DRIVER. */
++static int chantrail_as;
++static int chantrail_nokeepaspect;
++static int chantrail_volume = -1;      /* 0..SDL_MIX_MAXVOLUME scale */
++static const char *chantrail_render_driver;
+ static int64_t start_time = AV_NOPTS_VALUE;
+ static int64_t duration = AV_NOPTS_VALUE;
+ static int fast = 0;
+@@ -1109,6 +1118,13 @@ static void video_image_display(VideoState *is)
+ 
+     vp = frame_queue_peek_last(&is->pictq);
+     calculate_display_rect(rect, is->xleft, is->ytop, is->width, is->height, vp->width, vp->height, vp->sar);
++    if (chantrail_nokeepaspect) {
++        /* -chantrail_nokeepaspect：画面拉伸铺满整个窗口，不加
++         * 黑边 / -chantrail_nokeepaspect: stretch the picture to
++         * the whole window instead of letterboxing. */
++        rect->x = is->xleft; rect->y = is->ytop;
++        rect->w = is->width;  rect->h = is->height;
++    }
+     if (vk_renderer) {
+         vk_renderer_display(vk_renderer, vp->frame, &is->render_params);
+         return;
+@@ -1563,6 +1578,17 @@ static int video_open(VideoState *is)
+     w = screen_width ? screen_width : default_width;
+     h = screen_height ? screen_height : default_height;
+ 
++    if (chantrail_as && is->video_st) {
++        /* -chantrail_as：按视频显示宽高比定窗口尺寸 /
++         * -chantrail_as: size the window to the video's display
++         * aspect. */
++        AVRational sar = is->video_st->codecpar->sample_aspect_ratio;
++        if (sar.num <= 0 || sar.den <= 0)
++            sar = av_make_q(1, 1);
++        h = (int)av_rescale(w, is->video_st->codecpar->height * (int64_t)sar.den,
++                            is->video_st->codecpar->width  * (int64_t)sar.num) & ~1;
++    }
++
+     SDL_SetWindowTitle(window, window_title ? window_title : is->title ? is->title : is->filename);
+ 
+     SDL_SetWindowSize(window, w, h);
+@@ -3712,6 +3737,10 @@ static VideoState *stream_open(const char *filename,
+         }
+     }
+     is->audio_volume = SDL_MIX_MAXVOLUME * av_clip(startup_volume, 0, 100) / 100;
++    /* -chantrail_volume 走 SDL 的 0..SDL_MIX_MAXVOLUME 刻度 /
++     * -chantrail_volume takes SDL's 0..SDL_MIX_MAXVOLUME scale. */
++    is->audio_volume = chantrail_volume >= 0 ? av_clip(chantrail_volume, 0, SDL_MIX_MAXVOLUME)
++                                             : is->audio_volume;
+     is->muted = 0;
+     if (replaced) {
+         SDL_AtomicSet(&is->replacement, 1);
+@@ -4480,6 +4509,10 @@ static const OptionDef options[] = {
+     { "vulkan_params",      OPT_TYPE_STRING, OPT_EXPERT, { &vulkan_params }, "vulkan configuration using a list of key=value pairs separated by ':'" },
+     { "video_bg",           OPT_TYPE_STRING, OPT_EXPERT, { &video_background }, "set video background for transparent videos" },
+     { "hwaccel",            OPT_TYPE_STRING, OPT_EXPERT, { &hwaccel }, "use HW accelerated decoding" },
++    { "chantrail_as",            OPT_TYPE_BOOL,   OPT_EXPERT, { &chantrail_as }, "size window to display aspect" },
++    { "chantrail_nokeepaspect",  OPT_TYPE_BOOL,   OPT_EXPERT, { &chantrail_nokeepaspect }, "stretch video to window, no letterbox" },
++    { "chantrail_volume",        OPT_TYPE_INT,    OPT_EXPERT, { &chantrail_volume }, "startup volume on SDL scale 0-128", "volume" },
++    { "chantrail_render_driver", OPT_TYPE_STRING, OPT_EXPERT, { &chantrail_render_driver }, "SDL render driver: direct3d|direct3d11|opengl|opengles2|software", "driver" },
+     { NULL, },
+ };
+ 
+@@ -4638,7 +4671,16 @@ int main(int argc, char **argv)
+                 do_exit(NULL);
+             }
+         } else {
++            /* -chantrail_render_driver -> SDL_HINT_RENDER_DRIVER，
++             * 须在渲染器创建之前落位（驱动视频输出设备偏好）/
++             * -chantrail_render_driver -> SDL_HINT_RENDER_DRIVER
++             * before renderer creation (drives the video output
++             * device pref). */
++            if (chantrail_render_driver)
++                SDL_SetHint(SDL_HINT_RENDER_DRIVER, chantrail_render_driver);
+             renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
++            if (!renderer && chantrail_render_driver)
++                av_log(NULL, AV_LOG_WARNING, "-chantrail_render_driver=%s unavailable, retrying default\n", chantrail_render_driver);
+             if (!renderer) {
+                 av_log(NULL, AV_LOG_WARNING, "Failed to initialize a hardware accelerated renderer: %s\n", SDL_GetError());
+                 renderer = SDL_CreateRenderer(window, -1, 0);
