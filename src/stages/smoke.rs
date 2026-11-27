@@ -416,14 +416,25 @@ const FUNCTIONAL: &[(&str, &str, Fkind, &[&str])] = &[
     ("libzimg", "zscale=w=320:h=240", Fkind::VFilter, &[]),
     // HDR→SDR 色调映射全链：zscale 线性化 → tonemap → zscale 回
     // bt709——HDR 转制的 CPU 路径整体演练（GPU 的 vf_libplacebo 无
-    // vulkan 设备跑不起来，组件面由清单表覆盖）/ the full HDR→SDR
-    // tone mapping chain: zscale linearize -> tonemap -> zscale back
-    // to bt709 — end-to-end exercise of the CPU tone mapping path
-    // (the GPU-side vf_libplacebo can't run without a vulkan device;
-    // the inventory table covers its presence)
+    // vulkan 设备跑不起来，组件面由清单表覆盖）。输入属性必须显式
+    // 声明：testsrc2 帧不带色彩元数据，zimg 从"未指定"出发无路可
+    // 走（code 3074: no path between colorspaces——三轮 CI 全平台
+    // 统一暴毙点），pin/tin/min 把输入钉死为 bt2020+PQ 后链路与
+    // 输入元数据彻底解耦；第二段 zscale 同样显式声明防属性传播断
+    // 链 / the full HDR→SDR tone mapping chain: zscale linearize ->
+    // tonemap -> zscale back to bt709 — end-to-end exercise of the
+    // CPU tone mapping path (the GPU-side vf_libplacebo can't run
+    // without a vulkan device; the inventory table covers its
+    // presence). Input properties must be declared explicitly:
+    // testsrc2 frames carry no color metadata and zimg has no path
+    // from "unspecified" (code 3074: no path between colorspaces —
+    // the uniform kill point across all platforms in round-three CI);
+    // pin/tin/min nail the input down as bt2020+PQ, decoupling the
+    // chain from input metadata entirely; the second zscale declares
+    // explicitly too, guarding against property-propagation breaks
     (
         "libzimg",
-        "zscale=transfer=linear,format=gbrpf32le,tonemap=mobius,zscale=transfer=bt709:matrix=bt709:primaries=bt709,format=yuv420p",
+        "zscale=pin=bt2020:tin=smpte2084:min=bt2020nc:rin=limited:t=linear:npl=100,format=gbrpf32le,tonemap=mobius,zscale=tin=linear:pin=bt2020:t=bt709:m=bt709:p=bt709,format=yuv420p",
         Fkind::VFilter,
         &[],
     ),
