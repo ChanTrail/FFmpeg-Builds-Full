@@ -55,6 +55,26 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         &src.join("src/vulkan/utils_gen.py"),
         &src,
     )?;
+    // 上游 glslang 发现链的 dirs 缺口：SPIRV/MachineIndependent 等全部
+    // 兄弟行都带 dirs: vulkan_lib_dirs，唯独 glslang 本体那行裸奔——
+    // static:true 的 find_library 在 meson 里不做 -l 试链兜底，只在
+    // 编译器内建目录查文件存在性，mac 上因此永远找不到（linux 靠
+    // LIBRARY_PATH 语义歪打正着）。补上 dirs 后走显式目录，双平台确
+    // 定性一致；锚点含右括号保证幂等 / the dirs gap in upstream's
+    // glslang discovery chain: every sibling line (SPIRV,
+    // MachineIndependent & co) carries dirs: vulkan_lib_dirs except the
+    // glslang line itself — a static:true find_library does NOT fall
+    // back to a -l test link in meson, it only checks file existence in
+    // the compiler's built-in dirs, so it can never be found on mac
+    // (linux got lucky through LIBRARY_PATH semantics). With dirs added
+    // the lookup rides the explicit directory and both platforms become
+    // deterministic; the anchor includes the closing paren for
+    // idempotency
+    fsx::sed_i(
+        "s/cxx\\.find_library('glslang', required: required, static: static)/cxx.find_library('glslang', required: required, static: static, dirs: vulkan_lib_dirs)/",
+        &src.join("src/glsl/meson.build"),
+        &src,
+    )?;
     // glslang 的 meson 发现是 find_library 裸搜：SPIRV 等带 dirs 的走
     // -Dvulkan-sdk=<前缀>/lib 显式目录，而不带 dirs 的（glslang、
     // glslang-default-resource-limits）退化到 `-l` 试链——LIBRARY_PATH
@@ -111,6 +131,17 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-Dfuzz=false",
         ],
     )?;
+    // meson 把文件解析到的静态库以全路径裸词写进 .pc——ffmpeg
+    // configure 会把裸词前置、静态扫描序打碎（linux 丢包实证），
+    // 系统路径的 opportunistic 命中（SPIRV-Tools）也一并拖进闭合。
+    // 改写为 -l 形保序、删除系统路径 / meson writes file-resolved
+    // static libs into the .pc as bare full-path tokens — ffmpeg's
+    // configure hoists bare tokens ahead of the scan sequence and
+    // shatters static link order (the linux drop proved it), while
+    // opportunistic hits on system paths (SPIRV-Tools) get dragged
+    // into the closure too. Rewrite to -l form preserving order,
+    // delete the system paths
+    pkgcfg::rewrite_bare_archives("libplacebo");
     // glslang 链是 C++——c++ 运行时进 Libs.private 兜底 /
     // the glslang chain is C++ — the runtime goes into Libs.private as
     // the backstop
