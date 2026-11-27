@@ -153,5 +153,40 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             );
         }
     }
+    // macOS 的 CMAKE_DL_LIBS 为空（dlopen 就在 libSystem，没有独立
+    // libdl）——`target_link_libraries(vulkan-shim PUBLIC)` 空调用不
+    // 设 LINK_LIBRARIES 属性，`get_target_property` 于是拿到 cmake
+    // 的未找到哨兵字面值 VULKAN_SHIM_LINK_LIBRARIES-NOTFOUND，
+    // foreach 把它当库名拼出 -lVULKAN_SHIM_LINK_LIBRARIES-NOTFOUND
+    // 写进 vulkan.pc（实证：mac 腿验收报 no static archive
+    // resolves）。补丁：属性读取后加哨兵归空守卫——cmake 的 if()
+    // 对 -NOTFOUND 结尾的值天然判假，守卫同时覆盖未设置与未找到
+    // / CMAKE_DL_LIBS is empty on macOS (dlopen lives in libSystem —
+    // there is no separate libdl) — the bare
+    // `target_link_libraries(vulkan-shim PUBLIC)` call sets no
+    // LINK_LIBRARIES property, so get_target_property returns cmake's
+    // not-found sentinel literal VULKAN_SHIM_LINK_LIBRARIES-NOTFOUND
+    // and the foreach glues it into a -lVULKAN_SHIM_LINK_LIBRARIES-
+    // NOTFOUND token inside vulkan.pc (empirical: the mac leg's
+    // acceptance reports no static archive resolves). Patch: guard the
+    // property read with a sentinel-to-empty fallback — cmake's if()
+    // natively treats -NOTFOUND-suffixed values as false, so the guard
+    // covers both unset and not-found
+    let cml = shim.join("CMakeLists.txt");
+    let anchor = "get_target_property(VULKAN_SHIM_LINK_LIBRARIES vulkan-shim LINK_LIBRARIES)";
+    let c = fsx::read(&cml);
+    if c.contains(anchor) && !c.contains("VULKAN_SHIM_LINK_LIBRARIES_NOTFOUND_GUARD") {
+        fsx::write(
+            &cml,
+            &c.replace(
+                anchor,
+                &format!(
+                    "{anchor}\n# VULKAN_SHIM_LINK_LIBRARIES_NOTFOUND_GUARD: empty CMAKE_DL_LIBS\n\
+                     # leaves the property unset — normalize the sentinel to empty\n\
+                     if(NOT VULKAN_SHIM_LINK_LIBRARIES)\n  set(VULKAN_SHIM_LINK_LIBRARIES \"\")\nendif()"
+                ),
+            ),
+        )?;
+    }
     buildsys::cmake_build(&shim, &["-DVULKAN_SHIM_IMPERSONATE=ON"])
 }

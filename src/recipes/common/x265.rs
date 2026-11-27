@@ -15,6 +15,32 @@ pub fn recipe() -> Recipe {
 /// 构建 x265 / Build x265
 fn body(ctx: &Ctx) -> Result<(), String> {
     let src = ctx.src()?;
+    // dynamicHDR10 的 vendored json11 裸用 uint8_t 却不 include
+    // <cstdint>——老工具链经传递包含蒙混过关，gcc15（ubuntu-26.04）
+    // 的头卫生直接判死（实证：linux-arm64 非 legacy 腿 json11.cpp
+    // 成片 'uint8_t does not name a type'；此文件只在
+    // ENABLE_HDR10_PLUS=ON 时才编译，所以雷是本轮新踩出来的）。
+    // 幂等补丁：已有 cstdint 就跳过 / the vendored json11 inside
+    // dynamicHDR10 uses uint8_t without including <cstdint> — older
+    // toolchains smuggled it through transitive includes, but gcc15's
+    // (ubuntu-26.04) header hygiene is fatal (empirical: the
+    // linux-arm64 non-legacy leg fills with 'uint8_t does not name a
+    // type'; the file only compiles under ENABLE_HDR10_PLUS=ON, which
+    // is why this landmine only now went off). Idempotent patch: skip
+    // when cstdint is already there
+    let j11 = src.join("source/dynamicHDR10/json11/json11.cpp");
+    if j11.is_file() {
+        let c = crate::fsx::read(&j11);
+        if !c.contains("#include <cstdint>") && c.contains("#include <cassert>") {
+            crate::fsx::write(
+                &j11,
+                &c.replace(
+                    "#include <cassert>",
+                    "#include <cassert>\n#include <cstdint>",
+                ),
+            )?;
+        }
+    }
     // cmake 工程在 source/ 子目录 / the cmake project lives in source/
     buildsys::cmake_build(
         &src.join("source"),

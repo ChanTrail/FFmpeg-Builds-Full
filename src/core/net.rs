@@ -399,17 +399,43 @@ fn vkey(tag: &str) -> Vec<u64> {
         .collect()
 }
 
-/// "版本样式"tag 判据：含 <数字>.<数字> 片段。单数字的修订号 tag
-/// （r2772-MT 的 [2772]）和日期戳 tag（2013-11-24 的 [2013,11,24]）在
-/// vkey 首元素就压过任何 v3.x.y——会把回退检出骗到上古快照
-/// "Version-looking" tag test: contains a <digits>.<digits> fragment.
-/// Bare revision tags (r2772-MT -> [2772]) and datestamp tags
-/// (2013-11-24 -> [2013,11,24]) outrank every v3.x.y on the first vkey
-/// element alone — fooling the fallback into a fossil checkout
+/// "版本样式"tag 判据：vkey 至少两个数字段——点式（v2.13.3）与
+/// 横杠式（VER-2-13-3）同收。单字段的修订号 tag（r2772-MT ->
+/// [2772]）与裸名（freetype2 -> [2]、import/start -> []）出局。
+/// 日期戳形状（2013-11-24 -> [2013,11,24]）另加显式排除：年份形
+/// 首段 + 月日范围在 vkey 首元素压过任何真版本，会把回退检出骗到
+/// 化石快照（freetype 实证：VER-* 横杠版号全被点式判据拒收，ver
+/// 空池后 tags.last() 捞到字典序最大的 `start`——CVS 化石 tag，
+/// 树里没有 meson.build，配方当场暴毙）/
+/// "Version-looking" tag test: at least two numeric vkey fields —
+/// dotted (v2.13.3) and dashed (VER-2-13-3) forms alike. Single-field
+/// revision tags (r2772-MT -> [2772]) and bare names (freetype2 ->
+/// [2], import/start -> []) are out. Datestamp shapes (2013-11-24 ->
+/// [2013,11,24]) get an explicit exclusion: a year-shaped head +
+/// month/day range outranks every real version on vkey[0] and would
+/// seduce the fallback into a fossil checkout (freetype evidence: the
+/// dot-only test rejected every dashed VER-* tag, and with `ver`
+/// empty, tags.last() fetched `start` — a CVS fossil whose tree has
+/// no meson.build at all, killing the recipe on the spot)
 fn is_version_tag(t: &str) -> bool {
-    let b = t.as_bytes();
-    b.windows(3)
-        .any(|w| w[0].is_ascii_digit() && w[1] == b'.' && w[2].is_ascii_digit())
+    let v = vkey(t);
+    if v.len() < 2 {
+        return false;
+    }
+    // YYYY-MM[-DD] 日期形：首段四位年份 + 二段 1-12 + 三段（在场时）
+    // 1-31。合法日期版号（v2024.05.1 系）同被误伤——但它们缺席时
+    // 回退落到 tags.last()/分支 HEAD，风险面小于化石胜出 /
+    // YYYY-MM[-DD] date shape: 4-digit year head + month 1-12 + day
+    // 1-31 when present. Legit date-versioned tags (v2024.05.1 kin)
+    // get caught too — but their absence falls back to tags.last()/
+    // branch HEAD, a smaller hazard than a datestamp winning
+    if (1900..=2999).contains(&v[0])
+        && (1..=12).contains(&v[1])
+        && (v.len() == 2 || (1..=31).contains(&v[2]))
+    {
+        return false;
+    }
+    true
 }
 
 /// 远端最新 tag：全量 ls-remote --tags，取"像版本号"的最后一个（语义

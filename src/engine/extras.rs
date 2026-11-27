@@ -881,9 +881,23 @@ fn error_tail(log: &Path, max_lines: usize) -> String {
 /// <name>.log; the child exit code is the recipe's verdict.
 pub fn run_recipe(name: &str) -> Result<(), String> {
     let table = crate::recipes::table();
+    // 同名多平台配方必须带平台过滤——glib(mac/windows) 与
+    // libplacebo(windows/linux+mac) 这类同名条目共享一个名字，裸名查找
+    // 永远命中排序后的第一个，子进程于是在 linux 上跑 windows 配方体
+    // （实证：beta 首轮三腿的 libplacebo 全部执行 -Dshaderc=enabled
+    // -Dd3d11=enabled 的 windows 配方，spirv_cross 头装进了 linux 前
+    // 缀）。父循环本就只调起适用配方，子进程查找镜像同一条件 / same-name
+    // multi-platform recipes demand the platform filter — entries like
+    // glib (mac/windows) and libplacebo (windows/linux+mac) share one
+    // name, so a bare-name lookup always hits the first in sort order and
+    // the subprocess runs the windows body on linux (empirical: all three
+    // beta-round-one legs executed libplacebo's windows recipe —
+    // -Dshaderc=enabled -Dd3d11=enabled — installing spirv_cross headers
+    // into the linux prefix). The parent loop only ever invokes
+    // applicable recipes; the child lookup mirrors the same condition
     let r = table
         .iter()
-        .find(|r| r.name == name)
+        .find(|r| r.name == name && applies(r.targets))
         .ok_or_else(|| format!("unknown recipe '{name}'"))?;
     let wd = work_dir().join(r.name);
     fsx::install_d(&wd)?;
