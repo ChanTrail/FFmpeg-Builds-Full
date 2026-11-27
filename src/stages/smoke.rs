@@ -414,6 +414,19 @@ const FUNCTIONAL: &[(&str, &str, Fkind, &[&str])] = &[
     ),
     ("liblc3", "liblc3", Fkind::AEnc, &[]),
     ("libzimg", "zscale=w=320:h=240", Fkind::VFilter, &[]),
+    // HDR→SDR 色调映射全链：zscale 线性化 → tonemap → zscale 回
+    // bt709——HDR 转制的 CPU 路径整体演练（GPU 的 vf_libplacebo 无
+    // vulkan 设备跑不起来，组件面由清单表覆盖）/ the full HDR→SDR
+    // tone mapping chain: zscale linearize -> tonemap -> zscale back
+    // to bt709 — end-to-end exercise of the CPU tone mapping path
+    // (the GPU-side vf_libplacebo can't run without a vulkan device;
+    // the inventory table covers its presence)
+    (
+        "libzimg",
+        "zscale=transfer=linear,format=gbrpf32le,tonemap=mobius,zscale=transfer=bt709:matrix=bt709:primaries=bt709,format=yuv420p",
+        Fkind::VFilter,
+        &[],
+    ),
     ("libbs2b", "bs2b", Fkind::AFilter, &[]),
     ("librubberband", "rubberband=tempo=1.1", Fkind::AFilter, &[]),
     // soxr 没有独立组件面——aresample=resampler=soxr 就是它的功能位 /

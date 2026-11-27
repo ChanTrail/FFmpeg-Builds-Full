@@ -1537,9 +1537,24 @@ pub fn fixup() -> Result<(), String> {
     // rename can never collide with a live symbol. linux rides
     // ld --allow-multiple-definition, mac the nmedit pass in
     // extras::postfix
+    // rust 三家（rsvg/rav1e/dovi）的三角撞名按对拆解：三册共有符号在
+    // rav1e 里已带 _rsvgshr、在 dovi 里后带 _dovishr——第三对扫描时两
+    // 边都不再是原名，天然不再相交；只剩 V∩D 对私有（不在 rsvg 的那
+    // 部分）维持裸名，由 (rav1e,dovi) 行收进 dovi 后缀。同名后缀安全
+    // 是因为每个 dovi 符号至多被改一次（改过的不再以裸名出现在后续
+    // 交集里）/ the rust triangle (rsvg/rav1e/dovi) unrolls pairwise:
+    // triple-common symbols already carry _rsvgshr in rav1e and later
+    // _dovishr in dovi — by the third pair's scan neither side answers
+    // to the bare name any more, so no intersection forms; only the
+    // V∩D pair-private symbols (those absent from rsvg) stay bare and
+    // get collected by the (rav1e,dovi) row. Reusing one suffix is safe
+    // because each dovi symbol is renamed at most once (a renamed
+    // symbol no longer intersects under its bare name)
     for (a, b, suffix) in [
         ("libxevd.a", "libxeve.a", "_xevdshr"),
         ("librsvg-2.a", "librav1e.a", "_rsvgshr"),
+        ("librsvg-2.a", "libdovi.a", "_dovishr"),
+        ("librav1e.a", "libdovi.a", "_dovishr"),
     ] {
         let (pa, pb) = (libdir.join(a), libdir.join(b));
         if !(pa.is_file() && pb.is_file()) {

@@ -49,7 +49,7 @@ https://github.com/ChanTrail/FFmpeg-Builds-Full/releases/latest/download/ffmpeg-
 | 硬件解码 | D3D11VA / D3D12VA / DXVA2 / NVDEC / CUDA / QSV | D3D11VA / D3D12VA / DXVA2 / NVDEC / CUDA | VAAPI / VDPAU / NVDEC / CUDA / QSV / V4L2-M2M | VAAPI / VDPAU / NVDEC / CUDA / V4L2-M2M | VideoToolbox |
 | 硬件编码 | NVENC / AMF / QSV / MediaFoundation | NVENC / MediaFoundation | NVENC / AMF / VAAPI / QSV | NVENC / VAAPI | VideoToolbox / AudioToolbox |
 | 设备采集 | gdigrab / ddagrab / dshow | gdigrab / ddagrab / dshow | xcbgrab / V4L2 / ALSA / PulseAudio / KMS | xcbgrab / V4L2 / ALSA / PulseAudio / KMS | AVFoundation |
-| GPU 滤镜 | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL | Vulkan / OpenCL | CoreImage（Metal） |
+| GPU 滤镜 | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL / libplacebo | Vulkan / libplacebo / CoreImage（Metal） |
 | 音频插件宿主 | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA |
 
 Linux 的 `-legacy` 构建轨与同架构默认轨共用同一份特性清单——启用库与功能一致，差异只在基线世代：默认轨乘 runner 最新工具链（26.04 的 amd64v3 归档 gcc 默认 `-march=x86-64-v3`），`-legacy` 轨钉老基线（x86_64=SSE2、arm64=ARMv8.0；内含的 AVX2/AVX-512 等 SIMD 代码全部走 cpuid 运行时分发，老 CPU 自动回落 C 路径——qemu64/cortex-a53 仿真实测通过）。静态变体内嵌的 glibc 以 `.note.ABI-tag` 声明内核下限 x86_64≥3.2、arm64≥3.7，对发行版用户态零要求。
@@ -65,14 +65,64 @@ Linux 的 `-legacy` 构建轨与同架构默认轨共用同一份特性清单—
 | davs2 / xavs2 | Windows arm64、Linux arm64、macOS | 上游的 aarch64 汇编/内建代码编译不过，实际仅 x86_64 可用 |
 | SVT-JPEG-XS | Windows arm64、Linux arm64、macOS | 上游实现绑定 x86 SIMD，非 x86 平台整库缺席 |
 | lcevcdec / uavs3d | Windows arm64 | 上游提供 linux-arm64 汇编支持，但无 windows-arm64 移植 |
-| libplacebo | Linux、macOS | 依赖整条 SPIRV-Cross + shaderc 工具链，当前只在 Windows 构建 |
-| Vulkan / OpenCL | macOS | 前缀头文件/加载器 shim 配方仅覆盖 Windows+Linux；系统无 Vulkan loader，OpenCL.framework 已废弃未接入 |
+| OpenCL | macOS | Apple 自 macOS 10.14 起废弃 OpenCL.framework，未接入；GPU 计算由 Vulkan（shim 派发）承担 |
 | NVENC / NVDEC / CUVID / ffnvcodec | macOS | 无 NVIDIA GPU；头文件配方亦仅 Windows+Linux |
 | VapourSynth | macOS | 上游仅产出落进 Python site-packages 的 .dylib——静态链接与运行时加载双无解 |
 | GnuTLS | macOS | TLS 由 Secure Transport 系统钥匙串后端承担 |
 | D3D11VA / D3D12VA / DXVA2 / MediaFoundation | Linux、macOS | Windows OS 接口 |
 | VAAPI / VDPAU / V4L2-M2M / libdrm / ALSA / PulseAudio / xcb / libdc1394 | Windows、macOS | Linux 内核与系统 API |
 | VideoToolbox / AudioToolbox / AVFoundation / CoreImage / Metal | Windows、Linux | macOS 系统框架 |
+
+## HDR 支持
+
+HDR 是一条流水线，各环节能力分列如下（✓ = 全平台）：
+
+### 编解码（全平台）
+
+| 环节 | 能力 |
+|:--|:--|
+| HEVC 10/12-bit 编码 | libx265（`-DHIGH_BIT_DEPTH=ON`）——HDR10 主力路径 |
+| AV1 10/12-bit 编码 | libaom；10-bit 另有 libsvtav1 |
+| VP9 10-bit 编码 | libvpx profile 2 |
+| 解码 | dav1d / 原生 HEVC / VP9 全 bit depth；硬件解码走各平台 hwaccel（VideoToolbox/VAAPI/D3D11VA/NVDEC 均可解 HDR） |
+
+### 元数据
+
+| 形态 | 能力 |
+|:--|:--|
+| 静态元数据（mastering display / maxCLL） | ✓ 原生解析、写入与透传；`-c copy` 无损保留 |
+| HDR10+ 动态元数据 | **生成**：x265 `-DENABLE_HDR10_PLUS=ON`（vendored 在 x265 树内，`-x265-params dhdr10-info=<json>` 注入）；**透传**：SEI 内嵌于码流，copy 自动保留 |
+| Dolby Vision 解码 | ✓ 原生：hevc 解码器 + RPU 全解析（含 DM L1~L11 扩展块）；profile 8 回退 HDR10 基线可直接看，profile 5 的正确颜色见下节色调映射 |
+| Dolby Vision 透传/封装 | ✓ 原生：RPU 内嵌于码流 NAL，`-c copy` 自动保留；mp4/mov 复用器写 `dvcC`/`dvvC` 配置盒 |
+| Dolby Vision 元数据操作 | ✓ 原生 `dovi_rpu` bitstream filter（剥离/改写）；ffprobe 打印完整 DV configuration record |
+| Dolby Vision **编码** | ✓ x265 原生（3.0+；profile 5/8.1/8.2，8.4 自 3.6）：`-x265-params dolby-vision-profile=8.1:dolby-vision-rpu=rpu.bin`——x265 把 RPU 逐帧交织进码流。**边界**：RPU 是创作元数据，须现成——从原 DV 片源用 dovi_tool `extract-rpu` 提取，或出自杜比官方工具链；ffmpeg 自身没有"提取 RPU 到文件"的通路 |
+
+### 色调映射与播放
+
+| 路径 | Windows | Linux | macOS |
+|:--|:-:|:-:|:-:|
+| `zscale` + `tonemap`（CPU，hable/mobius/reinhard） | ✓ | ✓ | ✓ |
+| `tonemap_opencl` | ✓ | ✓ | — |
+| `tonemap_vaapi` | — | ✓（x86） | — |
+| **`libplacebo` 滤镜**（bt.2446a/spline/mobius + GPU 加速，最强路径） | ✓ | ✓ | ✓ |
+| ffplay `-enable_vulkan` HDR 渲染器（libplacebo 驱动，opt-in） | ✓ | ✓ | ✓ |
+
+**杜比视界的正确颜色只有一条路**：libplacebo + libdovi。DV（尤其 profile 5 的 IPTPQc2）不是简单的 PQ 矩阵——RPU 里的逐帧多项式重塑系数与 NLQ 反量化必须参与颜色重建，裸解码直转是紫绿色废品。libdovi 解析 RPU、libplacebo 在 shader 里完成重塑+IPT→RGB（三平台全接入：linux/mac 自建 cargo-c 链、windows 用 MSYS2 预编译包）。`vf_libplacebo` 的 `apply_dolbyvision` **默认开启**——RPU 重塑后重建为 BT.2020+PQ，再从那里色调映射到目标。DV→SDR 正确转制：
+
+```sh
+ffmpeg -i dv.mp4 -vf libplacebo=tonemapping=bt.2446a:colorspace=bt709:color_primaries=bt709:color_trc=bt709:format=yuv420p ...
+```
+
+### Vulkan 运行时要件
+
+libplacebo 的一切功能都挂在 vulkan 设备上——二进制本身不打包驱动，运行时找系统里的 vulkan：
+
+| 平台 | 运行时 |
+|:--|:--|
+| Windows | GPU 厂商驱动原生携带（NVIDIA/AMD/Intel 装驱动即有） |
+| Linux 默认轨 | 发行版 vulkan 驱动包（mesa-vulkan-drivers 等） |
+| Linux `-legacy` 静态轨 | **固有边界**：静态 glibc 进程 dlopen 系统驱动会拖入第二份 libc 而崩（vf_libplacebo/`-enable_vulkan` 可用性受限，编译期能力照常内嵌） |
+| macOS | **macOS 26+ / Apple Silicon 首选 KosmicKrisp**（Vulkan SDK 或 Mesa 渠道，Vulkan 1.4 全一致）；**老版 macOS 用 MoltenVK**；两者皆无则 vulkan 后端优雅缺席，退回 CPU 路径 |
 
 ## 包含的库
 
@@ -152,7 +202,7 @@ Linux 的 `-legacy` 构建轨与同架构默认轨共用同一份特性清单—
 | frei0r | 视频特效插件 | ✓ | ✓ | ✓ | ✓ | ✓ |
 | lcms2 | ICC 色彩管理 | ✓ | ✓ | ✓ | ✓ | ✓ |
 | librsvg + cairo | SVG 解码 + `drawvg` 矢量绘制滤镜 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| libplacebo + Vulkan | GPU 滤镜链 | ✓ | ✓ | — | — | — |
+| libplacebo + Vulkan | GPU 滤镜链（色调映射/HDR） | ✓ | ✓ | ✓ | ✓ | ✓ |
 | OpenCL | GPU 滤镜 | ✓ | ✓ | ✓ | ✓ | — |
 | lilv（LV2） | 音频插件宿主 | ✓ | ✓ | ✓ | ✓ | ✓ |
 | LADSPA | 音频插件宿主 | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -203,7 +253,7 @@ FFmpeg-Builds-Full <build|build-all|packages|extras|ffmpeg|package|save-deps|smo
 - **特性开关**（`features/*.yaml`）：FFmpeg configure 旗标的唯一真源。四层合并——`base.yaml`（永远启用）、`common.yaml`（全平台通用）、`misc.yaml`（按平台分节的杂项）、`<os>-<arch>.yaml`（平台特化）；键为特性名，值为 `enable`/`disable`，跨文件重复键直接报错。每个 `enable` 还要过本地探测（pkg-config / 文件存在），探不过自动降级 `disable`。
 - **源码清单**（`sources/*.yaml`）：同构四层合并，值是获取方式——`archive` 固定产物 URL（可带 `sha256` 校验），`git` 仓库地址实时解析：默认分支 HEAD → GitHub/GitLab CI 验证 → 红/无 CI 回退最新版本 tag；`ref:` 可钉分支/tag/commit，`mirrors:` 给出备用仓（主仓克隆失败时按序回退）。下载走 reqwest 异步流式（断点续传+重试退避），构建与预取并发；git 拉取带停滞检测与递增退避重试，无子模块的源在 git 通道全灭时回退主机归档端点（GitHub `/archive/`、GitLab `/-/archive/`、googlesource `+archive` 等）。
 - **库配方**（`src/recipes/`）：132 项配方，每库一个独立 Rust 模块，`common/`、`linux/`、`windows/` 按域分目录；每个 `.ok` 标记存配方源码哈希，内容变了自动重建。
-- **依赖缓存**：依赖库编好后打成 `deps-<平台>-<哈希>.tar.zst` 存入固定 `deps` Release；之后每次运行还原（约 1–2 分钟）只编 FFmpeg 本体。配方/清单变更 → 新签名 → 自动全量重编；超时自动上传 `partial` 包下次续建。
+- **依赖缓存**：依赖库编好后打成 `deps-<平台>-<哈希>.tar.zst` 存入固定 `deps` Release；之后每次运行还原（约 1–2 分钟）只编 FFmpeg 本体。配方/清单变更 → 新签名 → 自动全量重编；超时自动上传 `partial` 包下次续建。产物名按分支分册：非 master 分支（beta、PR）打在 `<分支>--<平台>` 命名空间下，与 master 互不污染，分支首轮从无后缀（master）快照引导。
 - **平台包栈**（`packages/*.yaml`）：Windows 为 pacman 包表（UCRT64/CLANGARM64 双 profile），Linux 为 apt 包表（最新 GCC 降序探测 + pyenv 构建工具 + Rust/cargo-c），macOS 为 brew 包表。
 - **确定性 + 严格的 configure**：五平台均 `--disable-autodetect`——只有清单显式点名的库参与构建，runner 镜像碰巧装上的东西不会悄悄混进二进制；点名库探测失败会被逐个剔除重试以枚举全部问题（各自 config.log 存档），但只要存在剔除就**拒绝构建**；必需库（x264、x265、aom、dav1d、vpx、opus、lame、freetype、libass、webp、zlib + 各平台 TLS）缺失立即报错。
 - **四变体产物**：`build-all` 在每条平台腿内产出四份产物——静态（默认，`--disable-shared`，产物名无后缀）、shared（`--enable-shared --disable-static`，产物名 `-shared` 后缀）、debug（`--enable-debug=3 --disable-optimizations --disable-stripping`，`-O0 -g3` 全符号，产物名 `-debug` 后缀）、shared+debug（两开关叠加，产物名 `-shared-debug` 后缀）。共享底座（packages + extras）只跑一遍，ffmpeg 本体经"逐变体计划 → 四路并行 configure → 变体间串行 `make -jN` → 逐变体 install→package"编四遍，`dist/` 累积全部产物。依赖快照照常一条 `deps-<平台>` 通道（依赖库一律 `-fPIC` 编译，链进共享库天然合法）。

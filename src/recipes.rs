@@ -194,7 +194,17 @@ const ORDER: &[(&str, &str)] = &[
     ("vulkan", ""),
     ("opencl", ""),
     ("whisper", ""),
-    ("libplacebo", ""),
+    // HDR 链：libplacebo 的三件依赖（xxhash 缓存哈希、glslang 着色
+    // 器编译器、dovi DV 元数据解析）必须先于本体 / the HDR chain:
+    // libplacebo's three dependencies (xxhash cache hashing, glslang
+    // shader compiler, dovi DV metadata parsing) must precede it
+    ("xxhash", ""),
+    ("glslang", ""),
+    ("dovi", ""),
+    // windows/linux 两条同名配方按平台字段分流 / the two same-named
+    // windows/linux recipes split on the platform field
+    ("libplacebo", "windows"),
+    ("libplacebo", "linux"),
     ("lilv", ""),
     ("lcevcdec", ""),
     ("vvenc", ""),
@@ -238,4 +248,37 @@ pub fn table() -> Vec<Recipe> {
         debug_assert_ne!(key(r), usize::MAX, "recipe {} missing from ORDER", r.name);
     }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    /// ORDER↔配方表双射校验：debug_assert 只在 CI 真跑 table() 时才
+    /// 炸，本地 cargo test 应能提前抓漂移——数量相等、每配方命中唯
+    /// 一 ORDER 位、每 ORDER 位被唯一配方命中（两位同名配方错位覆
+    /// 盖时数量仍能相等，必须逐位核对）/ ORDER↔recipe bijection
+    /// check: the debug_asserts only fire when CI actually runs
+    /// table() — a local cargo test should catch drift earlier: counts
+    /// equal, every recipe hits a unique ORDER slot and every ORDER
+    /// slot is hit by a unique recipe (two same-named recipes
+    /// cross-covering the wrong slots keeps the count equal, so the
+    /// slots must be verified one by one)
+    #[test]
+    fn order_bijection() {
+        let v = super::table();
+        assert_eq!(v.len(), super::ORDER.len(), "recipe/ORDER count drift");
+        let key = |r: &super::Recipe| -> Option<usize> {
+            super::ORDER
+                .iter()
+                .position(|(n, t)| *n == r.name && (t.is_empty() || r.targets.contains(t)))
+        };
+        let mut seen = std::collections::HashSet::new();
+        for r in &v {
+            let pos = key(r).unwrap_or_else(|| panic!("recipe {} missing from ORDER", r.name));
+            assert!(
+                seen.insert(pos),
+                "recipe {} shares ORDER slot {pos} with another recipe",
+                r.name
+            );
+        }
+    }
 }

@@ -13,7 +13,17 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("vulkan", "linux,windows", "vulkan", "--enable-vulkan", body);
+    // mac 纳入：shim 是纯 C+dlopen 派发，平台无关；运行时找的是
+    // MoltenVK（dylib 候选见下方 darwin 补丁）/ mac is in: the shim is
+    // plain C + dlopen dispatch, platform-neutral; at runtime it looks
+    // for MoltenVK (the dylib candidates are in the darwin patch below)
+    let mut x = r(
+        "vulkan",
+        "linux,windows,mac",
+        "vulkan",
+        "--enable-vulkan",
+        body,
+    );
     x.src = include_str!("vulkan.rs");
     x
 }
@@ -107,6 +117,40 @@ fn body(ctx: &Ctx) -> Result<(), String> {
                 ),
             );
             fsx::write(&genpy, &s)?;
+        }
+        // darwin 补丁：非 Windows 分支硬编码 dlopen("libvulkan.so.1")
+        // ——macOS 的 vulkan 运行时是 MoltenVK，按 Homebrew/meson 惯例
+        // 候选依次为 libvulkan.1.dylib（MoltenVK 安装的标准 soname
+        // 链接）→ libMoltenVK.dylib（裸名）。linux 行为不变 / the
+        // darwin patch: the non-Windows branch hardcodes
+        // dlopen("libvulkan.so.1") — macOS's vulkan runtime is
+        // MoltenVK, so the candidates follow Homebrew/meson
+        // conventions: libvulkan.1.dylib (the standard soname link of
+        // a MoltenVK install) then libMoltenVK.dylib (the bare name).
+        // linux behavior is unchanged
+        let dl = "    vklib = dlopen(\"libvulkan.so.1\", RTLD_LAZY | RTLD_LOCAL);";
+        let mut s = fsx::read(&genpy);
+        if s.contains(dl) {
+            s = s.replace(
+                dl,
+                concat!(
+                    "#ifdef __APPLE__\n",
+                    "    vklib = dlopen(\"libvulkan.1.dylib\", RTLD_LAZY | RTLD_LOCAL);\n",
+                    "    if (!vklib)\n",
+                    "        vklib = dlopen(\"libMoltenVK.dylib\", RTLD_LAZY | RTLD_LOCAL);\n",
+                    "#else\n",
+                    "    vklib = dlopen(\"libvulkan.so.1\", RTLD_LAZY | RTLD_LOCAL);\n",
+                    "#endif",
+                ),
+            );
+            fsx::write(&genpy, &s)?;
+        } else if !s.contains("libMoltenVK.dylib") {
+            return Err(
+                "vulkan-shim gen_shim.py 的 dlopen 行布局已变：darwin 补丁锚点缺失，\
+                 macOS 将永远找不到 vulkan 运行时 / the dlopen line layout changed: darwin \
+                 patch anchor missing — macOS would never find a vulkan runtime"
+                    .into(),
+            );
         }
     }
     buildsys::cmake_build(&shim, &["-DVULKAN_SHIM_IMPERSONATE=ON"])

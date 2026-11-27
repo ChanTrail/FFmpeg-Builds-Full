@@ -113,6 +113,12 @@ spirv-headers:
 spirv-cross:
 glslang:
 xxhash:
+# libplacebo 的 DV 重塑链：MSYS2 预编译（GNU ABI rust 静态库 libdovi.a
+# + dovi.pc 俱在包内，MSYS2 自家 libplacebo 包同款依赖）/ libplacebo's
+# DV reshaping chain: MSYS2 prebuilt (a GNU-ABI rust static libdovi.a and
+# dovi.pc both ship in the package — the same dependency MSYS2's own
+# libplacebo package declares)
+libdovi:
 
 # --- containers, protocols, discs ----------------------------------------------
 gnutls: {flags: --enable-gnutls}

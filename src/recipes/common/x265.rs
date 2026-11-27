@@ -22,6 +22,16 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-DENABLE_SHARED=OFF",
             "-DENABLE_CLI=OFF",
             "-DHIGH_BIT_DEPTH=ON",
+            // HDR10+ 动态元数据支持：实现 vendored 在 x265 树内
+            // （source/dynamicHDR10/），ENABLE_HDR10_PLUS 仅是编译
+            // 开关，零外部依赖；开启后 x265-param 可用
+            // dhdr10-info/dhdr10-opt 注入 HDR10+ SEI / HDR10+
+            // dynamic metadata support: the implementation is vendored
+            // inside the x265 tree (source/dynamicHDR10/) — the flag is
+            // a pure compile switch with zero external deps; once on,
+            // the dhdr10-info/dhdr10-opt x265-params can inject HDR10+
+            // SEI messages
+            "-DENABLE_HDR10_PLUS=ON",
         ],
     )
 }

@@ -49,7 +49,7 @@ How static the artifacts are: Windows and Linux ship **fully static** binaries (
 | HW decode | D3D11VA / D3D12VA / DXVA2 / NVDEC / CUDA / QSV | D3D11VA / D3D12VA / DXVA2 / NVDEC / CUDA | VAAPI / VDPAU / NVDEC / CUDA / QSV / V4L2-M2M | VAAPI / VDPAU / NVDEC / CUDA / V4L2-M2M | VideoToolbox |
 | HW encode | NVENC / AMF / QSV / MediaFoundation | NVENC / MediaFoundation | NVENC / AMF / VAAPI / QSV | NVENC / VAAPI | VideoToolbox / AudioToolbox |
 | Device capture | gdigrab / ddagrab / dshow | gdigrab / ddagrab / dshow | xcbgrab / V4L2 / ALSA / PulseAudio / KMS | xcbgrab / V4L2 / ALSA / PulseAudio / KMS | AVFoundation |
-| GPU filters | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL | Vulkan / OpenCL | CoreImage (Metal) |
+| GPU filters | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL / libplacebo | Vulkan / OpenCL / libplacebo | Vulkan / libplacebo / CoreImage (Metal) |
 | Audio plugin hosts | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA | LV2 / LADSPA |
 
 The Linux `-legacy` build tracks share the exact feature set of their same-arch default tracks — the enabled libraries are identical; only the baseline generation differs. The default track rides the runner's newest toolchain (the amd64v3 archive's gcc on 26.04 defaults to `-march=x86-64-v3`), while `-legacy` pins the old baseline (SSE2 on x86_64, ARMv8.0 on arm64; the bundled AVX2/AVX-512 and other SIMD code paths all dispatch through cpuid at runtime, so old CPUs fall back to the C paths — verified under qemu64/cortex-a53 emulation). The glibc baked into the static variants declares kernel floors of ≥3.2 (x86_64) / ≥3.7 (arm64) via `.note.ABI-tag`, and owes nothing to the distro userland.
@@ -65,14 +65,64 @@ Not every library lands on all five platforms — each absence is listed below; 
 | davs2 / xavs2 | Windows arm64, Linux arm64, macOS | Upstream's aarch64 assembly/intrinsics do not compile — effectively x86_64-only |
 | SVT-JPEG-XS | Windows arm64, Linux arm64, macOS | Upstream implementation is bound to x86 SIMD — the whole library is absent on non-x86 |
 | lcevcdec / uavs3d | Windows arm64 | Upstream ships linux-arm64 assembly support but no windows-arm64 port |
-| libplacebo | Linux, macOS | Requires the whole SPIRV-Cross + shaderc toolchain — currently built on Windows only |
-| Vulkan / OpenCL | macOS | The prefix header/loader shim recipes cover Windows+Linux only; the system has no Vulkan loader and the deprecated OpenCL.framework is not wired in |
+| OpenCL | macOS | Apple deprecated OpenCL.framework back in macOS 10.14 and it is not wired in; GPU compute is served by Vulkan (shim dispatch) instead |
 | NVENC / NVDEC / CUVID / ffnvcodec | macOS | No NVIDIA GPU; the header recipes are also Windows+Linux only |
 | VapourSynth | macOS | Upstream only produces a .dylib inside Python site-packages — a dead end both statically and at runtime |
 | GnuTLS | macOS | TLS is served by the Secure Transport system-keychain backend |
 | D3D11VA / D3D12VA / DXVA2 / MediaFoundation | Linux, macOS | Windows OS interfaces |
 | VAAPI / VDPAU / V4L2-M2M / libdrm / ALSA / PulseAudio / xcb / libdc1394 | Windows, macOS | Linux kernel & system APIs |
 | VideoToolbox / AudioToolbox / AVFoundation / CoreImage / Metal | Windows, Linux | macOS system frameworks |
+
+## HDR support
+
+HDR is a pipeline — the per-stage capabilities are listed below (✓ = all platforms):
+
+### Codecs (all platforms)
+
+| Stage | Capability |
+|:--|:--|
+| HEVC 10/12-bit encode | libx265 (`-DHIGH_BIT_DEPTH=ON`) — the HDR10 workhorse |
+| AV1 10/12-bit encode | libaom; libsvtav1 for 10-bit |
+| VP9 10-bit encode | libvpx profile 2 |
+| Decode | dav1d / native HEVC / VP9 at every bit depth; hardware decode rides each platform's hwaccel (VideoToolbox/VAAPI/D3D11VA/NVDEC all decode HDR) |
+
+### Metadata
+
+| Form | Capability |
+|:--|:--|
+| Static metadata (mastering display / maxCLL) | ✓ native parsing, writing and passthrough; lossless with `-c copy` |
+| HDR10+ dynamic metadata | **Creation**: x265 `-DENABLE_HDR10_PLUS=ON` (vendored inside the x265 tree — inject with `-x265-params dhdr10-info=<json>`); **passthrough**: the SEI is embedded in the bitstream, so copy keeps it automatically |
+| Dolby Vision decode | ✓ native: the hevc decoder + full RPU parsing (including DM L1~L11 extension blocks); profile 8 falls back to the HDR10 base layer and plays as-is, profile 5's correct colors are a tone-mapping matter — see below |
+| Dolby Vision passthrough/muxing | ✓ native: the RPU rides inside the bitstream's NAL units, so `-c copy` keeps it automatically; the mp4/mov muxer writes the `dvcC`/`dvvC` configuration boxes |
+| Dolby Vision metadata surgery | ✓ native `dovi_rpu` bitstream filter (strip/rewrite); ffprobe prints the full DV configuration record |
+| Dolby Vision **encoding** | ✓ native to x265 (since 3.0; profiles 5/8.1/8.2, plus 8.4 since 3.6): `-x265-params dolby-vision-profile=8.1:dolby-vision-rpu=rpu.bin` — x265 interleaves the RPU into the bitstream frame by frame. **Boundary**: the RPU is creative metadata and must already exist — extract it from the original DV source with dovi_tool's `extract-rpu`, or obtain it from Dolby's toolchain; ffmpeg itself has no "extract RPU to file" path |
+
+### Tone mapping & playback
+
+| Path | Windows | Linux | macOS |
+|:--|:-:|:-:|:-:|
+| `zscale` + `tonemap` (CPU — hable/mobius/reinhard) | ✓ | ✓ | ✓ |
+| `tonemap_opencl` | ✓ | ✓ | — |
+| `tonemap_vaapi` | — | ✓ (x86) | — |
+| **`libplacebo` filter** (bt.2446a/spline/mobius + GPU acceleration — the strongest path) | ✓ | ✓ | ✓ |
+| ffplay `-enable_vulkan` HDR renderer (libplacebo-driven, opt-in) | ✓ | ✓ | ✓ |
+
+**Dolby Vision has exactly one correct-color path**: libplacebo + libdovi. DV (especially profile 5's IPTPQc2) is not a plain PQ matrix — the per-frame polynomial reshaping coefficients and NLQ dequantization inside the RPU must participate in color reconstruction; a bare decode-then-convert is purple-green garbage. libdovi parses the RPU and libplacebo performs the reshaping + IPT→RGB inside shaders (wired on all three platforms: linux/mac build the cargo-c chain from source, windows consumes MSYS2's prebuilt package). vf_libplacebo's `apply_dolbyvision` is **on by default** — after the RPU reshaping the image is reconstructed as BT.2020+PQ and tone-mapped to the target from there. Correct DV→SDR conversion:
+
+```sh
+ffmpeg -i dv.mp4 -vf libplacebo=tonemapping=bt.2446a:colorspace=bt709:color_primaries=bt709:color_trc=bt709:format=yuv420p ...
+```
+
+### Vulkan runtime requirements
+
+Everything libplacebo does hangs off a vulkan device — the binaries ship no driver and look for one in the system at runtime:
+
+| Platform | Runtime |
+|:--|:--|
+| Windows | Carried by the GPU vendor driver (installing NVIDIA/AMD/Intel drivers is enough) |
+| Linux default track | The distro's vulkan driver package (mesa-vulkan-drivers etc.) |
+| Linux `-legacy` static track | **Inherent boundary**: a static-glibc process dlopening the system driver drags in a second libc and crashes (vf_libplacebo/`-enable_vulkan` usability is limited; the compile-time capabilities are embedded all the same) |
+| macOS | **KosmicKrisp preferred on macOS 26+ / Apple Silicon** (Vulkan SDK or Mesa channel — fully Vulkan 1.4 conformant); **MoltenVK for older macOS**; with neither installed the vulkan backend absents itself gracefully and playback falls back to the CPU path |
 
 ## Included libraries
 
@@ -152,7 +202,7 @@ The tables list the **build inputs** (the `features/` and `sources/` manifests p
 | frei0r | video effect plugins | ✓ | ✓ | ✓ | ✓ | ✓ |
 | lcms2 | ICC color management | ✓ | ✓ | ✓ | ✓ | ✓ |
 | librsvg + cairo | SVG decoding + `drawvg` vector-graphics filter | ✓ | ✓ | ✓ | ✓ | ✓ |
-| libplacebo + Vulkan | GPU filter chain | ✓ | ✓ | — | — | — |
+| libplacebo + Vulkan | GPU filter chain (tone mapping / HDR) | ✓ | ✓ | ✓ | ✓ | ✓ |
 | OpenCL | GPU filters | ✓ | ✓ | ✓ | ✓ | — |
 | lilv (LV2) | audio plugin host | ✓ | ✓ | ✓ | ✓ | ✓ |
 | LADSPA | audio plugin host | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -203,7 +253,7 @@ FFmpeg-Builds-Full <build|build-all|packages|extras|ffmpeg|package|save-deps|smo
 - **Feature switches** (`features/*.yaml`): the single source of truth for FFmpeg configure flags. Four merge layers — `base.yaml` (always on), `common.yaml` (all platforms), `misc.yaml` (misc items in per-platform sections) and `<os>-<arch>.yaml` (platform specifics); keys are feature names, values `enable`/`disable`, and a repeated key across files is a hard error. Every `enable` must also pass a local probe (pkg-config / file existence) — a failed probe degrades it to `disable`.
 - **Source manifests** (`sources/*.yaml`): the same layered merge; values describe how to fetch — `archive` for fixed tarballs (optional `sha256` check), `git` for repositories resolved live: default-branch HEAD → GitHub/GitLab CI verification → fall back to the newest version tag when red or missing; `ref:` pins a branch/tag/commit, `mirrors:` lists fallback repos tried in order when the primary clone fails. Downloads are async streaming via reqwest (resume + retry backoff) and run concurrently with compilation; git pulls carry stall detection and escalating-backoff retries, and submodule-free sources fall back to host archive endpoints (GitHub `/archive/`, GitLab `/-/archive/`, googlesource `+archive`, …) when every git channel dies.
 - **Library recipes** (`src/recipes/`): 132 recipes, one independent Rust module per library, grouped under `common/`, `linux/` and `windows/`; every `.ok` marker stores its recipe's source hash so changed content rebuilds automatically.
-- **Dependency cache**: built dependencies pack as `deps-<platform>-<hash>.tar.zst` into the fixed `deps` Release; later runs restore it (~1–2 min) and only compile FFmpeg itself. A recipe/manifest change → a new signature → an automatic full rebuild; on timeout a `partial` package is uploaded so the next run resumes.
+- **Dependency cache**: built dependencies pack as `deps-<platform>-<hash>.tar.zst` into the fixed `deps` Release; later runs restore it (~1–2 min) and only compile FFmpeg itself. A recipe/manifest change → a new signature → an automatic full rebuild; on timeout a `partial` package is uploaded so the next run resumes. Asset names are namespaced per branch: non-master branches (beta, PRs) publish under `<branch>--<platform>`, never poisoning master, and a branch's first run bootstraps from the unscoped (master) snapshot.
 - **Platform package stacks** (`packages/*.yaml`): pacman on Windows (UCRT64/CLANGARM64 profiles), apt on Linux (newest GCC probed descending + a pyenv for build tools + Rust/cargo-c), brew on macOS.
 - **Deterministic + strict configure**: all five platforms pass `--disable-autodetect` — only explicitly named libraries take part; whatever the runner image happens to install cannot sneak into the binary. A named library that fails its probe is dropped one by one to enumerate every problem (each config.log is archived), but any drop at all **refuses the build** — an incomplete artifact is never shipped. Missing required libraries (x264, x265, aom, dav1d, vpx, opus, lame, freetype, libass, webp, zlib + the platform TLS) fail immediately.
 - **Four-variant products**: `build-all` emits four artifacts per platform leg — static (default, `--disable-shared`, no name suffix), shared (`--enable-shared --disable-static`, `-shared` suffix), debug (`--enable-debug=3 --disable-optimizations --disable-stripping`, `-O0 -g3` full symbols, `-debug` suffix) and shared+debug (both switches stacked, `-shared-debug` suffix). The shared base (packages + extras) runs once; ffmpeg itself compiles four times through per-variant plans → four-way parallel configure → serial `make -jN` across variants → per-variant install→package, and `dist/` accumulates all four products. One `deps-<platform>` snapshot channel as before (deps always compile `-fPIC`, so linking into shared libs is legal by construction).

@@ -453,3 +453,21 @@ spirv-cross:
 libplacebo:
   git: https://code.videolan.org/videolan/libplacebo.git
   submodules: true
+
+# ---- HDR 支撑链：glslang 是 libplacebo 的 SPIR-V 编译器（linux/mac 无
+#      pacman shaderc 可用，glslang 单工程自足、ENABLE_OPT=OFF 可避开
+#      SPIRV-Tools/abseil 链）；xxhash 是 libplacebo 缓存哈希提速件；
+#      dovi_tool 仓的 dolby_vision 子crate 以 cargo-c capi 产 libdovi
+#      （libplacebo 的 DV 重塑后端）/ HDR support chain: glslang is
+#      libplacebo's SPIR-V compiler (no pacman shaderc exists on
+#      linux/mac; glslang is self-contained in one project, and
+#      ENABLE_OPT=OFF avoids the SPIRV-Tools/abseil chain); xxhash
+#      speeds up libplacebo's cache hashing; the dolby_vision subcrate
+#      of the dovi_tool repo yields libdovi through cargo-c capi
+#      (libplacebo's Dolby Vision reshaping backend) ----
+glslang:
+  git: https://github.com/KhronosGroup/glslang.git
+xxhash:
+  git: https://github.com/Cyan4973/xxHash.git
+dovi:
+  git: https://github.com/quietvoid/dovi_tool.git

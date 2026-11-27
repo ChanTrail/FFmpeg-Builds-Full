@@ -121,6 +121,12 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             "-Dglslang=disabled",
             "-Dlcms=enabled",
             "-Dxxhash=enabled",
+            // DV 重塑链：libdovi 由 pacman 预编译供应（GNU ABI rust 静态
+            // 库，dovi.pc 随包）/ the DV reshaping chain: libdovi comes
+            // prebuilt from pacman (a GNU-ABI rust static library, with
+            // dovi.pc riding in the package)
+            "-Ddovi=enabled",
+            "-Dlibdovi=enabled",
             "-Dd3d11=enabled",
             "-Ddemos=false",
             "-Dtests=false",

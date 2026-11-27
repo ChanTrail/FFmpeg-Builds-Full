@@ -663,11 +663,16 @@ jobs:
           # CCACHE_DIR / FFBUILD_CCACHE silently disables ccache, and a
           # lost FFBUILD_PLAT_SUFFIX collides the -legacy leg's
           # deps/artifact names with the default leg's.
+          # GITHUB_REF_NAME 给 deps 产物名提供分支命名空间（beta/PR 与
+          # master 分册，互不毒化）/ GITHUB_REF_NAME feeds the branch
+          # namespace of deps asset names (beta/PR and master publish
+          # into separate cells, no cross-poisoning)
           sudo env FFBUILD_WORK="$FFBUILD_WORK" FFBUILD_DIST="$FFBUILD_DIST" \
             GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
             GITHUB_SHA="$GITHUB_SHA" \
             GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
             GITHUB_ACTIONS="$GITHUB_ACTIONS" \
+            GITHUB_REF_NAME="$GITHUB_REF_NAME" \
             FFMPEG_SHA="$FFMPEG_SHA" \
             FFMPEG_REF="${FFMPEG_REF:-}" FFMPEG_REPO="${FFMPEG_REPO:-}" \
             FFBUILD_SHARED="${FFBUILD_SHARED:-}" FFBUILD_DEBUG="${FFBUILD_DEBUG:-}" \
@@ -690,6 +695,7 @@ jobs:
           sudo env FFBUILD_WORK="$FFBUILD_WORK" GH_TOKEN="$GH_TOKEN" \
             GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" \
             GITHUB_ACTIONS="$GITHUB_ACTIONS" \
+            GITHUB_REF_NAME="$GITHUB_REF_NAME" \
             FFBUILD_PLAT_SUFFIX="$FFBUILD_PLAT_SUFFIX" \
             ./driver/FFmpeg-Builds-Full save-deps
 
