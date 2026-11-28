@@ -266,8 +266,7 @@ zvbi:
   pin: 34bb6f660c5c1bacd4a66cc7b22311e4ca3c1ab5  # default branch main HEAD no CI found — fallback tag v0.2.46
 vapoursynth:
   git: https://github.com/vapoursynth/vapoursynth.git
-  ref: R82   # 临时钉 tag：master 的 glslang 子项目静态断言断裂系上游问题，待上游修复后放开 / temporary tag pin: master's glslang subproject static-assert breakage is upstream's, release once fixed
-  pin: e0fadcc1c8977e99b11ce2e478996a867a939874  # tag R82
+  ref: 21ffd37f8e951fa7d6921b05d9a41415bd118a33  # branch master HEAD CI-green
 avisynth:
   git: https://github.com/AviSynth/AviSynthPlus.git
   pin: 523370a39933e2f9c208a5d74c1d35d43d177a76  # default branch master HEAD CI red or still running — fallback tag v3.7.6

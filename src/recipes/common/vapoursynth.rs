@@ -60,6 +60,19 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         ],
         &ctx.wd,
     )?;
+    // 前缀里 glslang（libplacebo 依赖，版本随 pin 前进）的头会遮蔽
+    // vapoursynth 内嵌 glslang 子项目自己的头：C/C++ 两侧结构体版本错位，
+    // spirv_c_interface.cpp 的 sizeof 断言 (40 == 10) 暴毙（16.6.0 的
+    // glslang_spv_options_t 是 11 bool + 3 指针 = 40，内嵌 16.4.0 是 10）。
+    // vapoursynth 只用内嵌子项目，构建期间把前缀那份挪开，守卫析构必还原 /
+    // the prefix glslang headers (a libplacebo dep, advancing with its
+    // pin) shadow those of vapoursynth's embedded glslang subproject: the
+    // C/C++ struct versions diverge and spirv_c_interface.cpp's sizeof
+    // assert dies (40 == 10 — 16.6.0's glslang_spv_options_t is 11 bools
+    // + 3 pointers = 40, the embedded 16.4.0's is 10). vapoursynth only
+    // uses the embedded subproject, so the prefix copy is moved aside for
+    // the build; the guard's drop always restores it
+    let _hide = HideDir::new(&e.prefix_win.join("include").join("glslang"))?;
     buildsys::meson_build(&src, &[])?;
     // 上游 meson 探到 python 后按"python 包"布局安装——静态库、头、
     // vapoursynth.pc 全落进 <prefix>/lib/python3/dist-packages/
@@ -150,4 +163,51 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         crate::fsx::rm_rf(py);
     }
     Ok(())
+}
+
+/// 目录临时挪开守卫：构造时把目录改名为 `<name>.vs-hidden`，析构时改回
+/// （构建失败的 `?` 早退同样还原）。目录不存在则什么也不做。
+/// Temporary move-aside guard for a directory: renames it to
+/// `<name>.vs-hidden` on construction and back on drop (an early `?`
+/// return on build failure restores it too). A no-op when the directory
+/// is absent.
+struct HideDir {
+    /// 原路径 / the original path (`PathBuf`)
+    orig: std::path::PathBuf,
+    /// 挪开后的路径；None 表示无事可还原 / the moved-aside path; None
+    /// means nothing to restore (`Option<PathBuf>`)
+    hidden: Option<std::path::PathBuf>,
+}
+
+impl HideDir {
+    /// 挪开目录 / Move the directory aside.
+    ///
+    /// Params：
+    /// - `dir`：`&Path`，要临时挪开的目录 / the directory to move aside
+    fn new(dir: &std::path::Path) -> Result<Self, String> {
+        let orig = dir.to_path_buf();
+        if !orig.is_dir() {
+            return Ok(Self { orig, hidden: None });
+        }
+        let hidden = orig.with_extension("vs-hidden");
+        // 上次异常中断的残留先清掉 / clear leftovers of an aborted run
+        crate::fsx::rm_rf(&hidden);
+        std::fs::rename(&orig, &hidden).map_err(|err| format!("hide {}: {err}", orig.display()))?;
+        Ok(Self {
+            orig,
+            hidden: Some(hidden),
+        })
+    }
+}
+
+impl Drop for HideDir {
+    /// 还原目录；失败只告警（析构不能传播错误）/ Restore the directory;
+    /// failures only warn (drop cannot propagate errors).
+    fn drop(&mut self) {
+        if let Some(h) = self.hidden.take()
+            && let Err(err) = std::fs::rename(&h, &self.orig)
+        {
+            crate::log::warn(&format!("restore {} failed: {err}", self.orig.display()));
+        }
+    }
 }

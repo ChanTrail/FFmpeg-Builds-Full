@@ -104,7 +104,7 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             // the type check — HEAD is the exact opposite; the HEAD
             // option table fooled one round before the tag pin)
             "-Ddoxygen=disabled", // 新版 meson feature 选项不收 false/ newer meson feature options reject false
-            "-Dman=disabled",
+            "-Dman=false",
             "-Dtests=false",
             // feature 型可选依赖全禁 / feature-type optional deps all off
             "-Dalsa=disabled",
