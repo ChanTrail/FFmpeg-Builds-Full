@@ -44,7 +44,7 @@ libsmbclient:
   pin: 02e8e3f93f4af787bcb3389cbff9e22e74567eb2  # default branch master HEAD CI red or still running — fallback tag samba-4.25.1
 libmfx:
   git: https://github.com/Intel-Media-SDK/MediaSDK.git
-  pin: 869b60a6c3d7b5e9f7c3b3b914986322dca4bbae  # default branch master HEAD no CI found — fallback tag intel-mediasdk-23.2.2
+  lock: 7a72de33a15d6e7cdb842b12b901a003f7154f0a  # upstream stalled (HEAD ~2023) — locked at final resolution / 上游停滞——锁定终态
 libopenvino:
   git: https://github.com/openvinotoolkit/openvino.git
   pin: 99c81491cc302313c8937d3533c4fb6458b54e7a  # default branch master HEAD CI red or still running — fallback tag 2026.4.0

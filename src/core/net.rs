@@ -581,11 +581,45 @@ fn is_prerelease(t: &str) -> bool {
     // belong here too — the intel-mediasdk-18.3.pre1 form (empirical:
     // undetected pre suffixes in the MediaSDK repo outranked the final
     // [18,3,0] with their [18,3,1] vkey)
-    [
+    if [
         "-rc", "_rc", ".rc", "-alpha", "-beta", "-pre", ".pre", "_pre",
     ]
     .iter()
     .any(|p| l.contains(p))
+    {
+        return true;
+    }
+    // 数字紧贴形：前缀数字 + 缀词 + 数字/点/收尾（R82RC1 实证——缀词
+    // 无分隔直贴数字链尾，分隔形检出全体失明；结构判据把它当合法预
+    // 发布放行，稳定版过滤层却看不见它）。词中子串依旧不算：src 的
+    // rc 前缀是字母 s，prelude 的 pre 后随字母 l，双双豁免 / the
+    // digit-adjacent form: digit + suffix word + digits/dots/end (the
+    // R82RC1 evidence — the suffix hugs the digit chain with no
+    // separator, blinding every separated-form test; the structural
+    // test passes it as a legitimate pre-release while the stable
+    // filter cannot see it). In-word substrings still don't count:
+    // src's rc follows the letter s, prelude's pre is followed by the
+    // letter l — both exempt
+    let b = l.as_bytes();
+    for kw in ["rc", "alpha", "beta", "pre"] {
+        let kb = kw.as_bytes();
+        for i in 0..b.len().saturating_sub(kb.len()) {
+            if &b[i..i + kb.len()] != kb {
+                continue;
+            }
+            // 前字符必须是数字 / the preceding char must be a digit
+            if i == 0 || !b[i - 1].is_ascii_digit() {
+                continue;
+            }
+            // 后缀词之后只许数字、点或收尾 / after the suffix word only
+            // digits, dots or the end
+            let tail = &b[i + kb.len()..];
+            if tail.iter().all(|c| c.is_ascii_digit() || *c == b'.') {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// 远端最新 tag：全量 ls-remote --tags，取"像版本号"的最后一个（语义
@@ -663,7 +697,65 @@ fn gh_headers() -> Vec<(&'static str, String)> {
             break;
         }
     }
+    // 环境缺席时退化到 git 凭据管理器——用户既然能 push github，凭据
+    // 缓存里就有可用 token，匿名 60/hr 的额度连一次全量解析都撑不住
+    // （实证：本地手跑 CI 门全灭 403，解析集体落 tag 回退）/ when the
+    // env is absent, fall back to the git credential manager — anyone
+    // who can push to github already holds a usable token in the cache,
+    // while the anonymous 60/hr quota cannot survive even one full
+    // resolution pass (empirical: local manual runs saw the CI gate die
+    // wholesale to 403s, resolutions falling back to tags en masse)
+    if !h.iter().any(|(k, _)| *k == "Authorization")
+        && let Some(t) = git_credential_token("github.com")
+    {
+        h.push(("Authorization", format!("Bearer {t}")));
+    }
     h
+}
+
+/// git 凭据管理器取 host 的 password 字段：非交互填充（manager-core
+/// 命中缓存即静默返回；未命中返回 None 绝不弹窗——`credential fill`
+/// 在 stdin 关闭时直接失败）/ read the password field for a host from
+/// the git credential manager: non-interactive fill (manager-core
+/// returns silently on a cache hit; a miss yields None and never pops
+/// a dialog — `credential fill` simply fails with stdin closed)
+/// Params：
+/// - host: &str —— 目标主机 / the target host
+fn git_credential_token(host: &str) -> Option<String> {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+    static CACHE: OnceLock<std::sync::Mutex<std::collections::HashMap<String, Option<String>>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Some(v) = cache.lock().unwrap().get(host) {
+        return v.clone();
+    }
+    let probe = (|| {
+        let mut child = Command::new("git")
+            .args(["credential", "fill"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        child
+            .stdin
+            .as_mut()?
+            .write_all(format!("protocol=https\nhost={host}\n\n").as_bytes())
+            .ok()?;
+        let out = child.wait_with_output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find_map(|l| l.strip_prefix("password=").map(String::from))
+    })();
+    cache
+        .lock()
+        .unwrap()
+        .insert(host.to_string(), probe.clone());
+    probe
 }
 
 /// 把一个动态头列表转成 get() 要的 &str 对 / adapt dynamic headers to the
@@ -788,10 +880,23 @@ pub async fn gitlab_ci_green(host: &str, path: &str, sha: &str) -> Result<Option
     let url = format!("{base}/pipelines?sha={sha}&per_page=20");
     let pipes = get_json(&url, &hp).await?;
     for p in pipes.arr() {
+        // MR 流水线不计入：refs/merge-requests/* 的 skipped/manual/canceled
+        // 是审查流程产物，与分支健康无关（实证：freetype master 绿证被一条
+        // skipped 的 MR 流水线毒化）/ MR pipelines don't count: skipped/
+        // manual/canceled states on refs/merge-requests/* are review-flow
+        // artifacts, not branch-health evidence
+        if p.get("ref").s().starts_with("refs/merge-requests/") {
+            continue;
+        }
+        let st = p.get("status").s();
+        // skipped/manual/canceled 非健康证据，直接忽略（即便落在分支上）/
+        // skipped/manual/canceled aren't health evidence even on-branch
+        if matches!(st, "skipped" | "manual" | "canceled") {
+            continue;
+        }
         any = true;
-        match p.get("status").s() {
-            "success" => {}
-            _ => return Ok(Some(false)),
+        if st != "success" {
+            return Ok(Some(false));
         }
     }
     // 外部 CI 提交的 status（Jenkins/Buildkite 等）/ statuses reported by
@@ -854,6 +959,52 @@ pub fn ci_green_sync(url: &str, sha: &str) -> Option<bool> {
     rt().block_on(ci_green(url, sha))
 }
 
+/// 仓归档探针：GitHub/GitLab 的 archived 标记是上游官方的死亡宣告——
+/// 归档仓永不再动，比四年启发式直接得多 / repo archive probe: the
+/// archived flag on GitHub/GitLab is the upstream's official death
+/// certificate — an archived repo never moves again, far more direct
+/// than the four-year heuristic
+/// Params：
+/// - url: &str —— 仓 URL / the repo URL
+pub fn repo_archived(url: &str) -> bool {
+    let Some(rest) = url
+        .trim_end_matches('/')
+        .strip_prefix("https://")
+        .or_else(|| url.trim_end_matches('/').strip_prefix("git://"))
+    else {
+        return false;
+    };
+    let Some((host, path)) = rest.split_once('/') else {
+        return false;
+    };
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    rt().block_on(async {
+        if host == "github.com" {
+            let mut it = path.split('/');
+            let (Some(owner), Some(repo)) = (it.next(), it.next()) else {
+                return false;
+            };
+            let h = gh_headers();
+            let hp = hdr_pairs(&h);
+            let api = format!("https://api.github.com/repos/{owner}/{repo}");
+            if let Ok(j) = get_json(&api, &hp).await {
+                return j.get("archived").b();
+            }
+            return false;
+        }
+        if is_gitlab(host).await {
+            let h = gl_headers();
+            let hp = hdr_pairs(&h);
+            let enc = path.replace('/', "%2F");
+            let api = format!("https://{host}/api/v4/projects/{enc}");
+            if let Ok(j) = get_json(&api, &hp).await {
+                return j.get("archived").b();
+            }
+        }
+        false
+    })
+}
+
 // ==================== commit 日期探针 / commit date probes ====================
 
 /// ISO8601（YYYY-MM-DDTHH:MM:SS 前缀）转 unix 秒——时区修正忽略：
@@ -890,6 +1041,28 @@ fn iso_to_unix(s: &str) -> Option<i64> {
 /// - url: &str —— 仓 URL / the repo URL
 /// - sha: &str —— 目标 commit / the target commit
 fn commit_date_git(url: &str, sha: &str) -> Option<i64> {
+    // dumb 宿主停尸间：dumb http 原理性不支持浅抓（无智能协议协商），
+    //  git_run 的 5 次递增重试对它是纯噪音纯浪费——一次失败即把宿主
+    // 打入冷宫，本进程内后续探针直接缺席返回。判定宁可错杀：日期探
+    // 针的失败语义本就是优雅退化（未知=非停滞）/ the dumb-host
+    // morgue: dumb http cannot shallow-fetch on principle (no smart
+    // protocol negotiation), so git_run's 5 rising retries are pure
+    // noise and waste there — one failure puts the host in the morgue
+    // and every later probe this process returns absent outright.
+    // Erring on execution is fine: probe failure degrades gracefully by
+    // design (unknown = not stalled)
+    static MORGUE: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    let morgue = MORGUE.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let host = url
+        .trim_end_matches('/')
+        .strip_prefix("https://")
+        .or_else(|| url.trim_end_matches('/').strip_prefix("git://"))
+        .and_then(|r| r.split('/').next())
+        .unwrap_or("")
+        .to_string();
+    if morgue.lock().unwrap().contains(&host) {
+        return None;
+    }
     let dir = std::env::temp_dir().join(format!(
         "ff-dateprobe-{}-{}",
         std::process::id(),
@@ -899,20 +1072,29 @@ fn commit_date_git(url: &str, sha: &str) -> Option<i64> {
     std::fs::create_dir_all(&dir).ok()?;
     let out = (|| {
         git_run(&["init", "-q"], &dir, None).ok()?;
-        git_run(
-            &[
-                "fetch",
-                "-q",
-                "--depth",
-                "1",
-                "--filter=blob:none",
-                url,
-                sha,
-            ],
-            &dir,
-            None,
-        )
-        .ok()?;
+        // 单次尝试 + stderr 湮灭：探针不配重试（失败即退化），fatal
+        // 噪音不该污染更新报告 / single attempt with stderr annihilated:
+        // a probe deserves no retries (failure degrades) and its fatal
+        // noise must not pollute the update report
+        let mut a: Vec<&str> = GIT_NET.to_vec();
+        a.extend_from_slice(&[
+            "fetch",
+            "-q",
+            "--depth",
+            "1",
+            "--filter=blob:none",
+            url,
+            sha,
+        ]);
+        let (_, code) = sys::capture_lax("git", &a, &dir).ok()?;
+        if code != 0 {
+            // 失败宿主入殓——dumb 是主因，瞬时网络冤案的代价仅是本条目
+            // 停滞未知 / failing hosts join the morgue — dumbness is the
+            // prime cause; the cost of a transient-network wrongful
+            // conviction is merely this entry's staleness going unknown
+            morgue.lock().unwrap().insert(host.clone());
+            return None;
+        }
         git_capture(&[
             "-C",
             dir.to_str()?,
@@ -1146,6 +1328,10 @@ mod tests {
         assert!(!is_prerelease("v3.15.3"));
         assert!(!is_prerelease("src-1.0")); // 词中 rc 不算 / in-word rc doesn't count
         assert!(!is_prerelease("v1.0"));
+        assert!(is_prerelease("R82RC1")); // 数字紧贴嵌入式 / digit-adjacent embedded
+        assert!(is_prerelease("v1.0rc2")); // 同上 / ditto
+        assert!(!is_prerelease("v2prelude")); // 词中 pre 后随字母不算 / in-word pre followed by a letter is out
+        assert!(!is_prerelease("R82")); // 正式版 / the final
     }
 
     #[test]

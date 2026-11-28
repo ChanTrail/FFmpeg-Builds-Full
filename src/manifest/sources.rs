@@ -241,6 +241,11 @@ pub struct Resolution {
     /// 上游分支 HEAD 的 commit 日期（unix 秒）/ the upstream branch
     /// HEAD's commit date (unix seconds)
     pub head_date: Option<i64>,
+    /// 上游仓已归档（平台级死亡宣告）——更新器据此直接转 lock，跳过
+    /// 一切门与回退 / the upstream repo is archived (a platform-level
+    /// death certificate) — the updater converts to lock directly,
+    /// skipping every gate and fallback
+    pub archived: bool,
     /// 既有 ref 被鉴定为分支形——更新器写入决策的依据（分支形只动
     /// pin，tag/sha 形机器维护 ref 前进）/ the existing ref tested as
     /// branch-shaped — input to the updater's write decisions (branch
@@ -311,6 +316,22 @@ fn resolve_one(url: &str, ref_: Option<&str>) -> Result<Resolution, String> {
         }
         None => net::default_branch(url)?,
     };
+    // 归档最先检：平台级死亡宣告在场时，最终 HEAD 即永恒真相——CI
+    // 门、tag 回退、停滞启发式全部短路 / archive checked first: with a
+    // platform-level death certificate present, the final HEAD is
+    // eternal truth — the CI gate, tag fallback and staleness heuristic
+    // all short-circuit
+    if net::repo_archived(url) {
+        return Ok(Resolution {
+            sha: head_sha.clone(),
+            basis: format!("branch {branch} HEAD — repo archived / 仓已归档"),
+            tag: None,
+            head_sha: Some(head_sha.clone()),
+            head_date: net::commit_date(url, &head_sha),
+            archived: true,
+            ref_is_branch: named_branch.is_some(),
+        });
+    }
     let tip_date = net::commit_date(url, &head_sha);
     let ci = net::ci_green_sync(url, &head_sha);
     let head_ok = ci == Some(true);
@@ -338,28 +359,24 @@ fn resolve_one(url: &str, ref_: Option<&str>) -> Result<Resolution, String> {
         head_sha: Some(head_sha.clone()),
         head_date,
         ref_is_branch: named_branch.is_some(),
+        archived: false,
     };
-    // 目标选择按 ref 形态分流 / target selection branches on the ref form
-    let branch_form = named_branch.is_some();
-    let tag_form = ref_.is_some_and(|r| !is_sha(r)) && !branch_form;
-    if branch_form {
+    // 目标选择：分支形裸 HEAD 是唯一分流；其余形态（tag/sha/无 ref）
+    // 统一走安全自动——CI 绿门优先，tag 仅作回退。ref 形态不影响"去
+    // 哪"，只影响更新器"怎么写"（tag 赢写 tag 名、HEAD 赢写 sha）/
+    // target selection: the branch form's raw HEAD is the only fork;
+    // every other form (tag/sha/none) rides the same safe automation —
+    // the CI-green gate first, tags only as fallback. The ref shape
+    // never affects WHERE to go, only HOW the updater writes it (a tag
+    // win writes the tag name, a HEAD win the sha)
+    if named_branch.is_some() {
         // 分支追踪：裸 HEAD——人的浮动意图，pin 仅负责物化 / branch
         // tracking: raw HEAD — the human's floating intent, the pin
         // merely materializes it
         return Ok(mk(head_sha.clone(), format!("{bdesc} HEAD"), None));
     }
-    if tag_form {
-        // 发布轨：最新 tag 是首选，无 tag 退回 HEAD 逻辑 / release
-        // track: the newest tag is preferred; without tags fall back to
-        // the HEAD logic
-        if let Some(t) = tag {
-            let sha = tag_commit(url, &t)?;
-            return Ok(mk(sha, format!("release track — tag {t}"), Some(t)));
-        }
-    }
-    // 安全自动（sha 形 / 无 ref / 无 tag 的发布轨）：CI 绿门 → tag
-    // 回退 / safe automation (sha form / no ref / tag-less release
-    // track): CI-green gate -> tag fallback
+    // 安全自动：CI 绿门 → tag 回退 / safe automation: CI-green gate ->
+    // tag fallback
     if head_ok {
         Ok(mk(head_sha.clone(), format!("{bdesc} HEAD CI-green"), None))
     } else if let Some(t) = tag {

@@ -41,8 +41,8 @@ x265:
   git: https://bitbucket.org/multicoreware/x265_git.git
   pin: e444744c03978c1fb4e037168967020cf2648427  # default branch master HEAD no CI found — fallback tag 4.2
 svtav1:
-  git: https://gitlab.com/AOMediaCodec/SVT-AV1.git
-  pin: e3d63405f9ba8219913a7276c2c47d10e5d022fe  # default branch master HEAD no CI found — fallback tag v4.3.0
+  git: https://github.com/AOMediaCodec/SVT-AV1.git
+  pin: ad875ab772c67ff3f098c59667348d80fb5c68b6  # branch main HEAD CI-green
 aom:
   git: https://aomedia.googlesource.com/aom           # googlesource 无 CI API → tag
   pin: b141d9c45db236335351c8a4b2a14b3ade27c937  # default branch main HEAD no CI found — fallback tag v3.15.3
@@ -69,13 +69,12 @@ xevd:
   pin: 8fa744e865e9bdb94a5d5da6a4ab18268cdc4bb4  # default branch master HEAD CI red or still running — fallback tag v0.8.0
 xeve:
   git: https://github.com/mpeg5/xeve.git
-  ref: v0.7.1   # 与配方 version.txt 同钉；spec 参与 .ok 哈希——顺带失效携带上古 xeve_ 改名毒的 overlay 归档 / pinned in step with the recipe's version.txt; the spec feeds the .ok hash — this also retires the overlay archive carrying the legacy xeve_ rename poison
-  pin: fe229fec19e14907c60d65626ebd59f41517d9b3  # tag v0.7.1
+  lock: fe229fec19e14907c60d65626ebd59f41517d9b3  # v0.7.1——与配方 version.txt 同钉，机器前进会破坏版本同步：lock 冻结；spec 参与 .ok 哈希——顺带失效携带上古 xeve_ 改名毒的 overlay 归档 / v0.7.1 — pinned in step with the recipe's version.txt, machine advancement would break version sync: frozen under lock; the spec feeds the .ok hash — this also retires the overlay archive carrying the legacy xeve_ rename poison
 vvenc:
   git: https://github.com/fraunhoferhhi/vvenc.git
-  pin: 55d57d39ab2dcf816f3e90ee0c5eff156c54dfc9  # default branch master HEAD CI-green
+  pin: 52b03b87d272f56f3057d2d855729d67f9dcf7a0  # branch master HEAD CI-green
 theora:
-  git: https://gitlab.xiph.org/xiph/theora.git
+  git: https://github.com/xiph/theora.git
   pin: 28fd5ec77f0ad0e07a371cef1047828116f6bd8a  # default branch main HEAD CI-green
 xvid:
   archive: https://downloads.xvid.com/downloads/xvidcore-1.3.7.tar.gz
@@ -129,16 +128,15 @@ vorbis:
   git: https://github.com/xiph/vorbis.git
   pin: 1b75110b5a2754ba1931d82dd83cb822b266a21d  # default branch main HEAD CI-green
 opus:
-  git: https://gitlab.xiph.org/xiph/opus.git
-  ref: v1.6.1   # get-version.py 靠 git describe 取版本——浅克隆必须落在 tag 上 / get-version.py derives the version from git describe — the shallow clone must land on a tag
+  git: https://github.com/xiph/opus.git
+  lock: 22244de5a79bd1d6d623c32e72bf1954b56235be  # v1.6.1——get-version.py 靠 git describe 取版本，浅克隆必须落在 tag 上：发布轨约束，lock 冻结（要升级须人工换锁）/ v1.6.1 — get-version.py derives the version from git describe, the shallow clone must land on a tag: a release-track constraint, frozen under lock (upgrades need manual re-locking)
   # dnn/*_data.{c,h} 不是 submodule——模型权重在 media.xiph.org 的
   # opus_data-<sha>.tar.gz，配方里跑 download_model.sh 落地 /
   # the dnn/*_data.{c,h} files aren't a submodule — model weights ship
   # as opus_data-<sha>.tar.gz on media.xiph.org; the recipe runs
   # download_model.sh to land them
-  pin: 22244de5a79bd1d6d623c32e72bf1954b56235be  # tag v1.6.1
 speex:
-  git: https://gitlab.xiph.org/xiph/speex.git         # downloads.xiph.org 不可达，走仓库
+  git: https://github.com/xiph/speex.git         # downloads.xiph.org 不可达，走仓库
   pin: 09b569d1b437e5edccf3406a38714ad795e46d38  # default branch main HEAD CI-green
 shine:
   git: https://github.com/toots/shine.git
@@ -179,7 +177,7 @@ mysofa:
   pin: 648eed03472e6720a1ea45d1a1f86c4efb569ff9  # default branch main HEAD CI-green
 flite:
   git: https://github.com/festvox/flite.git
-  pin: e9e2e37c329dbe98bfeb27a1828ef9a71fa84f88  # default branch master HEAD no CI found — fallback tag v2.2
+  lock: e9e2e37c329dbe98bfeb27a1828ef9a71fa84f88  # upstream stalled (HEAD ~2022) — locked at final resolution / 上游停滞——锁定终态
 pocketsphinx:
   git: https://github.com/cmusphinx/pocketsphinx.git
   pin: f20ff1b7a5db64c5e892a798479e20df86e79a35  # default branch main HEAD CI-green
@@ -210,7 +208,7 @@ openmpt:
 # ================= 字幕、文字、图形栈 / subtitles, text, graphics =================
 freetype:
   git: https://gitlab.freedesktop.org/freetype/freetype.git
-  pin: 37515cf56ba3349656049edbed89ffc6f6466f2d  # default branch master HEAD CI red or still running — fallback tag VER-2-15-0
+  pin: 68db2bb4a471c2e3883697961b4f2244b245aed3  # branch master HEAD CI-green
 harfbuzz:
   git: https://github.com/harfbuzz/harfbuzz.git
   pin: d7964c5c1e439ad892e3e87f550c72b73d4835b1  # default branch main HEAD CI-green
@@ -225,8 +223,7 @@ libpng:
   pin: 0fdef309cc33a24081943c2ae4096950426e0216  # default branch libpng18 HEAD CI-green
 fontconfig:
   git: https://gitlab.freedesktop.org/fontconfig/fontconfig.git
-  ref: 2.18.3   # pango 1.58 的 dependency() 硬要求 >=2.17.0 / pango 1.58's dependency() hard-requires >=2.17.0
-  pin: 0f236723a3c26bd9745e32ba2b3ee21e5f809295  # tag 2.18.3
+  ref: 9564f0d1d00c46dc32bbbe4abcd6d71200786173  # branch main HEAD CI-green
 libass:
   git: https://github.com/libass/libass.git
   pin: 841c52561c39df6767e3948efa8e5307efb11f1f  # default branch master HEAD CI-green
@@ -257,8 +254,7 @@ vmaf:
   pin: cf677baaa039723876fff8c2677164f25102e684  # default branch master HEAD CI-green
 frei0r:
   git: https://github.com/dyne/frei0r.git   # codeberg 仓已消失，此为活跃镜像 / the codeberg repo vanished — this is the live mirror
-  ref: v3.7.0
-  pin: c8aeb2a7e758ceab7096e2bfd2a1a50e3d681119  # tag v3.7.0
+  ref: c6a38df84ae058af43386af492f73c0a9cf5b031  # branch master HEAD CI-green
 aribb24:
   git: https://github.com/nkoriyama/aribb24.git
   lock: 5e9be272f96e00f15a2f3c5f8ba7e124862aec38   # 上游停滞，固化末次提交（2016-02）/ upstream stalled, pinned at last commit
@@ -270,8 +266,7 @@ zvbi:
   pin: 34bb6f660c5c1bacd4a66cc7b22311e4ca3c1ab5  # default branch main HEAD no CI found — fallback tag v0.2.46
 vapoursynth:
   git: https://github.com/vapoursynth/vapoursynth.git
-  ref: R82   # 浮动解析会捡 R70.11（无点号的 R82 不算"版本样式"tag——尚无 meson.build）；钉死到首个 meson 发布代 / floating resolution picks R70.11 (dot-less R82 isn't a "version-looking" tag — and R70.11 predates meson.build); pin the meson-era release line
-  pin: e0fadcc1c8977e99b11ce2e478996a867a939874  # tag R82
+  ref: 21ffd37f8e951fa7d6921b05d9a41415bd118a33  # branch master HEAD CI-green
 avisynth:
   git: https://github.com/AviSynth/AviSynthPlus.git
   pin: 523370a39933e2f9c208a5d74c1d35d43d177a76  # default branch master HEAD CI red or still running — fallback tag v3.7.6
@@ -283,7 +278,7 @@ quirc:
   pin: 542848dd6b9b0eaa9587bbf25b9bc67bd8a71fca  # default branch master HEAD no CI found — fallback tag v1.2
 leptonica:
   git: https://github.com/DanBloomberg/leptonica.git
-  pin: 13275a278eb55b5746e33f95fbf5a2c8f604b3ab  # default branch master HEAD CI red or still running — fallback tag 1.87.0
+  pin: 1a898fbcc977450d609a5313bbc184616b90ba99  # branch master HEAD CI-green
 tesseract:
   git: https://github.com/tesseract-ocr/tesseract.git
   pin: 4292f6890aa86ef64eba32090358f40f69dd6d28  # default branch main HEAD CI-green
@@ -302,7 +297,7 @@ lensfun:
   ref: 37238fcef563196fb798f6151cb9023968b26c40
 sdl2:
   git: https://github.com/libsdl-org/SDL.git
-  ref: release-2.32.10    # SDL2 维护线最新 tag。branch 浮动 CI 红时
+  lock: 5d249570393f7a37e037abf22cd6012a4cc56a71    # release-2.32.10——SDL2 维护线约束（master 是 SDL3 开发线，ffmpeg 要的是 SDL2）：lock 冻结，升级须人工换锁。branch 浮动 CI 红时
                           # fallback 会钉到 2.0.22-RC3 这类老 tag——实证
                           # macOS 腿 SDL_spinlock.c 调 SDK 26 已除名的
                           # OSAtomicCompareAndSwap32Barrier 编译死；
@@ -322,7 +317,6 @@ sdl2:
                           # XGenericEventCookie clash and this recipe's
                           # listtostr patch still apply (both guarded,
                           # only act when the pattern matches)
-  pin: 5d249570393f7a37e037abf22cd6012a4cc56a71  # tag release-2.32.10
 
 # ================= glib / GNOME 依赖栈 =================
 pcre2:
@@ -359,9 +353,9 @@ rabbitmq:
   pin: 8876dcb5535f8a7ff6dbce8ac54f5553a210f563  # default branch master HEAD CI-green
 libbluray:
   git: https://code.videolan.org/videolan/libbluray.git
-  ref: 1.5.1   # ≥1.5 纯 meson；master 的 configure.ac 已删 → 钉 tag / meson-only ≥1.5; master's configure.ac is gone → pin a tag
+  # master 的 configure.ac 已删、配方走 autotools——opus 类特殊约束直接 lock / master dropped configure.ac while the recipe uses autotools — special-case lock
+  lock: a24f4fad4d62893de647abc8671397747b2359dd  # tag 1.5.1
   submodules: true   # libudfread 以 submodule 随仓携带 / libudfread rides as a submodule
-  pin: a24f4fad4d62893de647abc8671397747b2359dd  # tag 1.5.1
 libdvdcss:
   archive: https://download.videolan.org/pub/libdvdcss/1.6.0/libdvdcss-1.6.0.tar.xz
   sha256: 7ea556c846b7bfc32d47b41cae56d1863a6b6d5f706bb162778d6f298490977c
@@ -476,17 +470,17 @@ libva:
   # pinned: the repo mixes in 48 internal weekly-build tags like
   # ww53.4-video whose vkey ordering crushes real 2.x tags (the
   # fallback checkout empirically fetched 0.31.1)
-  ref: "2.24.1"
-  pin: 710eb465c6277ee2cac3e6948767b01eebe7e77a  # tag 2.24.1
+  lock: 710eb465c6277ee2cac3e6948767b01eebe7e77a
+  # tag 2.24.1 实证可用——归档仓锁定终态 / empirically-good tag commit; archived repo locked final
 vdpau:
   git: https://gitlab.freedesktop.org/vdpau/libvdpau.git
-  pin: 2afa3f989af24a922692ac719fae23c321776cdb  # default branch master HEAD CI-green
+  lock: 2afa3f989af24a922692ac719fae23c321776cdb  # upstream stalled (HEAD ~2022) — locked at final resolution / 上游停滞——锁定终态
 libdrm:
   git: https://gitlab.freedesktop.org/mesa/drm.git
   pin: 92e145ce8f6aa0d22ed52e29e81845008d53c3d3  # default branch main HEAD CI-green
 v4l-utils:
   git: https://git.linuxtv.org/v4l-utils.git
-  pin: 053f92f72d20a53ba2667a1dc4a19f4da29b2052  # default branch master HEAD no CI found — fallback tag v4l-utils-1.8.1
+  lock: 053f92f72d20a53ba2667a1dc4a19f4da29b2052  # upstream stalled (HEAD ~2015) — locked at final resolution / 上游停滞——锁定终态
 raw1394:
   archive: https://www.kernel.org/pub/linux/libs/ieee1394/libraw1394-2.1.2.tar.xz
   sha256: 03ccc69761d22c7deb1127fc301010dd13e70e44bb7134b8ff0d07590259a55e
@@ -498,8 +492,7 @@ lz4:
   pin: 00bf3522fdb94a9d0e69c1d4db7eed77343f7a60  # default branch dev HEAD CI-green
 pulseaudio:                # libpulse 特性对应 / matches the libpulse feature
   git: https://gitlab.freedesktop.org/pulseaudio/pulseaudio.git
-  ref: v17.0   # git-version-gen 靠 git describe 取版本——浅克隆必须落在 tag 上，否则 meson.build 的 version.split()[1] 越界 / git-version-gen derives the version from git describe — the shallow clone must land on a tag or meson.build's version.split()[1] goes out of bounds
-  pin: 1f020889c9aa44ea0f63d7222e8c2b62c3f45f68  # tag v17.0
+  ref: 5ec2aec56abe49d114238f45d20ef1cebcf9b75c  # branch master HEAD CI-green
 
 # ---- X11 / xcb 栈 / the X11/xcb stack ----
 xcb-proto:

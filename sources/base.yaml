@@ -37,7 +37,6 @@ ffmpeg:
   mirrors:                                        # 主仓克隆失败按序兜底 / ordered fallbacks when the primary clone fails
     - https://github.com/FFmpeg/FFmpeg.git
   ref: master              # FFMPEG_REPO/FFMPEG_REF/FFMPEG_SHA 环境变量仍可覆盖 / env vars still override
-  pin: 67240ca40f83da4a0160cce250bebb6adae4955c  # branch master HEAD
 
 zlib:
   git: https://github.com/madler/zlib.git

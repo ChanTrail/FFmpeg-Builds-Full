@@ -173,6 +173,17 @@ fn collect_jobs(root: &Path) -> Result<Vec<Job>, String> {
             if spec.git.is_none() {
                 continue;
             }
+            // ffmpeg 独立王国：产品本体非依赖，取源走自管 blobless
+            // 克隆（master 实时最新 + FFMPEG_SHA 外部钉链），钉版体系
+            // 管不着它——pin 落上去只会在每次更新制造过期 churn /
+            // ffmpeg is an independent kingdom: the product itself, not
+            // a dependency — its fetch rides a self-managed blobless
+            // clone (live master + the external FFMPEG_SHA pin chain),
+            // outside the pinning system's jurisdiction; a pin on it
+            // only manufactures stale churn on every update
+            if name == "ffmpeg" {
+                continue;
+            }
             // lock 在场即冻结圣旨——机器永不触碰（lock 的唯一写入路径
             // 是停滞转换，而停滞条目转换后不再有解析必要）/ a lock is
             // the freeze writ — the machine never touches it (lock's
@@ -503,7 +514,10 @@ fn lint(root: &Path) -> usize {
                     violations += 1;
                 }
             } else if let Some(r) = &spec.ref_ {
-                if !sources::is_sha(r) && spec.pin.is_none() {
+                // ffmpeg 豁免 pin oracle 强制——独立取源路径永不读
+                // pin / ffmpeg is exempt from the pin-oracle mandate —
+                // its independent fetch path never reads pins
+                if !sources::is_sha(r) && spec.pin.is_none() && name != "ffmpeg" {
                     println!(
                         "lint: {fname}: '{name}' ref '{r}' is a tag/branch but has no pin: oracle — run update-sources / tag/branch 形 ref 缺 pin oracle"
                     );
@@ -641,7 +655,10 @@ fn main() {
         match res {
             Ok(r) => {
                 let mut ops = Ops::default();
-                let stalled = r.head_date.is_some_and(|d| now - d > STALE_SECS);
+                // 归档视同停滞且更强：平台宣告优先于启发式 / archived
+                // counts as stalled and stronger: the platform
+                // certificate outranks the heuristic
+                let stalled = r.archived || r.head_date.is_some_and(|d| now - d > STALE_SECS);
                 // 当前生效 hash：ref 为 sha 时是 ref，否则是 pin——摘要
                 // 分桶的比较基准 / the currently effective hash: the ref
                 // itself when sha-shaped, else the pin — the comparison
