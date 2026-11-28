@@ -90,12 +90,20 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     // python3 vs 3.x — it varies with the runner's python. find the
     // installed vapoursynth.pc and take its install root (the pc sits
     // in <root>/pkgconfig/)
+    // 只认 python 包布局那份：前缀里可能已有上次搬运重写留下的标准位置
+    // lib/pkgconfig/vapoursynth.pc，按名字 -quit 会先撞上它，把安装根错
+    // 算成 <prefix>/lib（legacy CI 实证 cp: cannot stat lib/include/.）/
+    // only accept the python-package-layout copy: the prefix may already
+    // hold the standard lib/pkgconfig/vapoursynth.pc rewritten by an
+    // earlier relocation; a name-only -quit hits it first and miscomputes
+    // the install root as <prefix>/lib (legacy CI evidence: cp: cannot
+    // stat lib/include/.)
     let pc_hit = sys::capture(
         "find",
         &[
             &e.prefix_win.to_string_lossy(),
-            "-name",
-            "vapoursynth.pc",
+            "-path",
+            "*-packages/vapoursynth/pkgconfig/vapoursynth.pc",
             "-print",
             "-quit",
         ],

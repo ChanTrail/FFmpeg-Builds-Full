@@ -105,7 +105,7 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             // option table fooled one round before the tag pin)
             "-Ddoxygen=disabled", // 新版 meson feature 选项不收 false/ newer meson feature options reject false
             "-Dman=false",
-            "-Dtests=false",
+            "-Dtests=disabled",
             // feature 型可选依赖全禁 / feature-type optional deps all off
             "-Dalsa=disabled",
             "-Dasyncns=disabled",
