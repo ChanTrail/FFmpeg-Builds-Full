@@ -28,17 +28,36 @@ fn body(ctx: &Ctx) -> Result<(), String> {
     }
     fsx::rm_rf(&hdrs);
     let icd = ctx.src_named("opencl-icd")?;
-    buildsys::cmake_build(
-        &icd,
-        &[
-            &format!("-DOPENCL_ICD_LOADER_HEADERS_DIR={}/include", e.prefix),
-            "-DOPENCL_ICD_LOADER_BUILD_SHARED_LIBS=OFF",
-            "-DOPENCL_ICD_LOADER_DISABLE_OPENCLON12=ON",
-            "-DOPENCL_ICD_LOADER_PIC=ON",
-            "-DOPENCL_ICD_LOADER_BUILD_TESTING=OFF",
-            "-DBUILD_TESTING=OFF",
-        ],
-    )?;
+    let mut args = vec![
+        format!("-DOPENCL_ICD_LOADER_HEADERS_DIR={}/include", e.prefix),
+        "-DOPENCL_ICD_LOADER_BUILD_SHARED_LIBS=OFF".to_string(),
+        "-DOPENCL_ICD_LOADER_DISABLE_OPENCLON12=ON".to_string(),
+        "-DOPENCL_ICD_LOADER_PIC=ON".to_string(),
+        "-DOPENCL_ICD_LOADER_BUILD_TESTING=OFF".to_string(),
+        "-DBUILD_TESTING=OFF".to_string(),
+    ];
+    if e.os == sys::Os::Windows {
+        // 上游 master 的 cllayerinfo.exe（诊断工具，FFmpeg 不需要）用
+        // StringFromGUID2 却没链 ole32——ld.bfd 时代靠默认库侥幸蒙混，
+        // clangarm64 的 ld.lld 严格判 undefined 直接暴毙。FFmpeg 只要
+        // 静态库本身，但 cmake 没有关掉该工具的开关，全局 exe 链接缀
+        // 是最小侵入修复（对静态库目标零影响）/ upstream master's
+        // cllayerinfo.exe (a diagnostic tool FFmpeg never needs) calls
+        // StringFromGUID2 without linking ole32 — ld.bfd used to skate
+        // by on default libs, clangarm64's ld.lld strictly convicts
+        // undefined symbols. FFmpeg only wants the static lib, but cmake
+        // offers no switch for the tool, so a global exe linker flag is
+        // the least invasive fix (zero effect on the static-lib target)
+        // 注意必须用 C_STANDARD_LIBRARIES 而非 EXE_LINKER_FLAGS：后者
+        // 排在链接行对象文件之前，ld 从左到右解析静态库时前缀位置的
+        // -lole32 形同虚设（windows-x86_64 CI 实证）；前者追加行尾 /
+        // must use C_STANDARD_LIBRARIES, not EXE_LINKER_FLAGS: the
+        // latter lands before the object files where ld's left-to-right
+        // static resolution renders it inert (windows-x86_64 CI evidence)
+        args.push("-DCMAKE_C_STANDARD_LIBRARIES=-lole32".to_string());
+    }
+    let argrefs: Vec<&str> = args.iter().map(String::as_str).collect();
+    buildsys::cmake_build(&icd, &argrefs)?;
     let libdir = e.prefix_win.join("lib");
     let libarg = if libdir.join("libOpenCL.a").is_file() {
         "-lOpenCL"

@@ -63,6 +63,52 @@ pub fn have_gh() -> bool {
         && sys::which("gh").is_some()
 }
 
+/// deps_ns：分支感知的产物命名空间。deps release 是全仓库共享的一份，
+/// 非主分支（beta、PR 的 123/merge 之类）若与 master 同用一套产物名，
+/// 实验中的依赖前缀会毒化 master 的缓存、master 的快照也会盖住分支的
+/// 实验料。master/main/空（本地构建）返回平台名原样——历史产物全部
+/// 落在无后缀命名空间，保持兼容；其余分支净化（非字母数字/点/下划线
+/// 一律折成横杠，PR 的 `123/merge` → `123-merge`）后加 `--` 前缀：
+/// `beta` + `linux-x86_64` → `beta--linux-x86_64`。双横杠分隔保证
+/// 前缀匹配不串台：`deps-beta--linux-x86_64-` 永不被 master 的
+/// `deps-linux-x86_64-` 前缀命中。
+/// Branch-aware asset namespace. The deps release is one shared bucket
+/// for the whole repository: a non-master branch (beta, a PR's
+/// `123/merge`, ...) publishing under the same asset names would poison
+/// master's cache, and master's snapshots would clobber the branch's
+/// experimental material. master/main/empty (local builds) return the
+/// platform unchanged — every historical asset lives in the unscoped
+/// namespace and stays compatible; any other branch is sanitized
+/// (non-alphanumeric/dot/underscore folds to a dash, a PR's `123/merge`
+/// becomes `123-merge`) and prepended with a `--` separator: `beta` +
+/// `linux-x86_64` -> `beta--linux-x86_64`. The double dash keeps prefix
+/// matching clean: `deps-beta--linux-x86_64-` is never hit by master's
+/// `deps-linux-x86_64-` prefix.
+///
+/// Params：
+/// - platform: &str — 平台包名（plat_pkg() 的输出）/ platform package
+///   name (plat_pkg() output)
+pub fn ns(platform: &str) -> String {
+    let br = std::env::var("FFBUILD_DEPS_BRANCH")
+        .or_else(|_| std::env::var("GITHUB_REF_NAME"))
+        .unwrap_or_default();
+    let br = br.trim();
+    if br.is_empty() || br == "master" || br == "main" {
+        return platform.to_string();
+    }
+    let clean: String = br
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("{clean}--{platform}")
+}
+
 /// gh 命令（固定 --repo），stdout/stderr 双双接管——`gh release view`/
 /// `gh api` 的应答动辄整屏 JSON 与 markdown 表格，曾在 Publish deps 步
 /// 造成巨量转储。成功返回捕获的 stdout；失败把 stderr 一并塞进 Err，
@@ -272,8 +318,18 @@ pub fn ensure_release() -> Result<(), String> {
     Ok(())
 }
 
-/// deps_find_asset：回显该平台最新可用产物名（按上传时间）/ echo the
-/// platform's newest asset name (by upload time)
+/// deps_find_asset：回显该平台最新可用产物名（按上传时间）。分支命名
+/// 空间优先；分支还没有自己的产物时回落到无后缀（master）命名空间
+/// 引导首轮——恢复来的前缀只是加速料，分支的增量仍发回分支自己的
+/// 命名空间，污染不了 master / echo the platform's newest asset name
+/// (by upload time). The branch namespace wins; when the branch owns no
+/// asset yet, fall back to the unscoped (master) namespace to bootstrap
+/// the first run — a restored prefix is only acceleration material, and
+/// the branch's increments still publish back into the branch's own
+/// namespace, so master stays clean.
+///
+/// Params：
+/// - platform: &str — 平台包名 / platform package name
 pub fn find_asset(platform: &str) -> Result<String, String> {
     let e = sys::env();
     ensure_release()?;
@@ -291,10 +347,19 @@ pub fn find_asset(platform: &str) -> Result<String, String> {
     )?;
     let mut rows: Vec<&str> = assets.lines().collect();
     rows.sort_by(|a, b| b.cmp(a)); // 最新在前 / newest first
-    for r in rows {
-        let name = r.split('\t').nth(1).unwrap_or("");
-        if name.starts_with(&format!("deps-{platform}-")) && name.ends_with(".tar.zst") {
-            return Ok(name.to_string());
+    let scoped = ns(platform);
+    // 两轮扫描：先分支命名空间，再无后缀兜底（同空间时第二轮为空操作）
+    // two passes: branch namespace first, then the unscoped fallback
+    // (a no-op second pass when both are the same space)
+    for prefix in [format!("deps-{scoped}-"), format!("deps-{platform}-")] {
+        for r in &rows {
+            let name = r.split('\t').nth(1).unwrap_or("");
+            if name.starts_with(&prefix) && name.ends_with(".tar.zst") {
+                return Ok(name.to_string());
+            }
+        }
+        if scoped == platform {
+            break;
         }
     }
     Err("no asset".into())
@@ -339,6 +404,12 @@ pub fn publish(
         log::warn("GH_TOKEN/gh missing; deps prefix not published");
         return Ok(());
     }
+    // 分支命名空间接管产物命名与保留清理——beta/PR 的实验前缀只在自己的
+    // 格子里轮换，master 的产物列表不受影响 / the branch namespace takes
+    // over asset naming and retention sweeps — beta/PR experimental
+    // prefixes rotate inside their own cell, master's asset list untouched
+    let unscoped = platform.to_string();
+    let platform = ns(platform);
     let partial = format!("deps-{platform}-partial.tar.zst");
     let mut name = String::new();
     if !restored.is_empty() && restored != partial && !dirty {
@@ -455,10 +526,16 @@ pub fn publish(
         &e.work,
     );
     // 让 tag 指向最近塑造这个桶的 commit（refs 不存在时 PATCH 会报错——
-    // 尽力而为，只留一行日志）/ keep the tag pointing at the commit whose
-    // run last shaped the bucket (the PATCH fails when the ref does not
-    // exist — best effort, one log line only)
-    if let Ok(sha) = std::env::var("GITHUB_SHA") {
+    // 尽力而为，只留一行日志）。tag 重指向只认无后缀（master）命名空间
+    // 的塑造者——分支跑出的 deps 不该把共享 tag 拖向分支 commit
+    // keep the tag pointing at the commit whose run last shaped the
+    // bucket (the PATCH fails when the ref does not exist — best effort,
+    // one log line only). Re-pointing is reserved for shapers of the
+    // unscoped (master) namespace — a branch run's deps must not drag
+    // the shared tag onto a branch commit
+    if platform == unscoped
+        && let Ok(sha) = std::env::var("GITHUB_SHA")
+    {
         let repo = std::env::var("GITHUB_REPOSITORY").unwrap_or_default();
         if let Err(m) = gh_quiet(
             &[

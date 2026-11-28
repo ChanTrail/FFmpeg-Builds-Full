@@ -881,9 +881,23 @@ fn error_tail(log: &Path, max_lines: usize) -> String {
 /// <name>.log; the child exit code is the recipe's verdict.
 pub fn run_recipe(name: &str) -> Result<(), String> {
     let table = crate::recipes::table();
+    // 同名多平台配方必须带平台过滤——glib(mac/windows) 与
+    // libplacebo(windows/linux+mac) 这类同名条目共享一个名字，裸名查找
+    // 永远命中排序后的第一个，子进程于是在 linux 上跑 windows 配方体
+    // （实证：beta 首轮三腿的 libplacebo 全部执行 -Dshaderc=enabled
+    // -Dd3d11=enabled 的 windows 配方，spirv_cross 头装进了 linux 前
+    // 缀）。父循环本就只调起适用配方，子进程查找镜像同一条件 / same-name
+    // multi-platform recipes demand the platform filter — entries like
+    // glib (mac/windows) and libplacebo (windows/linux+mac) share one
+    // name, so a bare-name lookup always hits the first in sort order and
+    // the subprocess runs the windows body on linux (empirical: all three
+    // beta-round-one legs executed libplacebo's windows recipe —
+    // -Dshaderc=enabled -Dd3d11=enabled — installing spirv_cross headers
+    // into the linux prefix). The parent loop only ever invokes
+    // applicable recipes; the child lookup mirrors the same condition
     let r = table
         .iter()
-        .find(|r| r.name == name)
+        .find(|r| r.name == name && applies(r.targets))
         .ok_or_else(|| format!("unknown recipe '{name}'"))?;
     let wd = work_dir().join(r.name);
     fsx::install_d(&wd)?;
@@ -1685,7 +1699,7 @@ fn postfix() -> Result<(), String> {
         // dedup: new rustc emits __rustc shims local so the bare -lrav1e
         // test dies; once global they enter `shared` and migrate with
         // their references under byte_rename
-        for l in ["librav1e.a", "librsvg-2.a"] {
+        for l in ["librav1e.a", "librsvg-2.a", "libdovi.a"] {
             let p = libdir.join(l);
             if !p.is_file() {
                 continue;
@@ -1702,17 +1716,32 @@ fn postfix() -> Result<(), String> {
                 Err(why) => log::warn(&format!("[extras] shim promote on {l}: {why}")),
             }
         }
-        // (a, b)：a 册保留原名，b 册等长改名——libzmq∩libssh 撞
-        // _sha1_init（zmq 自带 sha1.c vs libssh 的 md_mbedcrypto
-        // 适配器），b 册选 libssh：其 sha1_init 只是内部胶水，zmq
-        // 保留规范名 / (a, b): a keeps its names, b gets renamed —
-        // libzmq∩libssh collide on _sha1_init (zmq's bundled sha1.c vs
-        // libssh's md_mbedcrypto adapter); b is libssh whose sha1_init
-        // is only internal glue while zmq keeps the canonical name
-        for (a, b) in [
-            ("libxevd.a", "libxeve.a"),
-            ("librsvg-2.a", "librav1e.a"),
-            ("libzmq.a", "libssh.a"),
+        // (a, b, letter)：a 册保留原名，b 册交集符号的首字符 '_' 换成
+        // letter——libzmq∩libssh 撞 _sha1_init（zmq 自带 sha1.c vs
+        // libssh 的 md_mbedcrypto 适配器），b 册选 libssh：其
+        // sha1_init 只是内部胶水，zmq 保留规范名。rust 三角要求逐册
+        // 字母相异：rav1e 用 z、dovi 用 y——三册共有符号经前两对改
+        // 名后在 rav1e 是 z 形、在 dovi 是 y 形，第三对扫描天然不相
+        // 交；若同用 z，两边 z 名重新撞上且因缺 '_' 前缀被跳过死守
+        // （mac ffmpeg_g 链接 _rust_eh_personality duplicate 实证）
+        // / (a, b, letter): a keeps its names; the leading '_' of b's
+        // intersecting symbols becomes letter — libzmq∩libssh collide
+        // on _sha1_init (zmq's bundled sha1.c vs libssh's
+        // md_mbedcrypto adapter); b is libssh whose sha1_init is only
+        // internal glue while zmq keeps the canonical name. The rust
+        // triangle demands per-archive letters: z for rav1e, y for
+        // dovi — triple-common symbols end up z-shaped in rav1e and
+        // y-shaped in dovi after the first two pairs, so the third
+        // pair's scan never intersects; sharing one letter would
+        // re-collide the z-names, which then get skipped for lacking
+        // the '_' prefix (empirical: _rust_eh_personality duplicate
+        // at the mac ffmpeg_g link)
+        for (a, b, letter) in [
+            ("libxevd.a", "libxeve.a", 'z'),
+            ("librsvg-2.a", "librav1e.a", 'z'),
+            ("libzmq.a", "libssh.a", 'z'),
+            ("librsvg-2.a", "libdovi.a", 'y'),
+            ("librav1e.a", "libdovi.a", 'y'),
         ] {
             let (pa, pb) = (libdir.join(a), libdir.join(b));
             if !(pa.is_file() && pb.is_file()) {
@@ -1770,7 +1799,7 @@ fn postfix() -> Result<(), String> {
                     ));
                     continue;
                 }
-                let tgt = format!("z{}", &s[1..]);
+                let tgt = format!("{letter}{}", &s[1..]);
                 // 哨兵：目标名在任何一册已定义就跳过（同 windows 版）
                 // sentinel: skip when the target name is already
                 // defined in either archive (same rule as the windows
@@ -1796,7 +1825,7 @@ fn postfix() -> Result<(), String> {
             }
             log::log(&format!(
                 "[extras] renamed {} {a}-shared symbol(s) in {b} across {n} member(s) \
-                 (_… -> z…)",
+                 (_… -> {letter}…)",
                 pairs.len()
             ));
         }
@@ -1821,11 +1850,23 @@ fn postfix() -> Result<(), String> {
     // symbols equal-length, first char swapped to whichever of
     // z/y/x/q doesn't collide in either archive — ELF has no leading
     // underscore so we mutate the first char rather than a prefix
+    // rust 三角（rsvg/rav1e/dovi）在 linux 靠 z/y/x/q 首自由候选自
+    // 愈：三册共有符号在 rav1e、dovi 经前两对各改名为 z 形后重新
+    // 相撞，第三对扫描把它们当普通交集再改一次（z 撞车则落 y）——
+    // 无需逐册固定字母 / the rust triangle (rsvg/rav1e/dovi) heals
+    // itself on linux through the z/y/x/q first-free-candidate scan:
+    // triple-common symbols re-collide in z-shape after the first two
+    // pairs rename them in rav1e and dovi, and the third pair simply
+    // treats those as ordinary intersections and renames once more
+    // (falling to y when z collides) — no fixed per-archive letters
+    // needed
     if e.os == sys::Os::Linux {
         for (a, b) in [
             ("libxevd.a", "libxeve.a"),
             ("librsvg-2.a", "librav1e.a"),
             ("libzmq.a", "libssh.a"),
+            ("librsvg-2.a", "libdovi.a"),
+            ("librav1e.a", "libdovi.a"),
         ] {
             let (pa, pb) = (libdir.join(a), libdir.join(b));
             if !(pa.is_file() && pb.is_file()) {

@@ -8,10 +8,13 @@
 # ================= 压缩 / compression =================
 zstd:
   git: https://github.com/facebook/zstd.git
+  pin: e50cdb0d407f5db512ed377fbee6c9ba473fea8e  # default branch dev HEAD CI-green
 brotli:
   git: https://github.com/google/brotli.git
+  pin: 717514a67b3f8abf53365d4471a102a60fff8ef5  # default branch master HEAD CI-green
 libsnappy:
   git: https://github.com/google/snappy.git
+  pin: 946606459314e55d029c85f9a8c46f8809467f0f  # default branch main HEAD CI-green
 
 # ================= TLS / crypto（gnutls 链） =================
 gmp:
@@ -28,64 +31,85 @@ libtasn1:
   sha256: 1d8a444a223cc5464240777346e125de51d8e6abf0b8bac742ac84609167dc87
 p11-kit:
   git: https://github.com/p11-glue/p11-kit.git
+  pin: f9813f90a51761dc75b5dcd8d9766466b8904f5c  # default branch master HEAD CI red or still running — fallback tag 0.26.6
 
 # ================= 视频编解码 / video codecs =================
 x264:
   git: https://code.videolan.org/videolan/x264.git   # 无 release tag → HEAD
+  pin: 0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee  # default branch master HEAD CI red or still running, no tags
 x265:
   git: https://bitbucket.org/multicoreware/x265_git.git
+  pin: e444744c03978c1fb4e037168967020cf2648427  # default branch master HEAD no CI found — fallback tag 4.2
 svtav1:
-  git: https://gitlab.com/AOMediaCodec/SVT-AV1.git
+  git: https://github.com/AOMediaCodec/SVT-AV1.git
+  pin: ad875ab772c67ff3f098c59667348d80fb5c68b6  # branch main HEAD CI-green
 aom:
   git: https://aomedia.googlesource.com/aom           # googlesource 无 CI API → tag
+  pin: b141d9c45db236335351c8a4b2a14b3ade27c937  # default branch main HEAD no CI found — fallback tag v3.15.3
 dav1d:
   git: https://code.videolan.org/videolan/dav1d.git
+  pin: 114adddfa8b6f783c3deff10fe61b112329f1810  # default branch master HEAD CI-green
 libvpx:
   git: https://chromium.googlesource.com/webm/libvpx
+  pin: 6df3ec34557879fff673706f4a1d9fbd0f3a6f0e  # default branch main HEAD no CI found — fallback tag v1.17.0
 rav1e:
   git: https://github.com/xiph/rav1e.git
+  pin: 31435de9d76fddd38f6dcc31d4014574cebb2092  # default branch master HEAD CI-green
 kvazaar:
   git: https://github.com/ultravideo/kvazaar.git
+  pin: c997f08c805bd7ec82233654e417e06fe7c83cba  # default branch master HEAD CI-green
 openh264:
   git: https://github.com/cisco/openh264.git
+  pin: 78783f195ce116ecbaea83f7fac0ea8a355518b5  # default branch master HEAD CI-green
 openapv:
   git: https://github.com/AcademySoftwareFoundation/openapv.git
+  pin: 3f0291391dbb1fbc27229b2543aad4ce778b0d72  # default branch main HEAD CI-green
 xevd:
   git: https://github.com/mpeg5/xevd.git
+  pin: 8fa744e865e9bdb94a5d5da6a4ab18268cdc4bb4  # default branch master HEAD CI red or still running — fallback tag v0.8.0
 xeve:
   git: https://github.com/mpeg5/xeve.git
-  ref: v0.7.1   # 与配方 version.txt 同钉；spec 参与 .ok 哈希——顺带失效携带上古 xeve_ 改名毒的 overlay 归档 / pinned in step with the recipe's version.txt; the spec feeds the .ok hash — this also retires the overlay archive carrying the legacy xeve_ rename poison
+  pin: fe229fec19e14907c60d65626ebd59f41517d9b3  # branch master HEAD CI red or still running — fallback tag v0.7.1
 vvenc:
   git: https://github.com/fraunhoferhhi/vvenc.git
+  pin: 52b03b87d272f56f3057d2d855729d67f9dcf7a0  # branch master HEAD CI-green
 theora:
-  git: https://gitlab.xiph.org/xiph/theora.git
+  git: https://github.com/xiph/theora.git
+  pin: 28fd5ec77f0ad0e07a371cef1047828116f6bd8a  # default branch main HEAD CI-green
 xvid:
   archive: https://downloads.xvid.com/downloads/xvidcore-1.3.7.tar.gz
   sha256: abbdcbd39555691dd1c9b4d08f0a031376a3b211652c0d8b3b8aa9be1303ce2d
 openjpeg:
   git: https://github.com/uclouvain/openjpeg.git
+  pin: 6c4a29b00211eb0430fa0e5e890f1ce5c80f409f  # default branch master HEAD CI red or still running — fallback tag v2.5.4
 libjxl:
   git: https://github.com/libjxl/libjxl.git
   submodules: true
+  pin: 5a7da83447212fe4900fc29ce97430b881caa67e  # default branch main HEAD CI red or still running — fallback tag v0.13.0
 libwebp:
   git: https://chromium.googlesource.com/webm/libwebp
+  pin: 4fa21912338357f89e4fd51cf2368325b59e9bd9  # default branch main HEAD no CI found — fallback tag v1.6.0
 # x86-only（features/common.yaml 同节）/ x86-only (same section in
 # features/common.yaml)
 libvpl:
   git: https://github.com/intel/libvpl.git
+  pin: 2274efcd3672b43297ef774f332e1fed6781381c  # default branch main HEAD no CI found — fallback tag v2023.4.0
 svtjpegxs:
   git: https://github.com/OpenVisualCloud/SVT-JPEG-XS.git
+  pin: 01bc7cc7123d2e4a3e330632fabec873f3cee62b  # default branch main HEAD CI red or still running — fallback tag v0.10.0
 davs2:
   git: https://github.com/pkuvcl/davs2.git
-  ref: b41cf117452e2d73d827f02d3e30aa20f1c721ac   # 上游停滞，固化末次提交（2022-09）/ upstream stalled, pinned at last commit
+  lock: b41cf117452e2d73d827f02d3e30aa20f1c721ac   # 上游停滞，固化末次提交（2022-09）/ upstream stalled, pinned at last commit
 xavs2:
   git: https://github.com/pkuvcl/xavs2.git
-  ref: eae1e8b9d12468059bdd7dee893508e470fa83d8   # 上游停滞，固化末次提交（2019-04）/ upstream stalled, pinned at last commit
+  lock: eae1e8b9d12468059bdd7dee893508e470fa83d8   # 上游停滞，固化末次提交（2019-04）/ upstream stalled, pinned at last commit
 # 除 windows-arm64 全平台（无汇编）/ all but windows-arm64 (no asm)
 lcevcdec:
   git: https://github.com/v-novaltd/LCEVCdec.git
+  pin: e295d8438ba554bc541fb269baa9cbd567b626a8  # default branch main HEAD no CI found — fallback tag 4.3.1
 uavs3d:
   git: https://github.com/uavs3/uavs3d.git
+  pin: 0e20d2c291853f196c68922a264bcd8471d75b68  # default branch master HEAD no CI found — fallback tag 1.2
 
 # ================= 音频编解码 / audio codecs =================
 lame:
@@ -99,33 +123,41 @@ mpg123:
   sha256: 31d0e35a4ca567ec9b5ebda6c3062bb4435d6d3eacd6ef0d95cadd7854dc03ee
 ogg:
   git: https://github.com/xiph/ogg.git
+  pin: be05b13e98b048f0b5a0f5fa8ce514d56db5f822  # default branch main HEAD CI red or still running — fallback tag v1.3.6
 vorbis:
   git: https://github.com/xiph/vorbis.git
+  pin: 1b75110b5a2754ba1931d82dd83cb822b266a21d  # default branch main HEAD CI-green
 opus:
-  git: https://gitlab.xiph.org/xiph/opus.git
-  ref: v1.6.1   # get-version.py 靠 git describe 取版本——浅克隆必须落在 tag 上 / get-version.py derives the version from git describe — the shallow clone must land on a tag
+  git: https://github.com/xiph/opus.git
   # dnn/*_data.{c,h} 不是 submodule——模型权重在 media.xiph.org 的
   # opus_data-<sha>.tar.gz，配方里跑 download_model.sh 落地 /
   # the dnn/*_data.{c,h} files aren't a submodule — model weights ship
   # as opus_data-<sha>.tar.gz on media.xiph.org; the recipe runs
   # download_model.sh to land them
+  pin: ba1d664ca860a1154afa31081cd2a3f72fc8f2b1  # branch main HEAD CI-green
 speex:
-  git: https://gitlab.xiph.org/xiph/speex.git         # downloads.xiph.org 不可达，走仓库
+  git: https://github.com/xiph/speex.git         # downloads.xiph.org 不可达，走仓库
+  pin: 09b569d1b437e5edccf3406a38714ad795e46d38  # default branch main HEAD CI-green
 shine:
   git: https://github.com/toots/shine.git
+  # FFmpeg libshine.c 按 3.1.x 经典 API 写死（STEREO/PCM_STEREO/mpeg.bitr）；上游复活后重构 API，结构性断裂——lock 冻结 / FFmpeg's libshine.c hard-codes the classic 3.1.x API (STEREO/PCM_STEREO/mpeg.bitr); upstream revived and reworked it — structurally broken, frozen under lock
+  lock: 97f188efc3dc90315b79a2af1f477c0c18d85e82  # tag 3.1.1
 codec2:
   git: https://github.com/drowe67/codec2.git
+  pin: 06d4c11e699b0351765f10398abb4f663a984f36  # default branch main HEAD no CI found — fallback tag 1.2.0
 ilbc:
   git: https://github.com/TimothyGu/libilbc.git
-  ref: 6adb26d4a4e159cd66d4b4c5e411cd3de0ab6b5e   # 上游停滞，固化末次提交（2021-02）/ upstream stalled, pinned at last commit
+  lock: 6adb26d4a4e159cd66d4b4c5e411cd3de0ab6b5e   # 上游停滞，固化末次提交（2021-02）/ upstream stalled, pinned at last commit
   submodules: true   # abseil-cpp 以 submodule 随仓携带，不初始化则 absl/base/attributes.h 缺席 / abseil-cpp rides as a submodule — without init, absl/base/attributes.h is missing
 gsm:
   archive: https://www.quut.com/gsm/gsm-1.0.24.tar.gz
   sha256: a3c40c6471928383f4abfcb2e8f24012a1f562be2f17b8d672145d5986681a92
 lc3:
   git: https://github.com/google/liblc3.git
+  pin: f9c127fd35975a0494b9e187589501ee984dc4b6  # default branch main HEAD CI-green
 sndfile:
   git: https://github.com/libsndfile/libsndfile.git
+  pin: 396a715daeae7316f047ee220b364ab983b66df4  # default branch master HEAD CI-green
 bs2b:
   archive: https://downloads.sourceforge.net/project/bs2b/libbs2b/3.1.0/libbs2b-3.1.0.tar.gz
   sha256: 6aaafd81aae3898ee40148dd1349aab348db9bfae9767d0e66e0b07ddd4b2528
@@ -143,10 +175,13 @@ opencore-amr:
   sha256: 483eb4061088e2b34b358e47540b5d495a96cd468e361050fae615b1809dc4a1
 mysofa:
   git: https://github.com/hoene/libmysofa.git
+  pin: 648eed03472e6720a1ea45d1a1f86c4efb569ff9  # default branch main HEAD CI-green
 flite:
   git: https://github.com/festvox/flite.git
+  lock: e9e2e37c329dbe98bfeb27a1828ef9a71fa84f88  # upstream stalled (HEAD ~2022) — locked at final resolution / 上游停滞——锁定终态
 pocketsphinx:
   git: https://github.com/cmusphinx/pocketsphinx.git
+  pin: f20ff1b7a5db64c5e892a798479e20df86e79a35  # default branch main HEAD CI-green
 twolame:
   archive: https://downloads.sourceforge.net/project/twolame/twolame/0.4.0/twolame-0.4.0.tar.gz
   sha256: cc35424f6019a88c6f52570b63e1baf50f62963a3eac52a03a800bb070d7c87d
@@ -155,14 +190,18 @@ soxr:
   sha256: b111c15fdc8c029989330ff559184198c161100a59312f5dc19ddeb9b5a15889
 rubberband:
   git: https://github.com/breakfastquay/rubberband.git
+  pin: 1d95888bec3ae0a17c0c4af791810d5a63f6bc35  # default branch default HEAD no CI found — fallback tag v4.0.0
 chromaprint:
   git: https://github.com/acoustid/chromaprint.git
   submodules: true   # kissfft 以 submodule 随仓携带 / kissfft rides as a submodule
+  pin: 3b38c100022bdfb49be7797c4828a476f1621d55  # default branch master HEAD CI-green
 openal:
   git: https://github.com/kcat/openal-soft.git
   ref: 1.25.2   # master 上 gsl 转 vendored 的迁移期曾短暂缺窄化头（上游已修）——钉稳定 tag / master briefly shipped an incomplete vendored gsl mid-migration (fixed upstream since) — pin the stable tag
+  pin: b2c48f7718ef3fcf67921a8b6534c4914e328970  # tag 1.25.2
 gme:
   git: https://github.com/libgme/game-music-emu.git
+  pin: 8238afd9503a59ffcec0e2685584d5ce819ad7c6  # default branch master HEAD CI-green
 openmpt:
   archive: https://lib.openmpt.org/files/libopenmpt/src/libopenmpt-0.8.3+release.autotools.tar.gz
   sha256: 25d486a4da9728819274ed0959fd79a1c6358954710d54c14047c6457c8ca8ac
@@ -170,22 +209,28 @@ openmpt:
 # ================= 字幕、文字、图形栈 / subtitles, text, graphics =================
 freetype:
   git: https://gitlab.freedesktop.org/freetype/freetype.git
+  pin: 68db2bb4a471c2e3883697961b4f2244b245aed3  # branch master HEAD CI-green
 harfbuzz:
   git: https://github.com/harfbuzz/harfbuzz.git
+  pin: d7964c5c1e439ad892e3e87f550c72b73d4835b1  # default branch main HEAD CI-green
 fribidi:
   git: https://github.com/fribidi/fribidi.git
+  pin: 15393e4937aa95bcf865d92143735746aeb654fa  # default branch master HEAD CI-green
 # libpng 原来只在 macos-arm64.yaml——linux 的 zvbi/selftest 也需要 /
 # libpng used to live only in macos-arm64.yaml — linux's zvbi/selftest
 # need it too
 libpng:
   git: https://github.com/pnggroup/libpng.git
+  pin: 0fdef309cc33a24081943c2ae4096950426e0216  # default branch libpng18 HEAD CI-green
 fontconfig:
   git: https://gitlab.freedesktop.org/fontconfig/fontconfig.git
-  ref: 2.18.3   # pango 1.58 的 dependency() 硬要求 >=2.17.0 / pango 1.58's dependency() hard-requires >=2.17.0
+  ref: 9564f0d1d00c46dc32bbbe4abcd6d71200786173  # branch main HEAD CI-green
 libass:
   git: https://github.com/libass/libass.git
+  pin: 841c52561c39df6767e3948efa8e5307efb11f1f  # default branch master HEAD CI-green
 lcms2:
   git: https://github.com/mm2/Little-CMS.git
+  pin: 261092a3f0026a0f7b3075c5369fe2c647df3ebb  # default branch master HEAD CI-green
 pixman:
   archive: https://cairographics.org/releases/pixman-0.46.4.tar.gz
   sha256: d09c44ebc3bd5bee7021c79f922fe8fb2fb57f7320f55e97ff9914d2346a591c
@@ -201,34 +246,43 @@ librsvg:
 zimg:
   git: https://github.com/sekrit-twc/zimg.git
   submodules: true   # graphengine 以 submodule 随仓携带 / graphengine rides as a submodule
+  pin: 9806db428022893543121c94c7069263cd92a71a  # default branch master HEAD CI-green
 vidstab:
   git: https://github.com/georgmartius/vid.stab.git
+  pin: e2445c4081658318223762a696eb1c645c2d7168  # default branch master HEAD CI-green
 vmaf:
   git: https://github.com/Netflix/vmaf.git
+  pin: cf677baaa039723876fff8c2677164f25102e684  # default branch master HEAD CI-green
 frei0r:
   git: https://github.com/dyne/frei0r.git   # codeberg 仓已消失，此为活跃镜像 / the codeberg repo vanished — this is the live mirror
-  ref: v3.7.0
+  ref: c6a38df84ae058af43386af492f73c0a9cf5b031  # branch master HEAD CI-green
 aribb24:
   git: https://github.com/nkoriyama/aribb24.git
-  ref: 5e9be272f96e00f15a2f3c5f8ba7e124862aec38   # 上游停滞，固化末次提交（2016-02）/ upstream stalled, pinned at last commit
+  lock: 5e9be272f96e00f15a2f3c5f8ba7e124862aec38   # 上游停滞，固化末次提交（2016-02）/ upstream stalled, pinned at last commit
 aribcaption:
   git: https://github.com/xqq/libaribcaption.git
+  pin: c64c23b8905ba514b87c9789269e9f66f949ffe0  # default branch master HEAD no CI found — fallback tag v1.1.2
 zvbi:
   git: https://github.com/zapping-vbi/zvbi.git   # 上游已迁 GitHub；SF 仅到 0.2.35 / upstream moved to GitHub; SF caps at 0.2.35
+  pin: 34bb6f660c5c1bacd4a66cc7b22311e4ca3c1ab5  # default branch main HEAD no CI found — fallback tag v0.2.46
 vapoursynth:
   git: https://github.com/vapoursynth/vapoursynth.git
-  ref: R82   # 浮动解析会捡 R70.11（无点号的 R82 不算"版本样式"tag——尚无 meson.build）；钉死到首个 meson 发布代 / floating resolution picks R70.11 (dot-less R82 isn't a "version-looking" tag — and R70.11 predates meson.build); pin the meson-era release line
+  ref: 21ffd37f8e951fa7d6921b05d9a41415bd118a33  # branch master HEAD CI-green
 avisynth:
   git: https://github.com/AviSynth/AviSynthPlus.git
+  pin: 523370a39933e2f9c208a5d74c1d35d43d177a76  # default branch master HEAD CI red or still running — fallback tag v3.7.6
 qrencode:
   git: https://github.com/fukuchi/libqrencode.git
-  ref: 715e29fd4cd71b6e452ae0f4e36d917b43122ce8   # 上游停滞，固化末次提交（2020-09）/ upstream stalled, pinned at last commit
+  lock: 715e29fd4cd71b6e452ae0f4e36d917b43122ce8   # 上游停滞，固化末次提交（2020-09）/ upstream stalled, pinned at last commit
 quirc:
   git: https://github.com/dlbeer/quirc.git
+  pin: 542848dd6b9b0eaa9587bbf25b9bc67bd8a71fca  # default branch master HEAD no CI found — fallback tag v1.2
 leptonica:
   git: https://github.com/DanBloomberg/leptonica.git
+  pin: 1a898fbcc977450d609a5313bbc184616b90ba99  # branch master HEAD CI-green
 tesseract:
   git: https://github.com/tesseract-ocr/tesseract.git
+  pin: 4292f6890aa86ef64eba32090358f40f69dd6d28  # default branch main HEAD CI-green
 lensfun:
   git: https://github.com/lensfun/lensfun.git
   # 钉 sha——无 ref 时 CI 门一旦遇红/pending 会回退 latest_tag，而 lensfun
@@ -244,7 +298,7 @@ lensfun:
   ref: 37238fcef563196fb798f6151cb9023968b26c40
 sdl2:
   git: https://github.com/libsdl-org/SDL.git
-  ref: release-2.32.10    # SDL2 维护线最新 tag。branch 浮动 CI 红时
+  lock: 5d249570393f7a37e037abf22cd6012a4cc56a71    # release-2.32.10——SDL2 维护线约束（master 是 SDL3 开发线，ffmpeg 要的是 SDL2）：lock 冻结，升级须人工换锁。branch 浮动 CI 红时
                           # fallback 会钉到 2.0.22-RC3 这类老 tag——实证
                           # macOS 腿 SDL_spinlock.c 调 SDK 26 已除名的
                           # OSAtomicCompareAndSwap32Barrier 编译死；
@@ -282,19 +336,26 @@ gettext:
 # ================= 容器、协议、光盘 =================
 libxml2:
   git: https://gitlab.gnome.org/GNOME/libxml2.git
+  pin: 21c8223ac091b81d5914c52eb20b1b063e29cb92  # default branch master HEAD CI-green
 libssh:
   git: https://git.libssh.org/projects/libssh.git      # 自托管 → tag 回退
+  pin: 07430deb9b97b751ec5ea5a7fc307f40bf042e0a  # default branch master HEAD no CI found — fallback tag libssh-0.12.2
 libsrt:
   git: https://github.com/Haivision/srt.git
+  pin: 899348d8318eb9a3c5a5b6ec43c4a1114288773a  # default branch master HEAD CI red or still running — fallback tag v1.5.7
 librist:
   git: https://code.videolan.org/rist/librist.git
+  pin: a911bee8904d88beb1ccd3349ff9a3de1cadc1a6  # default branch master HEAD CI-green
 libzmq:
   git: https://github.com/zeromq/libzmq.git
+  pin: 622fc6dde99ee172ebaa9c8628d85a7a1995a21d  # default branch master HEAD CI red or still running — fallback tag v4.3.5
 rabbitmq:
   git: https://github.com/alanxz/rabbitmq-c.git
+  pin: 8876dcb5535f8a7ff6dbce8ac54f5553a210f563  # default branch master HEAD CI-green
 libbluray:
   git: https://code.videolan.org/videolan/libbluray.git
-  ref: 1.5.1   # ≥1.5 纯 meson；master 的 configure.ac 已删 → 钉 tag / meson-only ≥1.5; master's configure.ac is gone → pin a tag
+  # master 的 configure.ac 已删、配方走 autotools——opus 类特殊约束直接 lock / master dropped configure.ac while the recipe uses autotools — special-case lock
+  lock: a24f4fad4d62893de647abc8671397747b2359dd  # tag 1.5.1
   submodules: true   # libudfread 以 submodule 随仓携带 / libudfread rides as a submodule
 libdvdcss:
   archive: https://download.videolan.org/pub/libdvdcss/1.6.0/libdvdcss-1.6.0.tar.xz
@@ -307,6 +368,7 @@ libdvdnav:
   sha256: a2a18f5ad36d133c74bf9106b6445806fa253b09141a46392550394b647b221e
 libcdio:
   git: https://github.com/libcdio/libcdio.git
+  pin: 4b788df85d99b231ac0f3d8f26589b94db8ef165  # default branch main HEAD CI-green
 libcdio-paranoia:
   archive: https://ftp.gnu.org/gnu/libcdio/libcdio-paranoia-10.2+2.0.2.tar.bz2
   sha256: 186892539dedd661276014d71318c8c8f97ecb1250a86625256abd4defbf0d0c
@@ -315,17 +377,21 @@ caca:
   sha256: 8ad74babc63bf665b0b2378d95b4da65b7493c11bd9f3ac600517085b0c4acf2
 librtmp:
   git: git://git.ffmpeg.org/rtmpdump.git               # https 端点周期性 502；9418 原生协议 / https 502s periodically; native proto on 9418
+  pin: 138fdb258d9fc26f1843fd1b891180416c9dc575  # default branch master HEAD no CI found — fallback tag v2.6
 libcurl:
   archive: https://curl.se/download/curl-8.23.0.tar.xz
   sha256: 8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5
 whisper:
   git: https://github.com/ggml-org/whisper.cpp.git     # FFmpeg 需 >=1.7.5
+  pin: 79b11911d9d38c4be2fc7dc8b4efeff3324c090f  # default branch master HEAD CI-green
 
 # ================= 硬件加速（通用）=================
 amf:
   git: https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git
+  pin: 57ee0cfb0e1a08d9041f77435653794c1b012be0  # default branch master HEAD CI-green
 nv-codec-headers:
   git: https://github.com/FFmpeg/nv-codec-headers.git
+  pin: 0a6fba9a2820628b8103464f4c8753ee05838baa  # default branch master HEAD no CI found — fallback tag n13.1.15.0
 
 # ---- xz/lzma（base.yaml 恒启；win 走 msys 包）/ lzma is a base lib — msys on win ----
 xz:
@@ -349,36 +415,40 @@ mbedtls:
 #      static dlopen dispatcher; the real driver loads at runtime) ----
 vulkan-headers:
   git: https://github.com/KhronosGroup/Vulkan-Headers.git
+  pin: d277a0a3cda9c682708c93279f0c72cd6b0ae3f3  # default branch main HEAD CI-green
 vulkan-shim:
   git: https://github.com/BtbN/Vulkan-Shim-Loader.git
+  pin: 65b3936528cd92eb4ea3de485d03f858a3850484  # default branch master HEAD no CI found, no tags
 
 # ---- opencl 头 + ICD 静态加载器（同上 dlopen 派发）/ headers + static
 #      ICD loader (same dlopen dispatch) ----
 opencl-headers:
   git: https://github.com/KhronosGroup/OpenCL-Headers.git
+  pin: 82f60316cc142e7b21dc1d8983b26de18858fbd9  # default branch main HEAD CI-green
 opencl-icd:
   git: https://github.com/KhronosGroup/OpenCL-ICD-Loader.git
+  pin: d0be526adb156de7f701024acc811182c984d4c5  # default branch main HEAD CI-green
 
 # ---- LV2/lilv 栈（lilv 配方全平台）/ the LV2/lilv stack (lilv recipe
 #      on every platform) ----
 lv2:
   git: https://github.com/lv2/lv2.git                  # 仅头文件+pc / headers + pc only
-  ref: 0bcde338db1c63bbc503b4d1f6d7b55ed43154af
+  pin: 0bcde338db1c63bbc503b4d1f6d7b55ed43154af  # branch main HEAD no CI found — fallback tag v1.18.10
 zix:
   git: https://github.com/drobilla/zix.git
-  ref: 17d632393f5addb6fa24dda2927b96515407cca7
+  pin: 96163e9e071548df1bc2fb3b373c573246e9c5f7  # branch main HEAD no CI found — fallback tag v0.8.2
 serd:
   git: https://github.com/drobilla/serd.git
-  ref: b621b0bc790d1e8102d3138ead16b974ddda8432
+  pin: 849b9ecd8d6c87da79f14e2630daa084002d7555  # branch main HEAD no CI found — fallback tag v0.32.10
 sord:
   git: https://github.com/drobilla/sord.git
-  ref: 4b5232bb91e7f2f1b84df384494d073fabbcd312
+  pin: 5ab719fdae9b6db1204974f749dc64e62d2029af  # branch main HEAD no CI found — fallback tag v0.16.22
 sratom:
   git: https://github.com/lv2/sratom.git
-  ref: 9e8ee84eed502e6030ce8bb49694fd28542b08fc
+  pin: 68bd465f0de009d58ae39e89eb029c728e74751f  # branch main HEAD no CI found — fallback tag v0.6.22
 lilv:
   git: https://github.com/lv2/lilv.git
-  ref: 4b8f30055fa5cb4134a2eb45fc1555bc04289314
+  pin: 2feec6a15d3300db3ac0337bafb863308a03cab6  # branch main HEAD no CI found — fallback tag v0.28.0
 
 # LADSPA 插件 API 头文件——配方只取 ladspa.h，运行时 dlopen 插件 /
 # LADSPA plugin API header — the recipe only lifts ladspa.h; plugins
@@ -401,13 +471,17 @@ libva:
   # pinned: the repo mixes in 48 internal weekly-build tags like
   # ww53.4-video whose vkey ordering crushes real 2.x tags (the
   # fallback checkout empirically fetched 0.31.1)
-  ref: "2.24.1"
+  lock: 710eb465c6277ee2cac3e6948767b01eebe7e77a
+  # tag 2.24.1 实证可用——归档仓锁定终态 / empirically-good tag commit; archived repo locked final
 vdpau:
   git: https://gitlab.freedesktop.org/vdpau/libvdpau.git
+  lock: 2afa3f989af24a922692ac719fae23c321776cdb  # upstream stalled (HEAD ~2022) — locked at final resolution / 上游停滞——锁定终态
 libdrm:
   git: https://gitlab.freedesktop.org/mesa/drm.git
+  pin: 92e145ce8f6aa0d22ed52e29e81845008d53c3d3  # default branch main HEAD CI-green
 v4l-utils:
   git: https://git.linuxtv.org/v4l-utils.git
+  lock: 053f92f72d20a53ba2667a1dc4a19f4da29b2052  # upstream stalled (HEAD ~2015) — locked at final resolution / 上游停滞——锁定终态
 raw1394:
   archive: https://www.kernel.org/pub/linux/libs/ieee1394/libraw1394-2.1.2.tar.xz
   sha256: 03ccc69761d22c7deb1127fc301010dd13e70e44bb7134b8ff0d07590259a55e
@@ -416,40 +490,76 @@ dc1394:
   sha256: 2b905fc9aa4eec6bdcf6a2ae5f5ba021232739f5be047dec8fe8dd6049c10fed
 lz4:
   git: https://github.com/lz4/lz4.git
+  pin: 00bf3522fdb94a9d0e69c1d4db7eed77343f7a60  # default branch dev HEAD CI-green
 pulseaudio:                # libpulse 特性对应 / matches the libpulse feature
   git: https://gitlab.freedesktop.org/pulseaudio/pulseaudio.git
-  ref: v17.0   # git-version-gen 靠 git describe 取版本——浅克隆必须落在 tag 上，否则 meson.build 的 version.split()[1] 越界 / git-version-gen derives the version from git describe — the shallow clone must land on a tag or meson.build's version.split()[1] goes out of bounds
+  ref: 5ec2aec56abe49d114238f45d20ef1cebcf9b75c  # branch master HEAD CI-green
 
 # ---- X11 / xcb 栈 / the X11/xcb stack ----
 xcb-proto:
   git: https://gitlab.freedesktop.org/xorg/proto/xcbproto.git
+  pin: dea37a7033abfdef3376dc9ad5e8756e9fee959b  # default branch master HEAD CI-green
 libxcb:
   git: https://gitlab.freedesktop.org/xorg/lib/libxcb.git
+  pin: aa7f3256060451ad65a38feeccf792f44181a4e0  # default branch master HEAD CI-green
 xorgproto:
   git: https://gitlab.freedesktop.org/xorg/proto/xorgproto.git
+  pin: 6d3907b6d5dc4aa7d7ee6ee5d7d8714e7466630b  # default branch master HEAD CI-green
 libx11:
   git: https://gitlab.freedesktop.org/xorg/lib/libx11.git
+  pin: 1b169059efaf9d52f31bf5f25a3f9eece2c2e955  # default branch master HEAD CI-green
 libxext:
   git: https://gitlab.freedesktop.org/xorg/lib/libxext.git
+  pin: 4770cdff013c036ba4f043b2c895d1b0bfeb0973  # default branch master HEAD CI-green
 libxau:
   git: https://gitlab.freedesktop.org/xorg/lib/libxau.git
+  pin: d89458417ac61f99a74c9fcc12b7aedb093aa963  # default branch master HEAD CI-green
 libxdmcp:
   git: https://gitlab.freedesktop.org/xorg/lib/libxdmcp.git
+  pin: cd27f35c08cd8a7b14cef31d3edc021e638aab7f  # default branch master HEAD CI-green
 xtrans:
   git: https://gitlab.freedesktop.org/xorg/lib/libxtrans.git
+  pin: 79f6b0bfe2170496e8c37626043d009f4cd3f1e1  # default branch master HEAD CI-green
 xorg-macros:
   git: https://gitlab.freedesktop.org/xorg/util/macros.git
+  pin: ea1e15a4909ac8b03b2c5a08ac3810b385985157  # default branch master HEAD CI-green
 libxv:                     # xlib 特性三件套之一（Xvlib.h）/ one of the xlib trio (Xvlib.h)
   git: https://gitlab.freedesktop.org/xorg/lib/libXv.git
+  pin: 8f6aba65f480c45a748f09a4c08ac5d7c8ed1a16  # default branch master HEAD CI-green
 libxfixes:                 # libva-x11 后端要求 / required by the libva-x11 backend
   git: https://gitlab.freedesktop.org/xorg/lib/libXfixes.git
+  pin: 993a1d37014fdcd0c89791927219a0daa759e77b  # default branch master HEAD CI-green
 
 # ================= Windows 平台栈（windows 双架构同一批源）/ Windows
 #      platform stack (shared by both windows arches) =================
 vulkan-loader:             # 备用加载器（spirv-cross/libplacebo 链）/ spare loader (spirv-cross/libplacebo chain)
   git: https://github.com/KhronosGroup/Vulkan-Loader.git
+  pin: 7d76ff3c3eac272ed37f606e13915b3bd288c30b  # default branch main HEAD CI-green
 spirv-cross:
   git: https://github.com/KhronosGroup/SPIRV-Cross.git
+  pin: 78b75e2d99ccf038fd525ba1effad3ebe7b6aeb4  # default branch main HEAD CI-green
 libplacebo:
   git: https://code.videolan.org/videolan/libplacebo.git
   submodules: true
+  pin: 1618bccccdec31bcf9ef87064f2d1b5af32505e5  # default branch master HEAD CI-green
+
+# ---- HDR 支撑链：glslang 是 libplacebo 的 SPIR-V 编译器（linux/mac 无
+#      pacman shaderc 可用，glslang 单工程自足、ENABLE_OPT=OFF 可避开
+#      SPIRV-Tools/abseil 链）；xxhash 是 libplacebo 缓存哈希提速件；
+#      dovi_tool 仓的 dolby_vision 子crate 以 cargo-c capi 产 libdovi
+#      （libplacebo 的 DV 重塑后端）/ HDR support chain: glslang is
+#      libplacebo's SPIR-V compiler (no pacman shaderc exists on
+#      linux/mac; glslang is self-contained in one project, and
+#      ENABLE_OPT=OFF avoids the SPIRV-Tools/abseil chain); xxhash
+#      speeds up libplacebo's cache hashing; the dolby_vision subcrate
+#      of the dovi_tool repo yields libdovi through cargo-c capi
+#      (libplacebo's Dolby Vision reshaping backend) ----
+glslang:
+  git: https://github.com/KhronosGroup/glslang.git
+  pin: e1b562a8bed273a02f30b59b66a5d499793cede5  # default branch main HEAD no CI found — fallback tag 16.6.0
+xxhash:
+  git: https://github.com/Cyan4973/xxHash.git
+  pin: 2ec67caeb18ec15ae60c0853174331089acddfc0  # default branch dev HEAD CI-green
+dovi:
+  git: https://github.com/quietvoid/dovi_tool.git
+  pin: 41dae646193c12de152333ff5dbc33579cb9ef4a  # default branch main HEAD CI-green

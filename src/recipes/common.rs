@@ -25,6 +25,7 @@ pub mod freetype;
 pub mod frei0r;
 pub mod fribidi;
 pub mod glib;
+pub mod glslang;
 pub mod gme;
 pub mod gmp;
 pub mod gnutls;
@@ -45,11 +46,13 @@ pub mod libbluray;
 pub mod libcdio;
 pub mod libcdio_paranoia;
 pub mod libcurl;
+pub mod libdovi;
 pub mod libdvdcss;
 pub mod libdvdnav;
 pub mod libdvdread;
 pub mod libffi;
 pub mod libjxl;
+pub mod libplacebo;
 pub mod libpng;
 pub mod librist;
 pub mod librsvg;
@@ -110,6 +113,7 @@ pub mod xavs2;
 pub mod xevd;
 pub mod xeve;
 pub mod xvid;
+pub mod xxhash;
 pub mod xz;
 pub mod zimg;
 pub mod zlib;
@@ -143,6 +147,7 @@ pub fn recipes() -> Vec<Recipe> {
         gme::recipe(),
         gmp::recipe(),
         gnutls::recipe(),
+        glslang::recipe(),
         gsm::recipe(),
         harfbuzz::recipe(),
         iconv::recipe(),
@@ -158,6 +163,8 @@ pub fn recipes() -> Vec<Recipe> {
         leptonica::recipe(),
         libass::recipe(),
         libbluray::recipe(),
+        libdovi::recipe(),
+        libplacebo::recipe(),
         libcdio::recipe(),
         libcdio_paranoia::recipe(),
         libcurl::recipe(),
@@ -225,6 +232,7 @@ pub fn recipes() -> Vec<Recipe> {
         xevd::recipe(),
         xeve::recipe(),
         xvid::recipe(),
+        xxhash::recipe(),
         xz::recipe(),
         zimg::recipe(),
         zlib::recipe(),

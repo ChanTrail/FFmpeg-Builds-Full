@@ -414,6 +414,45 @@ const FUNCTIONAL: &[(&str, &str, Fkind, &[&str])] = &[
     ),
     ("liblc3", "liblc3", Fkind::AEnc, &[]),
     ("libzimg", "zscale=w=320:h=240", Fkind::VFilter, &[]),
+    // HDR→SDR 色调映射全链：zscale 线性化 → tonemap → zscale 回
+    // bt709——HDR 转制的 CPU 路径整体演练（GPU 的 vf_libplacebo 无
+    // vulkan 设备跑不起来，组件面由清单表覆盖）。
+    //
+    // 死亡点不在输入侧而在输出侧：zimg colorspace 图里 UNSPECIFIED
+    // primaries 是不可达节点（所有 gamut 边显式排除它——读
+    // colorspace_graph.cpp 实证），而 vf_zscale format_init 对未设
+    // 置的输出 primaries 回退到 frame 元数据——testsrc2 帧无色彩
+    // 元数据，copy_props 后输出帧 primaries 仍是 unspecified，于是
+    // 无论输入侧怎么声明都"no path between colorspaces"。真实 HDR
+    // 片源帧属性自带 bt2020 所以文档链从来不用声明输出——合成输
+    // 入必须双侧自给自足：首段 pin/tin/min 钉输入、p=bt2020 钉输
+    // 出（线性 RGB 落点可达）；末段 zscale 同样显式声明防属性传
+    // 播断链 / the full HDR→SDR tone mapping chain: zscale linearize
+    // -> tonemap -> zscale back to bt709 — end-to-end exercise of
+    // the CPU tone mapping path (the GPU-side vf_libplacebo can't
+    // run without a vulkan device; the inventory table covers its
+    // presence).
+    //
+    // The kill point is on the OUTPUT side, not the input: in zimg's
+    // colorspace graph UNSPECIFIED primaries is an unreachable node
+    // (every gamut edge explicitly excludes it — read straight from
+    // colorspace_graph.cpp), and vf_zscale's format_init falls back
+    // to frame metadata for unset output primaries — testsrc2 frames
+    // carry no color metadata, so after copy_props the output frame's
+    // primaries are still unspecified and no path exists no matter
+    // how the input side is declared. Real HDR footage carries bt2020
+    // in frame properties, which is why the documented chain never
+    // declares output — synthetic input must be self-sufficient on
+    // BOTH sides: pin/tin/min nail the input, p=bt2020 nails the
+    // output (making the linear-RGB landing reachable); the second
+    // zscale declares explicitly too, guarding against
+    // property-propagation breaks
+    (
+        "libzimg",
+        "zscale=pin=bt2020:tin=smpte2084:min=bt2020nc:rin=limited:t=linear:p=bt2020:npl=100,format=gbrpf32le,tonemap=mobius,zscale=tin=linear:pin=bt2020:t=bt709:m=bt709:p=bt709,format=yuv420p",
+        Fkind::VFilter,
+        &[],
+    ),
     ("libbs2b", "bs2b", Fkind::AFilter, &[]),
     ("librubberband", "rubberband=tempo=1.1", Fkind::AFilter, &[]),
     // soxr 没有独立组件面——aresample=resampler=soxr 就是它的功能位 /

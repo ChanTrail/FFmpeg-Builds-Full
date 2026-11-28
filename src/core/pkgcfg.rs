@@ -139,6 +139,89 @@ pub fn libs_private(name: &str, libs: &[&str]) {
     append_key(name, "Libs.private", libs);
 }
 
+/// 裸归档路径改写：meson 把 find_library 解析到的静态库以全路径裸词
+/// 写进 .pc（如 /prefix/lib/libglslang.a）。ffmpeg configure 把非 -l
+/// 词当 flag 前置到扫描序列头部，静态库扫描顺序就此打碎——libplacebo
+/// 在 linux 丢包的实证：glslang 系列裸路径全部被 hoist 到 -lplacebo
+/// 之前，扫描到 libplacebo 时 glslang 符号再无人应答。此外裸搜的
+/// opportunistic 检测还会把系统路径（/usr/lib/... 的 SPIRV-Tools）拖进
+/// 闭合——既污染又错版本。本函数改写 Libs/Libs.private 两行：前缀内
+/// （含 ${libdir} 形）裸路径转 -l 形且保留原序（扫描序正确性由此而来
+/// ），前缀外裸路径直接删除——静态闭合按设计不允许引用系统库 / rewrite
+/// bare archive paths: meson writes file-resolved static libs into the
+/// .pc as bare full paths (e.g. /prefix/lib/libglslang.a). ffmpeg's
+/// configure treats non--l tokens as flags and hoists them ahead of the
+/// scan sequence, shattering static link order — the linux libplacebo
+/// drop proved it: every bare glslang path landed before -lplacebo, so
+/// by the time libplacebo was scanned nothing was left to answer its
+/// glslang symbols. Worse, opportunistic detection drags system paths
+/// (/usr/lib SPIRV-Tools) into the closure — contamination and version
+/// skew at once. This rewrites the Libs/Libs.private lines: bare paths
+/// inside the prefix (including ${libdir} form) become -l form with
+/// their original order preserved (scan-order correctness comes from
+/// that), bare paths outside the prefix are deleted outright — the
+/// static closure must never reference system libraries by design
+pub fn rewrite_bare_archives(name: &str) {
+    let f = pc_file(name);
+    if !f.is_file() {
+        return;
+    }
+    let e = sys::env();
+    // 前缀 lib 目录的两种拼写：原生路径（linux/mac 同形）与 meson 的
+    // ${libdir} 变量形 / the two spellings of the prefix lib dir: the
+    // native path (same shape on linux/mac) and meson's ${libdir} form
+    let libdir = e
+        .prefix_win
+        .join("lib")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let c = fsx::read(&f);
+    let mut out = String::with_capacity(c.len());
+    let mut rewritten = 0usize;
+    let mut dropped = 0usize;
+    for line in c.lines() {
+        if !line.starts_with("Libs") {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let mut tokens: Vec<&str> = line.split_whitespace().collect();
+        let mut newl: Vec<String> = Vec::with_capacity(tokens.len());
+        for t in tokens.drain(..) {
+            // 裸归档词：含 /lib 且以 .a 结尾、非 - 开头 / a bare archive
+            // token: contains /lib, ends in .a, no leading dash
+            let bare = t.ends_with(".a") && !t.starts_with('-') && t.contains("/lib");
+            if !bare {
+                newl.push(t.to_string());
+                continue;
+            }
+            let ours = t.starts_with(&libdir) || t.starts_with("${libdir}");
+            if !ours {
+                dropped += 1;
+                continue;
+            }
+            let base = t.rsplit('/').next().unwrap_or(t);
+            // libSPIRV.a → SPIRV：先剥 lib 前缀再剥 .a 后缀（bare 过
+            // 滤已保证后缀存在）/ libSPIRV.a → SPIRV: strip the lib
+            // prefix, then the .a suffix (the bare filter already
+            // guarantees the suffix)
+            let stem = base.strip_prefix("lib").unwrap_or(base);
+            let stem = stem.strip_suffix(".a").unwrap_or(stem);
+            newl.push(format!("-l{stem}"));
+            rewritten += 1;
+        }
+        out.push_str(&newl.join(" "));
+        out.push('\n');
+    }
+    if rewritten + dropped > 0 {
+        let _ = std::fs::write(&f, out);
+        crate::log::log(&format!(
+            "rewrote {}: {rewritten} bare archives to -l form, dropped {dropped} system paths",
+            f.file_name().unwrap().to_string_lossy()
+        ));
+    }
+}
+
 /// pc_cflags_private <name> <flag...> → Cflags.private 追加
 /// Append -D flags to Cflags.private
 pub fn cflags_private(name: &str, flags: &[&str]) {

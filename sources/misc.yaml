@@ -11,19 +11,24 @@
 
 fdk-aac:                   # libfdk-aac
   git: https://github.com/mstorsjo/fdk-aac.git
+  pin: ec82feb39662ac77e24ee9b324d5962e91bc79c5  # default branch master HEAD CI-green
 openssl:
   git: https://github.com/openssl/openssl.git
+  pin: 2f4e3a5fec05394068cfa7379890ab552483a8a6  # default branch master HEAD CI red or still running — fallback tag openssl-4.1.0
 # mbedtls 的源在 common.yaml——它是 libssh 的 crypto 后端（真依赖），
 # 与"特性 mbedtls: disable"是两回事 / mbedtls's source lives in
 # common.yaml — it's libssh's crypto backend (a real dependency), which
 # is a different matter from the `mbedtls: disable` feature
 gcrypt:
   git: https://github.com/gpg/libgcrypt.git
+  pin: 9a53b01742be48c50c3f4340b8e839010bc55d92  # default branch master HEAD no CI found — fallback tag libgcrypt-1.12.4
 schannel: {}               # Windows SDK 组件，无独立仓库 / part of the Windows SDK, no standalone repo
 libjack:
   git: https://github.com/jackaudio/jack2.git
+  pin: cba0476fd54ba96df025ce24696f1b45c534bddc  # default branch develop HEAD no CI found — fallback tag 1.90
 sndio:
   git: https://caoua.org/git/sndio
+  pin: 3e700211b1ca4f3284dbc7493f73ef72793f349f  # default branch master HEAD no CI found — fallback tag v1.11.0
 # libshaderc/libglslang/libnpp/libcelt：FFmpeg 已移除这些 configure
 # 特性，连同 features 键一并删除——不再是"留档可启"，发了旗标就是
 # unknown-option / FFmpeg dropped these configure options outright, so
@@ -33,15 +38,22 @@ cuda-nvcc: {}              # NVIDIA CUDA Toolkit 组件，无独立公开仓库 
 decklink: {}               # Blackmagic 闭源 SDK，无公开源码地址 / proprietary SDK, no public source
 libklvanc:
   git: https://github.com/stoth68000/libklvanc.git
+  pin: 0177f4a4f4a46d4a7760b6f297edd9ef29e59f7d  # default branch master HEAD no CI found — fallback tag vid.obe.1.7.0
 libsmbclient:
   git: https://gitlab.com/samba-team/samba.git
+  pin: 02e8e3f93f4af787bcb3389cbff9e22e74567eb2  # default branch master HEAD CI red or still running — fallback tag samba-4.25.1
 libmfx:
   git: https://github.com/Intel-Media-SDK/MediaSDK.git
+  lock: 7a72de33a15d6e7cdb842b12b901a003f7154f0a  # upstream stalled (HEAD ~2023) — locked at final resolution / 上游停滞——锁定终态
 libopenvino:
   git: https://github.com/openvinotoolkit/openvino.git
+  pin: 99c81491cc302313c8937d3533c4fb6458b54e7a  # default branch master HEAD CI red or still running — fallback tag 2026.4.0
 libtensorflow:
   git: https://github.com/tensorflow/tensorflow.git
+  pin: a481b10260dfdf833a1b16007eead49c1d7febf3  # default branch master HEAD CI red or still running — fallback tag v2.21.0
 libtorch:
   git: https://github.com/pytorch/pytorch.git
+  pin: 173368cb6349c5cf5ecd3399f7953cc12d207769  # default branch main HEAD CI red or still running — fallback tag flight_5.3
 libopencv:
   git: https://github.com/opencv/opencv.git
+  pin: e4f78fbcf1a773fbed69e14500e8b734963eb585  # default branch 5.x HEAD CI red or still running — fallback tag 5.1.0

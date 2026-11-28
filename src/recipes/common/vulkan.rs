@@ -13,7 +13,17 @@ use crate::recipes::r;
 
 /// 配方表项 / recipe table entry
 pub fn recipe() -> Recipe {
-    let mut x = r("vulkan", "linux,windows", "vulkan", "--enable-vulkan", body);
+    // mac 纳入：shim 是纯 C+dlopen 派发，平台无关；运行时找的是
+    // MoltenVK（dylib 候选见下方 darwin 补丁）/ mac is in: the shim is
+    // plain C + dlopen dispatch, platform-neutral; at runtime it looks
+    // for MoltenVK (the dylib candidates are in the darwin patch below)
+    let mut x = r(
+        "vulkan",
+        "linux,windows,mac",
+        "vulkan",
+        "--enable-vulkan",
+        body,
+    );
     x.src = include_str!("vulkan.rs");
     x
 }
@@ -108,6 +118,75 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             );
             fsx::write(&genpy, &s)?;
         }
+        // darwin 补丁：非 Windows 分支硬编码 dlopen("libvulkan.so.1")
+        // ——macOS 的 vulkan 运行时是 MoltenVK，按 Homebrew/meson 惯例
+        // 候选依次为 libvulkan.1.dylib（MoltenVK 安装的标准 soname
+        // 链接）→ libMoltenVK.dylib（裸名）。linux 行为不变 / the
+        // darwin patch: the non-Windows branch hardcodes
+        // dlopen("libvulkan.so.1") — macOS's vulkan runtime is
+        // MoltenVK, so the candidates follow Homebrew/meson
+        // conventions: libvulkan.1.dylib (the standard soname link of
+        // a MoltenVK install) then libMoltenVK.dylib (the bare name).
+        // linux behavior is unchanged
+        let dl = "    vklib = dlopen(\"libvulkan.so.1\", RTLD_LAZY | RTLD_LOCAL);";
+        let mut s = fsx::read(&genpy);
+        if s.contains(dl) {
+            s = s.replace(
+                dl,
+                concat!(
+                    "#ifdef __APPLE__\n",
+                    "    vklib = dlopen(\"libvulkan.1.dylib\", RTLD_LAZY | RTLD_LOCAL);\n",
+                    "    if (!vklib)\n",
+                    "        vklib = dlopen(\"libMoltenVK.dylib\", RTLD_LAZY | RTLD_LOCAL);\n",
+                    "#else\n",
+                    "    vklib = dlopen(\"libvulkan.so.1\", RTLD_LAZY | RTLD_LOCAL);\n",
+                    "#endif",
+                ),
+            );
+            fsx::write(&genpy, &s)?;
+        } else if !s.contains("libMoltenVK.dylib") {
+            return Err(
+                "vulkan-shim gen_shim.py 的 dlopen 行布局已变：darwin 补丁锚点缺失，\
+                 macOS 将永远找不到 vulkan 运行时 / the dlopen line layout changed: darwin \
+                 patch anchor missing — macOS would never find a vulkan runtime"
+                    .into(),
+            );
+        }
+    }
+    // macOS 的 CMAKE_DL_LIBS 为空（dlopen 就在 libSystem，没有独立
+    // libdl）——`target_link_libraries(vulkan-shim PUBLIC)` 空调用不
+    // 设 LINK_LIBRARIES 属性，`get_target_property` 于是拿到 cmake
+    // 的未找到哨兵字面值 VULKAN_SHIM_LINK_LIBRARIES-NOTFOUND，
+    // foreach 把它当库名拼出 -lVULKAN_SHIM_LINK_LIBRARIES-NOTFOUND
+    // 写进 vulkan.pc（实证：mac 腿验收报 no static archive
+    // resolves）。补丁：属性读取后加哨兵归空守卫——cmake 的 if()
+    // 对 -NOTFOUND 结尾的值天然判假，守卫同时覆盖未设置与未找到
+    // / CMAKE_DL_LIBS is empty on macOS (dlopen lives in libSystem —
+    // there is no separate libdl) — the bare
+    // `target_link_libraries(vulkan-shim PUBLIC)` call sets no
+    // LINK_LIBRARIES property, so get_target_property returns cmake's
+    // not-found sentinel literal VULKAN_SHIM_LINK_LIBRARIES-NOTFOUND
+    // and the foreach glues it into a -lVULKAN_SHIM_LINK_LIBRARIES-
+    // NOTFOUND token inside vulkan.pc (empirical: the mac leg's
+    // acceptance reports no static archive resolves). Patch: guard the
+    // property read with a sentinel-to-empty fallback — cmake's if()
+    // natively treats -NOTFOUND-suffixed values as false, so the guard
+    // covers both unset and not-found
+    let cml = shim.join("CMakeLists.txt");
+    let anchor = "get_target_property(VULKAN_SHIM_LINK_LIBRARIES vulkan-shim LINK_LIBRARIES)";
+    let c = fsx::read(&cml);
+    if c.contains(anchor) && !c.contains("VULKAN_SHIM_LINK_LIBRARIES_NOTFOUND_GUARD") {
+        fsx::write(
+            &cml,
+            &c.replace(
+                anchor,
+                &format!(
+                    "{anchor}\n# VULKAN_SHIM_LINK_LIBRARIES_NOTFOUND_GUARD: empty CMAKE_DL_LIBS\n\
+                     # leaves the property unset — normalize the sentinel to empty\n\
+                     if(NOT VULKAN_SHIM_LINK_LIBRARIES)\n  set(VULKAN_SHIM_LINK_LIBRARIES \"\")\nendif()"
+                ),
+            ),
+        )?;
     }
     buildsys::cmake_build(&shim, &["-DVULKAN_SHIM_IMPERSONATE=ON"])
 }

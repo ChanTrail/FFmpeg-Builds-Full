@@ -7,24 +7,12 @@
 //! (platforms/<os>_<arch>.rs).
 //! Usage: FFmpeg-Builds-Full <build|packages|extras|ffmpeg|package|save-deps|smoke|features|sources|help>
 
-//! 模块布局：src/ 只留入口锚文件，功能实现全部进各功能目录。
-//! Module layout: src/ holds only entry anchor files; implementations live
-//! in their function directories.
-mod core;
-mod engine;
-mod manifest;
-mod platforms;
-mod recipes;
-mod stages;
-
-// 根级重导出：crate::sys / crate::fsx 等旧路径继续有效，调用点零改动
-// Root re-exports: crate::sys / crate::fsx etc. keep working — call sites
-// untouched by the directory move
-pub use core::{ar, buildsys, coff, fsx, json, log, net, pkgcfg, sys};
-pub use engine::extras;
-pub use manifest::{features, patches, sources};
-pub use stages::{deps, ffmpeg, smoke};
-
+//! 模块布局：功能实现全部在 ffbuild 库（src/lib.rs），本二进制只是
+//! 解析命令行、分发到库函数的薄壳。
+//! Module layout: all implementations live in the ffbuild library
+//! (src/lib.rs); this binary is a thin shell parsing the command line and
+//! dispatching into library functions.
+use ffbuild::{extras, features, ffmpeg, log, platforms, smoke, sources, sys};
 use std::process::exit;
 
 /// 打印中英双语用法（<prog> 为 argv[0] 程序名）
