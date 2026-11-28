@@ -69,7 +69,7 @@ xevd:
   pin: 8fa744e865e9bdb94a5d5da6a4ab18268cdc4bb4  # default branch master HEAD CI red or still running — fallback tag v0.8.0
 xeve:
   git: https://github.com/mpeg5/xeve.git
-  lock: fe229fec19e14907c60d65626ebd59f41517d9b3  # v0.7.1——与配方 version.txt 同钉，机器前进会破坏版本同步：lock 冻结；spec 参与 .ok 哈希——顺带失效携带上古 xeve_ 改名毒的 overlay 归档 / v0.7.1 — pinned in step with the recipe's version.txt, machine advancement would break version sync: frozen under lock; the spec feeds the .ok hash — this also retires the overlay archive carrying the legacy xeve_ rename poison
+  pin: fe229fec19e14907c60d65626ebd59f41517d9b3  # branch master HEAD CI red or still running — fallback tag v0.7.1
 vvenc:
   git: https://github.com/fraunhoferhhi/vvenc.git
   pin: 52b03b87d272f56f3057d2d855729d67f9dcf7a0  # branch master HEAD CI-green
@@ -129,12 +129,12 @@ vorbis:
   pin: 1b75110b5a2754ba1931d82dd83cb822b266a21d  # default branch main HEAD CI-green
 opus:
   git: https://github.com/xiph/opus.git
-  lock: 22244de5a79bd1d6d623c32e72bf1954b56235be  # v1.6.1——get-version.py 靠 git describe 取版本，浅克隆必须落在 tag 上：发布轨约束，lock 冻结（要升级须人工换锁）/ v1.6.1 — get-version.py derives the version from git describe, the shallow clone must land on a tag: a release-track constraint, frozen under lock (upgrades need manual re-locking)
   # dnn/*_data.{c,h} 不是 submodule——模型权重在 media.xiph.org 的
   # opus_data-<sha>.tar.gz，配方里跑 download_model.sh 落地 /
   # the dnn/*_data.{c,h} files aren't a submodule — model weights ship
   # as opus_data-<sha>.tar.gz on media.xiph.org; the recipe runs
   # download_model.sh to land them
+  pin: ba1d664ca860a1154afa31081cd2a3f72fc8f2b1  # branch main HEAD CI-green
 speex:
   git: https://github.com/xiph/speex.git         # downloads.xiph.org 不可达，走仓库
   pin: 09b569d1b437e5edccf3406a38714ad795e46d38  # default branch main HEAD CI-green

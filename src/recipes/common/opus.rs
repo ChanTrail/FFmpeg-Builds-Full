@@ -36,6 +36,18 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         .map(str::to_string)
         .ok_or("opus: model sha256 not found in autogen.sh")?;
     sys::run_ok("sh", &["dnn/download_model.sh", &sha], &src)?;
+    // git describe 补丁：按 sha 浅抓的克隆不带任何 tag 名，
+    // meson/get-version.py 的 git describe 必然暴毙（macos CI 实证
+    // fatal: No names found）——写入发行包式 package_version 并移除
+    // .git，脚本即走官方 tarball 回退路径。版本串须与 sources 里
+    // lock 的 tag 同步 / git-describe patch: a shallow sha fetch carries
+    // no tag names, so get-version.py's git describe must die (macos CI
+    // evidence: fatal: No names found) — writing a release-tarball-style
+    // package_version and dropping .git routes the script down its
+    // official tarball fallback. The version string must track the tag
+    // locked in sources
+    fsx::write(&src.join("package_version"), "PACKAGE_VERSION=\"1.6.1\"\n")?;
+    fsx::rm_rf(&src.join(".git"));
     buildsys::meson_build(
         &src,
         &[
