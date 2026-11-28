@@ -56,6 +56,20 @@ fn de_share(src: &std::path::Path) -> Result<(), String> {
 /// (client-only)
 fn body(ctx: &Ctx) -> Result<(), String> {
     let src = ctx.src()?;
+    // git describe 补丁（opus 同款）：按 sha 浅抓的克隆没有 tag，
+    // git-version-gen 吐空版本，meson.build:17 的 version_split[1]
+    // 数组越界暴毙（legacy CI 实证 Index 1 out of bounds）。gnulib 的
+    // git-version-gen 对 .tarball-version 文件优先于 git——数字开头
+    // 即直接胜出。版本串是静态值，随 master 前进会与真实渐行渐远，
+    // 但对 ffmpeg 的 libpulse 链接纯 cosmetic / git-describe patch
+    // (opus-style): a shallow sha fetch carries no tags, git-version-gen
+    // yields an empty version and meson.build:17's version_split[1]
+    // dies out of bounds (legacy CI evidence). gnulib's git-version-gen
+    // prefers the .tarball-version file over git — a digit-leading
+    // string wins outright. The version is static and drifts from truth
+    // as master advances, but it's purely cosmetic for ffmpeg's
+    // libpulse link
+    crate::fsx::write(&src.join(".tarball-version"), "17.0\n")?;
     de_share(&src)?;
     // daemon=false 只产客户端：libpulse.a + libpulsecommon-*.a，后者经
     // libpulse.pc 的 Libs.private 随静态链带入。运行时仍是 IPC 客户端

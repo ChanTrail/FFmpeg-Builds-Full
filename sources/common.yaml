@@ -140,7 +140,8 @@ speex:
   pin: 09b569d1b437e5edccf3406a38714ad795e46d38  # default branch main HEAD CI-green
 shine:
   git: https://github.com/toots/shine.git
-  pin: 341f639e4427e66ef7a36f7077dd04e4a1f65963  # default branch main HEAD CI-green
+  # FFmpeg libshine.c 按 3.1.x 经典 API 写死（STEREO/PCM_STEREO/mpeg.bitr）；上游复活后重构 API，结构性断裂——lock 冻结 / FFmpeg's libshine.c hard-codes the classic 3.1.x API (STEREO/PCM_STEREO/mpeg.bitr); upstream revived and reworked it — structurally broken, frozen under lock
+  lock: 97f188efc3dc90315b79a2af1f477c0c18d85e82  # tag 3.1.1
 codec2:
   git: https://github.com/drowe67/codec2.git
   pin: 06d4c11e699b0351765f10398abb4f663a984f36  # default branch main HEAD no CI found — fallback tag 1.2.0
