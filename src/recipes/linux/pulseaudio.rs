@@ -103,8 +103,8 @@ fn body(ctx: &Ctx) -> Result<(), String> {
             // booleans (=disabled is the feature-type spelling and fails
             // the type check — HEAD is the exact opposite; the HEAD
             // option table fooled one round before the tag pin)
-            "-Ddoxygen=false",
-            "-Dman=false",
+            "-Ddoxygen=disabled", // 新版 meson feature 选项不收 false/ newer meson feature options reject false
+            "-Dman=disabled",
             "-Dtests=false",
             // feature 型可选依赖全禁 / feature-type optional deps all off
             "-Dalsa=disabled",

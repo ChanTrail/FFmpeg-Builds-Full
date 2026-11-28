@@ -48,7 +48,13 @@ fn body(ctx: &Ctx) -> Result<(), String> {
         // undefined symbols. FFmpeg only wants the static lib, but cmake
         // offers no switch for the tool, so a global exe linker flag is
         // the least invasive fix (zero effect on the static-lib target)
-        args.push("-DCMAKE_EXE_LINKER_FLAGS=-lole32".to_string());
+        // 注意必须用 C_STANDARD_LIBRARIES 而非 EXE_LINKER_FLAGS：后者
+        // 排在链接行对象文件之前，ld 从左到右解析静态库时前缀位置的
+        // -lole32 形同虚设（windows-x86_64 CI 实证）；前者追加行尾 /
+        // must use C_STANDARD_LIBRARIES, not EXE_LINKER_FLAGS: the
+        // latter lands before the object files where ld's left-to-right
+        // static resolution renders it inert (windows-x86_64 CI evidence)
+        args.push("-DCMAKE_C_STANDARD_LIBRARIES=-lole32".to_string());
     }
     let argrefs: Vec<&str> = args.iter().map(String::as_str).collect();
     buildsys::cmake_build(&icd, &argrefs)?;
