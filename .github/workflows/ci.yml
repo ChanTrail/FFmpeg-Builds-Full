@@ -101,6 +101,15 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
+      # sources 钉版 schema 离线校验：git 条目须有 pin 或 ref、pin 须
+      # 40-hex——无网络五秒级门禁，把"忘跑更新器"挡在构建腿几小时的
+      # 爆炸半径之外 / offline schema validation of the sources pins:
+      # git entries need pin or ref and pins must be 40-hex — a
+      # network-free five-second gate keeping "forgot to run the
+      # updater" outside the multi-hour build legs' blast radius
+      - name: Lint sources pins
+        run: cargo run --locked --bin update-sources -- --lint
+
   # ── 驱动构建 / Driver build ───────────────────────────────────────────
   # 测试全过后才编：每平台一份 release 二进制进 workflow artifact，下游
   # deps 直接吃这个产物，不在它的 runner 里二次编译。--locked 钉住

@@ -417,6 +417,129 @@ fn vkey(tag: &str) -> Vec<u64> {
 /// dot-only test rejected every dashed VER-* tag, and with `ver`
 /// empty, tags.last() fetched `start` — a CVS fossil whose tree has
 /// no meson.build at all, killing the recipe on the spot)
+/// 横杠日期子串扫描：tag 任意位置嵌着 YYYY-MM[-DD]（年 1900-2999、
+/// 月 01-12、日 01-31）即为日期戳——嵌入式形态（3gpp-2021-10-15-5）
+/// 的首个数字段不是年份，位置化 vkey 判据看不见它，会把化石快照
+/// 推赢真版本（实证：aom 回退抓 3gpp-2021-10-15-5 而非 v3.15.x）/
+/// dashed-date substring scan: a YYYY-MM[-DD] embedded anywhere (year
+/// 1900-2999, month 01-12, day 01-31) makes the tag a datestamp — the
+/// embedded form (3gpp-2021-10-15-5) hides from the positional vkey
+/// test because its first numeric field isn't the year, letting fossil
+/// snapshots outrank real versions (empirical: aom's fallback fetched
+/// 3gpp-2021-10-15-5 instead of v3.15.x)
+/// Params：
+/// - t: &str —— tag 名 / the tag name
+fn has_dashed_date(t: &str) -> bool {
+    let b = t.as_bytes();
+    let digit = |i: usize| b.get(i).is_some_and(u8::is_ascii_digit);
+    let num = |i: usize, n: usize| -> Option<u64> {
+        (i..i + n).try_fold(0u64, |acc, j| {
+            if digit(j) {
+                Some(acc * 10 + u64::from(b[j] - b'0'))
+            } else {
+                None
+            }
+        })
+    };
+    for i in 0..b.len() {
+        // 年份段起点：4 位数字且不在更长数字串中间 / year-field start:
+        // 4 digits not embedded in a longer digit run
+        if !digit(i) || digit(i.wrapping_sub(1)) && i > 0 {
+            continue;
+        }
+        let Some(year) = num(i, 4) else { continue };
+        if !(1900..=2999).contains(&year) {
+            continue;
+        }
+        if b.get(i + 4) != Some(&b'-') {
+            continue;
+        }
+        let Some(month) = num(i + 5, 2) else { continue };
+        if !(1..=12).contains(&month) {
+            continue;
+        }
+        // 月已坐实；日段在场则同样校验 / the month alone convicts; the
+        // day field gets the same check when present
+        if b.get(i + 7) == Some(&b'-')
+            && let Some(day) = num(i + 8, 2)
+            && !(1..=31).contains(&day)
+        {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+/// 发布形结构判据：剥掉前导非数字缀（v/release-/libgcrypt-/ww 等）后，
+/// 余部必须是一条纯数字点/横杠链加可选预发布缀。vkey 只提取数字段，
+/// 对数字间/数字后的字母垃圾完全隐形——管家标记 tag 凭高数字段碾压
+/// 真版本（实证：openssl 回退抓 `4.0-POST-CLANG-FORMAT-WEBKIT` [4,0]
+/// 压过 openssl-3.x 全系）。ww53.4-video 式的内部构建标签同属此类——
+/// 原"降级为兜底"的处置升级为整体出局：它们缺席时回退落到
+/// tags.last()/分支 HEAD，与日期版号的误伤同级，可接受 /
+/// release-shape structural test: after stripping the leading non-digit
+/// prefix (v/release-/libgcrypt-/ww etc.) the remainder must be a pure
+/// numeric dot/dash chain plus an optional pre-release suffix. vkey
+/// extracts only the numeric fields and is completely blind to alpha
+/// junk between or after them — housekeeping marker tags outrank real
+/// releases on their high numeric fields (empirical: openssl's fallback
+/// fetched `4.0-POST-CLANG-FORMAT-WEBKIT` [4,0] over the whole
+/// openssl-3.x series). ww53.4-video-style internal build labels are
+/// the same class — the former "demote to last-resort" treatment is
+/// upgraded to full exclusion: in their absence the fallback lands on
+/// tags.last()/branch HEAD, the same accepted-collateral class as
+/// date-versioned tags
+/// Params：
+/// - t: &str —— tag 名 / the tag name
+fn has_release_shape(t: &str) -> bool {
+    let b = t.as_bytes();
+    let n = b.len();
+    // 剥前导非数字缀 / strip the leading non-digit prefix
+    let mut i = 0;
+    while i < n && !b[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == n {
+        return false; // 全串无数字 / no digits at all
+    }
+    // 数字链核：首段数字 + 任意个 (分隔符+数字) 组 / numeric chain core:
+    // a first digit run plus any number of (separator + digits) groups
+    let mut j = i;
+    while j < n && b[j].is_ascii_digit() {
+        j += 1;
+    }
+    loop {
+        if j >= n {
+            return true; // 纯数字链收尾 / the chain ends clean
+        }
+        if matches!(b[j], b'.' | b'-' | b'_') && j + 1 < n && b[j + 1].is_ascii_digit() {
+            j += 1;
+            while j < n && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            continue;
+        }
+        break;
+    }
+    // 余部：空或预发布缀（rc/alpha/beta/pre + 可选数字点尾）——其余
+    // 一切皆为管家垃圾 / the remainder: empty or a pre-release suffix
+    // (rc/alpha/beta/pre + an optional digit/dot tail) — everything
+    // else is housekeeping junk
+    let rest = t[j..].to_lowercase();
+    if rest.is_empty() {
+        return true;
+    }
+    let rest = rest.strip_prefix(['-', '_', '.']).unwrap_or(rest.as_str());
+    ["rc", "alpha", "beta", "pre"].iter().any(|p| {
+        // 缀词后只允许数字与点（空尾也算——`v1.0-rc` 无编号形态）/
+        // only digits and dots may follow the suffix word (an empty
+        // tail counts too — the numberless `v1.0-rc` form)
+        rest.strip_prefix(p)
+            .is_some_and(|tail| tail.chars().all(|c| c.is_ascii_digit() || c == '.'))
+    })
+}
+
 fn is_version_tag(t: &str) -> bool {
     let v = vkey(t);
     if v.len() < 2 {
@@ -435,7 +558,34 @@ fn is_version_tag(t: &str) -> bool {
     {
         return false;
     }
+    if has_dashed_date(t) {
+        return false;
+    }
+    if !has_release_shape(t) {
+        return false;
+    }
     true
+}
+
+/// 预发布 tag？——`-rc/-alpha/-beta/-pre` 分隔缀形式（大小写不敏感）。
+/// 词中子串不算：src 含 rc、archive 含 rc 都不是预发布标记 / is the
+/// tag a pre-release — separated `-rc/-alpha/-beta/-pre` suffix forms
+/// (case-insensitive); in-word substrings don't count: src carries rc,
+/// archive carries rc, neither is a pre-release marker
+/// Params：
+/// - t: &str —— tag 名 / the tag name
+fn is_prerelease(t: &str) -> bool {
+    let l = t.to_lowercase();
+    // `.pre/_pre` 同列：intel-mediasdk-18.3.pre1 式（实证：MediaSDK 仓
+    // pre 缀未检出时 [18,3,1] vkey 压过正式版 [18,3,0]）/ `.pre/_pre`
+    // belong here too — the intel-mediasdk-18.3.pre1 form (empirical:
+    // undetected pre suffixes in the MediaSDK repo outranked the final
+    // [18,3,0] with their [18,3,1] vkey)
+    [
+        "-rc", "_rc", ".rc", "-alpha", "-beta", "-pre", ".pre", "_pre",
+    ]
+    .iter()
+    .any(|p| l.contains(p))
 }
 
 /// 远端最新 tag：全量 ls-remote --tags，取"像版本号"的最后一个（语义
@@ -463,24 +613,33 @@ pub fn latest_tag(url: &str) -> Result<Option<String>, String> {
     tags.sort();
     tags.dedup();
     let mut ver: Vec<&String> = tags.iter().filter(|t| is_version_tag(t)).collect();
+    // 预发布出局层：有稳定版时 rc/alpha/beta 不得参选——vkey 排序里
+    // [3,15,3,1] 长于 [3,15,3] 反而更大，不过滤 rc1 会永远压过它的
+    // 正式版（实证：aom 回退抓 v3.15.3-rc1 而非 v3.15.3）。全是预发布
+    // 的仓库则原样保留——有 rc 吃好过饿死 / the pre-release exclusion
+    // layer: with any stable tag present, rc/alpha/beta tags cannot
+    // compete — in vkey ordering [3,15,3,1] outranks [3,15,3] by being
+    // longer, so unfiltered rc1 forever shadows its own final
+    // (empirical: aom's fallback fetched v3.15.3-rc1 instead of
+    // v3.15.3). Repos with nothing but pre-releases keep them all —
+    // rc food beats starvation
+    let stable: Vec<&String> = ver.iter().copied().filter(|t| !is_prerelease(t)).collect();
+    if !stable.is_empty() {
+        ver = stable;
+    }
     ver.sort_by_key(|t| vkey(t));
-    // 版本号开头的 tag（v1.2.3/1.2.3）优先——"ww53.4-video" 式把版本段
-    // 藏进名字中间的内部构建标签，vkey 首元素碾压一切真版本，只能做
-    // 兜底（实证：intel/libva 回退抓到了 ww* 系的 0.31.1 化石）/
-    // version-leading tags (v1.2.3 / 1.2.3) take precedence — internal
-    // build labels burying the version mid-name (ww53.4-video) outrank
-    // every real release on the first vkey element, so they may serve
-    // only as a fallback (empirical: intel/libva's fallback fetched a
-    // ww*-era 0.31.1 fossil)
-    if let Some(t) = ver
-        .iter()
-        .copied()
-        .rfind(|t| {
-            let s = t.strip_prefix('v').unwrap_or(t);
-            s.chars().next().is_some_and(|c| c.is_ascii_digit())
-        })
-        .or_else(|| ver.last().copied())
-    {
+    // 纯 vkey 最大者当选——曾有的"裸版号优先"层已拆除：它唯一的服务
+    // 对象 ww 系内部标签由 has_release_shape 整体出局，而该层在
+    // MediaSDK 上反噬真版本（实证：远古裸版 1.x 压过嵌入式真发布系
+    // intel-mediasdk-18/19/2x——嵌入式名称恰是仓主的发布系本身，
+    // libgcrypt/samba/openssl 诸仓同构）/ the pure vkey max wins — the
+    // former "bare versions first" layer is dismantled: its sole raison
+    // d'être, ww-style internal labels, is now excluded wholesale by
+    // has_release_shape, and the layer backfired on MediaSDK
+    // (empirical: the ancient bare 1.x series outranked the embedded
+    // intel-mediasdk-18/19/2x line — embedded names being the
+    // maintainer's release series itself, as in libgcrypt/samba/openssl)
+    if let Some(t) = ver.last().copied() {
         return Ok(Some(t.clone()));
     }
     Ok(tags.last().cloned())
@@ -695,6 +854,118 @@ pub fn ci_green_sync(url: &str, sha: &str) -> Option<bool> {
     rt().block_on(ci_green(url, sha))
 }
 
+// ==================== commit 日期探针 / commit date probes ====================
+
+/// ISO8601（YYYY-MM-DDTHH:MM:SS 前缀）转 unix 秒——时区修正忽略：
+/// ±小时级误差对四年量级的停滞判定无意义 / ISO8601 (the
+/// YYYY-MM-DDTHH:MM:SS prefix) to unix seconds — timezone correction
+/// deliberately ignored: hour-scale error is meaningless against a
+/// four-year staleness horizon
+/// Params：
+/// - s: &str —— ISO 日期串 / the ISO date string
+fn iso_to_unix(s: &str) -> Option<i64> {
+    if s.len() < 19 {
+        return None;
+    }
+    let num = |a: usize, b: usize| s[a..b].parse::<i64>().ok();
+    let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (h, mi, sec) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    // days-from-civil（Howard Hinnant 算法）/ days-from-civil
+    // (Howard Hinnant's algorithm)
+    let yy = if mo <= 2 { y - 1 } else { y };
+    let era = if yy >= 0 { yy } else { yy - 399 } / 400;
+    let yoe = yy - era * 400;
+    let mp = (mo + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some(days * 86400 + h * 3600 + mi * 60 + sec)
+}
+
+/// git 兜底探针：浅抓该 sha 后读 committer 时间戳——任何宿主通用，
+/// 代价是一次 depth-1 传输 / git fallback probe: shallow-fetch the
+/// sha and read its committer timestamp — universal across hosts at
+/// the cost of one depth-1 transfer
+/// Params：
+/// - url: &str —— 仓 URL / the repo URL
+/// - sha: &str —— 目标 commit / the target commit
+fn commit_date_git(url: &str, sha: &str) -> Option<i64> {
+    let dir = std::env::temp_dir().join(format!(
+        "ff-dateprobe-{}-{}",
+        std::process::id(),
+        &sha[..12.min(sha.len())]
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok()?;
+    let out = (|| {
+        git_run(&["init", "-q"], &dir, None).ok()?;
+        git_run(
+            &[
+                "fetch",
+                "-q",
+                "--depth",
+                "1",
+                "--filter=blob:none",
+                url,
+                sha,
+            ],
+            &dir,
+            None,
+        )
+        .ok()?;
+        git_capture(&[
+            "-C",
+            dir.to_str()?,
+            "log",
+            "-1",
+            "--format=%ct",
+            "FETCH_HEAD",
+        ])
+        .ok()
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    out?.trim().parse().ok()
+}
+
+/// commit 日期探针：宿主 API 快路径（github/gitlab 系），缺席或不
+/// 支持时退化 git 浅抓——上游停滞判定的唯一事实来源 / commit date
+/// probe: host API fast paths (github/gitlab family), degrading to a
+/// git shallow fetch where absent or unsupported — the single source
+/// of truth for upstream staleness judgment
+/// Params：
+/// - url: &str —— 仓 URL / the repo URL
+/// - sha: &str —— 目标 commit / the target commit
+pub fn commit_date(url: &str, sha: &str) -> Option<i64> {
+    let rest = url
+        .trim_end_matches('/')
+        .strip_prefix("https://")
+        .or_else(|| url.trim_end_matches('/').strip_prefix("git://"))?;
+    let (host, path) = rest.split_once('/')?;
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let found = rt().block_on(async {
+        if host == "github.com" {
+            let mut it = path.split('/');
+            let (owner, repo) = (it.next()?, it.next()?);
+            let h = gh_headers();
+            let hp = hdr_pairs(&h);
+            let api = format!("https://api.github.com/repos/{owner}/{repo}/commits/{sha}");
+            let j = get_json(&api, &hp).await.ok()?;
+            return iso_to_unix(j.get("commit").get("committer").get("date").s());
+        }
+        if is_gitlab(host).await {
+            let h = gl_headers();
+            let hp = hdr_pairs(&h);
+            // 路径需 %2F 编码 / the path needs %2F encoding
+            let enc = path.replace('/', "%2F");
+            let api = format!("https://{host}/api/v4/projects/{enc}/repository/commits/{sha}");
+            let j = get_json(&api, &hp).await.ok()?;
+            return iso_to_unix(j.get("committed_date").s());
+        }
+        None
+    });
+    found.or_else(|| commit_date_git(url, sha))
+}
+
 // ==================== 源码获取原语 / source fetch primitives ====================
 
 /// fetch_tar <url> [sha]：下载并校验解压到 <wd>/src（剥顶层目录），返回 src
@@ -791,4 +1062,96 @@ pub fn fetch_git_commit(wd: &Path, url: &str, sha: &str) -> Result<PathBuf, Stri
         &src,
     )?;
     Ok(src)
+}
+
+// ==================== 单元测试 / unit tests ====================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_tag_basics() {
+        // 点式与横杠版号同收 / dotted and dashed versions alike
+        assert!(is_version_tag("v2.13.3"));
+        assert!(is_version_tag("VER-2-13-3"));
+        assert!(is_version_tag("1.2.3"));
+        assert!(is_version_tag("v3.15.3-rc1")); // 预发布也是版本——出局在 latest_tag 的过滤层 / pre-releases are versions too — exclusion is latest_tag's filter layer
+        // 单字段修订号与裸名出局 / single-field revisions and bare names out
+        assert!(!is_version_tag("r2772-MT"));
+        assert!(!is_version_tag("freetype2"));
+        assert!(!is_version_tag("start"));
+        assert!(!is_version_tag("import"));
+    }
+
+    #[test]
+    fn datestamp_exclusion() {
+        // 位置形日期 / positional date shapes
+        assert!(!is_version_tag("2013-11-24"));
+        assert!(!is_version_tag("v2024.05.1"));
+        // 嵌入式横杠日期（3gpp 化石实证）/ embedded dashed dates
+        // (the 3gpp fossil evidence)
+        assert!(!is_version_tag("3gpp-2021-10-15-5"));
+        assert!(!is_version_tag("3gpp-2021-10-15"));
+        assert!(!is_version_tag("foo-2024-01"));
+        // 非日期不误伤：年份段无月、月超界、纯版本 / non-dates
+        // untouched: year without month, out-of-range month, plain versions
+        assert!(is_version_tag("v2.13.3"));
+        assert!(is_version_tag("release-2.32.10"));
+    }
+
+    #[test]
+    fn release_shape_exclusion() {
+        // 管家标记化石（openssl 实证）/ housekeeping marker fossils
+        // (openssl evidence)
+        assert!(!is_version_tag("4.0-POST-CLANG-FORMAT-WEBKIT"));
+        // 内部构建标签（ww 系——整体出局升级）/ internal build labels
+        // (ww kin — the wholesale-exclusion upgrade)
+        assert!(!is_version_tag("ww53.4-video"));
+        // 数字间夹字母垃圾 / alpha junk between numerics
+        assert!(!is_version_tag("3gpp2-1release"));
+        // 合法形态不误伤 / legitimate shapes untouched
+        assert!(is_version_tag("openssl-3.5.0"));
+        assert!(is_version_tag("libgcrypt-1.12.4"));
+        assert!(is_version_tag("vid.obe.1.7.0"));
+        assert!(is_version_tag("n13.1.15.0"));
+        assert!(is_version_tag("VER-2-15-0"));
+        assert!(is_version_tag("v2023.4.0"));
+        assert!(is_version_tag("v3.15.3-rc1"));
+        assert!(is_version_tag("v1.0-rc"));
+        assert!(is_version_tag("v2.0-rc.1"));
+    }
+
+    #[test]
+    fn dashed_date_scanner() {
+        assert!(has_dashed_date("3gpp-2021-10-15-5"));
+        assert!(has_dashed_date("x-1999-12-31"));
+        assert!(has_dashed_date("x-2024-01"));
+        assert!(!has_dashed_date("v2.13.3"));
+        assert!(!has_dashed_date("x-2024-13-01")); // 月 13 非日期 / month 13 is no date
+        assert!(!has_dashed_date("2024")); // 裸年份不够 / a bare year is not enough
+        assert!(!has_dashed_date("x1-20240-10")); // 年份嵌在更长数字串里 / year inside a longer digit run
+    }
+
+    #[test]
+    fn prerelease_detection() {
+        assert!(is_prerelease("v3.15.3-rc1"));
+        assert!(is_prerelease("v1.0-alpha"));
+        assert!(is_prerelease("v1.0-BETA2"));
+        assert!(is_prerelease("v2.0-pre"));
+        assert!(is_prerelease("v2.0-rc.1"));
+        // 点式 pre 缀（MediaSDK 实证）/ dotted pre suffixes (MediaSDK evidence)
+        assert!(is_prerelease("intel-mediasdk-18.3.pre1"));
+        assert!(is_prerelease("v1.0.pre2"));
+        assert!(!is_prerelease("v3.15.3"));
+        assert!(!is_prerelease("src-1.0")); // 词中 rc 不算 / in-word rc doesn't count
+        assert!(!is_prerelease("v1.0"));
+    }
+
+    #[test]
+    fn vkey_ordering() {
+        assert!(vkey("v3.15.3") < vkey("v3.15.3.1"));
+        assert!(vkey("v3.9.1") < vkey("v3.15.0"));
+        assert!(vkey("VER-2-13-3") == vkey("v2.13.3"));
+    }
 }

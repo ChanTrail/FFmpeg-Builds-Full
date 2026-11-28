@@ -5,6 +5,14 @@ authors = ["ChanTrail"]
 edition = "2024"
 description = "FFmpeg-Builds-Full native build driver"
 
+# 库目标：全部逻辑的家——FFmpeg-Builds-Full（src/main.rs）与 src/bin/
+# 下的独立工具（update-sources 等）都是它的薄壳 / the library target:
+# home of all logic — FFmpeg-Builds-Full (src/main.rs) and the standalone
+# tools under src/bin/ (update-sources etc.) are thin shells over it
+[lib]
+name = "ffbuild"
+path = "src/lib.rs"
+
 [dependencies]
 # HTTPS 客户端（异步）：rustls 纯 Rust TLS，流式下载，代理走环境变量
 # Async HTTPS client: pure-Rust TLS (rustls), streaming downloads, env proxy

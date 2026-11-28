@@ -11,3 +11,4 @@
 zlib:                      # base.yaml 未钉版；mac 钉 v1.3.1 / unpinned in base.yaml; pinned to v1.3.1 on mac
   git: https://github.com/madler/zlib.git
   ref: v1.3.1
+  pin: 51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf  # tag v1.3.1

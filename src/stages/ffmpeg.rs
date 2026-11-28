@@ -111,10 +111,19 @@ fn fetch_inner(dest: &Path) -> Result<Info, String> {
     if !cloned {
         return Err(format!("clone failed from every repo: {last_err}"));
     }
-    // FFMPEG_SHA 钉住精确 commit：一轮的五个平台即使上游在跑期间前进
-    // 也构建同一份源码 / pin the exact commit so all five platforms of a
-    // run build the same source even if upstream moves mid-run
-    if let Ok(sha) = std::env::var("FFMPEG_SHA")
+    // 精确 commit 检出的优先链：FFMPEG_SHA 环境变量（CI 一轮五平台
+    // 钉同一 commit）> 分支 HEAD 浮动。yaml pin 不在链上——ref=master
+    // 是人工浮动意图，update-sources 对分支 ref 不落 pin（落了的也
+    // 会被拆除）：ffmpeg 是产品本体非依赖，本地构建要的就是当时
+    // 最新 master / the exact-commit checkout chain: the FFMPEG_SHA
+    // env var (CI pins one commit across a run's five platforms) >
+    // the floating branch HEAD. The yaml pin is not on the chain —
+    // ref=master is intentional floating and update-sources writes no
+    // pin for branch refs (stale ones get removed): ffmpeg is the
+    // product itself, not a dependency, and local builds want whatever
+    // master is right then
+    let sha = std::env::var("FFMPEG_SHA").ok().filter(|v| !v.is_empty());
+    if let Some(sha) = sha
         && !sha.is_empty()
     {
         // blobless 检出的 checkout 会惰性拉取缺失 blob——同样是网络

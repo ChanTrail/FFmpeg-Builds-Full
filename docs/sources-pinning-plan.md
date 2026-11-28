@@ -91,3 +91,48 @@ shine:
   legacy legs run old distro images — mind git version floors
 - 回填首轮建议分批（十包一组跑 CI）防大爆炸 / backfill in batches
   to avoid big-bang failure
+
+---
+
+## 实施收官实录 / implementation completion record（2026-11-28）
+
+六步施工全部落地 / all six execution steps landed:
+
+1. ✅ 库化（353f6bd）2. ✅ schema+驱动只读化（00d83ef）
+3. ✅ update-sources 二进制（ad1e3e1）4. ✅ 首轮回填（e4ce826）
+5. ✅ CI 接线（4e36ca1）6. ✅ README 双语（2396f2a）
+
+### 计划外实证修正 / empirical corrections beyond the plan
+
+首轮回填暴露三处计划未预见的化石语义漏检，全部由真实解析输出
+驱动修正（0d635ff）/ the first backfill exposed three fossil-semantics
+leaks the plan did not foresee — all fixed driven by real resolution
+output:
+
+- **管家标记 tag** / housekeeping marker tags：openssl 回退抓
+  `4.0-POST-CLANG-FORMAT-WEBKIT`——vkey 对数字后字母垃圾隐形。
+  新增发布形结构判据（剥前导非数字缀后须纯数字链+可选预发布缀），
+  ww 系处置从降级兜底升级为整体出局 / openssl's fallback fetched
+  `4.0-POST-CLANG-FORMAT-WEBKIT` — vkey is blind to post-numeric
+  alpha junk. A release-shape structural test was added; ww-style
+  labels upgraded from demoted-fallback to full exclusion
+- **裸版号优先层反噬** / bare-version preference backfired：libmfx
+  远古裸版 1.x 压过嵌入式真发布系 intel-mediasdk-18/19/2x——嵌入式
+  名称恰是仓主发布系本身。该层拆除，纯 vkey 最大者当选 / MediaSDK's
+  ancient bare 1.x outranked the embedded intel-mediasdk release line —
+  embedded names being the maintainer's own series. The layer was
+  dismantled; pure vkey max wins
+- **点式 pre 缀漏检** / dotted pre-suffix undetected：
+  `intel-mediasdk-18.3.pre1` [18,3,1] 压过正式版 [18,3,0] / the
+  `.pre` form outranked its own final
+
+### 验证结果 / verification results
+
+- lint 126 git 条目零违规（114 pin + 12 冻结 sha-ref 账平）/ lint
+  clean across 126 git entries (114 pins + 12 frozen sha-refs)
+- 跨宿主探针矩阵全过：git.ffmpeg.org(git://)/github/gitlab.com/
+  videolan/freedesktop/xiph/gnome/bitbucket/googlesource 按 sha 裸
+  fetch+checkout 均可物化 / the cross-host probe matrix passes: every
+  host materializes pins by bare sha fetch + checkout
+- 稳态复跑：110 未变 / 4 前进（活头移动）/ 0 失败 / steady-state
+  re-run: 110 unchanged, 4 advanced (live heads moved), 0 failed

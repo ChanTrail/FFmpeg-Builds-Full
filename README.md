@@ -251,7 +251,7 @@ FFmpeg-Builds-Full <build|build-all|packages|extras|ffmpeg|package|save-deps|smo
 `build-all` 一次建完全部产物变体（静态 → shared → debug → shared-debug）：共享底座（packages + extras）先跑一遍，随后逐变体出计划、四路并行 configure、变体间串行 `make -jN`、逐变体 install→package——依赖不重复构建，ffmpeg 本体编四遍；CI 的三平台构建步用的就是这条命令。
 
 - **特性开关**（`features/*.yaml`）：FFmpeg configure 旗标的唯一真源。四层合并——`base.yaml`（永远启用）、`common.yaml`（全平台通用）、`misc.yaml`（按平台分节的杂项）、`<os>-<arch>.yaml`（平台特化）；键为特性名，值为 `enable`/`disable`，跨文件重复键直接报错。每个 `enable` 还要过本地探测（pkg-config / 文件存在），探不过自动降级 `disable`。
-- **源码清单**（`sources/*.yaml`）：同构四层合并，值是获取方式——`archive` 固定产物 URL（可带 `sha256` 校验），`git` 仓库地址实时解析：默认分支 HEAD → GitHub/GitLab CI 验证 → 红/无 CI 回退最新版本 tag；`ref:` 可钉分支/tag/commit，`mirrors:` 给出备用仓（主仓克隆失败时按序回退）。下载走 reqwest 异步流式（断点续传+重试退避），构建与预取并发；git 拉取带停滞检测与递增退避重试，无子模块的源在 git 通道全灭时回退主机归档端点（GitHub `/archive/`、GitLab `/-/archive/`、googlesource `+archive` 等）。
+- **源码清单**（`sources/*.yaml`）：同构四层合并，值是获取方式——`archive` 固定产物 URL（可带 `sha256` 校验），`git` 仓库**全量钉版**：构建期只做 fetch+checkout，`pin:`（`update-sources` 回写的精确 commit）最高优先，`ref:` 人工钉（分支/tag/sha）兜底，两者皆无硬报错；`mirrors:` 给出备用仓（主仓克隆失败时按序回退）。**例外是分支形 ref**：它表达人工浮动意图（"跟着该分支走"），更新器不落 pin——ffmpeg 本体即此形态（产品非依赖，CI 本就用 `FFMPEG_SHA` 外部钉版，yaml pin 只会每周制造无效 churn 并零收益炸掉 deps 缓存）。版本解析（默认分支 HEAD → GitHub/GitLab CI 绿门 → 版本 tag 回退，化石日期戳与预发布出局）不在构建期执行——它是独立程序 **`update-sources`** 的职责：重算每包最新合格 ref 并把精确 commit 回写进 yaml（行级手术，注释逐位保留），全手动执行——手改 ref 或新增条目后本地重跑即落钉。下载走 reqwest 异步流式（断点续传+重试退避），构建与预取并发；git 拉取带停滞检测与递增退避重试，无子模块的源在 git 通道全灭时回退主机归档端点（GitHub `/archive/`、GitLab `/-/archive/`、googlesource `+archive` 等）。
 - **库配方**（`src/recipes/`）：132 项配方，每库一个独立 Rust 模块，`common/`、`linux/`、`windows/` 按域分目录；每个 `.ok` 标记存配方源码哈希，内容变了自动重建。
 - **依赖缓存**：依赖库编好后打成 `deps-<平台>-<哈希>.tar.zst` 存入固定 `deps` Release；之后每次运行还原（约 1–2 分钟）只编 FFmpeg 本体。配方/清单变更 → 新签名 → 自动全量重编；超时自动上传 `partial` 包下次续建。产物名按分支分册：非 master 分支（beta、PR）打在 `<分支>--<平台>` 命名空间下，与 master 互不污染，分支首轮从无后缀（master）快照引导。
 - **平台包栈**（`packages/*.yaml`）：Windows 为 pacman 包表（UCRT64/CLANGARM64 双 profile），Linux 为 apt 包表（最新 GCC 降序探测 + pyenv 构建工具 + Rust/cargo-c），macOS 为 brew 包表。
@@ -261,9 +261,16 @@ FFmpeg-Builds-Full <build|build-all|packages|extras|ffmpeg|package|save-deps|smo
 
 ### 驱动程序 CI（`ci.yml`）
 
-- **所有分支 push / PR→master**：`fmt --check` + `cargo check` + `clippy -D warnings` + `cargo test`（三 OS 矩阵）。
+- **所有分支 push / PR→master**：`fmt --check` + `cargo check` + `clippy -D warnings` + `cargo test`（三 OS 矩阵）+ `update-sources --lint` 钉版 schema 离线校验（git 条目须有 pin 或 ref）。
 - **master 上版本变化**：`Cargo.toml` 版本号对应 tag `Driver-<X.Y.Z>` 不存在 → 五平台构建驱动二进制 → 发该 tag 的正式 release。
 - 其他分支只有测试，不构建也不发布。
+
+### 钉版更新器（`update-sources`）
+
+- **职责**：把每个 git 源的最新合格 ref（CI 绿门/版本 tag 优先/化石排除）解析成精确 commit，回写 `sources/*.yaml` 的 `pin:` 键——构建驱动只读不写，本程序是 pin 的唯一写手。分支形 `ref:` 是人工浮动意图不落 pin（解析仅供参考报告 HEAD，存量 pin 会被拆除）。
+- **本地用法**：`cargo run --bin update-sources -- [--dry-run] [--only a,b,c] [--missing-only] [--lint]`（在仓库根跑；API 额度用 `GITHUB_TOKEN`/`GITLAB_TOKEN` 环境变量）。
+- **全手动**：更新完全由本地手跑 `update-sources` 进行（无定时工作流），手改 `ref:` 或新增条目后重跑落钉；三键模型——`lock:`（仅 sha 的完全冻结，机器禁区；上游停滞四年自动转换）、`ref:`（偏好，机器维护前进——tag 赢写 tag 名、HEAD 赢写 sha，前进只能向前）、`pin:`（hash oracle，tag/branch 形 ref 与无 ref 条目必备；取源一律按 hash）。
+- 注意：仓库 Settings → Actions → General 须允许 "GitHub Actions 创建 PR"。
 
 ## 触发与配置
 
@@ -282,7 +289,7 @@ FFmpeg-Builds-Full <build|build-all|packages|extras|ffmpeg|package|save-deps|smo
 - `deps` Release 由流水线自动管理，可整体删除，下次重建。
 - 失败排查：对应 `logs-<平台>` artifact（保留 7 天）含各库日志；`build-<平台>` artifact（保留 3 天）含已完成的压缩包（四变体同包）。
 - GitHub 会在公开仓库 60 天无活动后停用定时工作流；最稳妥的办法是偶尔提交。
-- 源码实时解析依赖 GitHub/GitLab API；匿名调用限流低，CI 里 GitHub 自动用 `GITHUB_TOKEN` 提额，GitLab 侧可配置 secret/变量 `GITLAB_TOKEN`（含自托管实例）。本地网络不佳时挂代理（`HTTPS_PROXY`）。
+- 源码版本解析已移出构建期——构建本身不碰任何 API；只有 `update-sources`（本地手动运行）做解析，它依赖 GitHub/GitLab API：CI 里 GitHub 自动用 `GITHUB_TOKEN` 提额，GitLab 侧可配置 secret/变量 `GITLAB_TOKEN`（含自托管实例）；本地手跑匿名限流低，建议配 token。本地网络不佳时挂代理（`HTTPS_PROXY`）。手改 `ref:` 或新增 git 条目后记得重跑 `update-sources` 落钉，否则构建响亮报错（按名拉取被禁，须 pin oracle 在场）。
 - 需要 fdk-aac 等非自由库须自行构建，此类二进制**不可再分发**。
 
 

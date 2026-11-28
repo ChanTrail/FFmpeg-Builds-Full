@@ -3,28 +3,51 @@
 # (matching the keys in features/base.yaml).
 #
 # 取值形式 / value forms:
-#   git: <url>             git 仓库：ref=tag/sha 钉死；ref=分支或未设 →
-#                          该分支 HEAD 经 CI 验证（GitHub/GitLab），无 CI
-#                          或失败回退最新 tag，无 tag 用 HEAD
+#   git: <url>             git 仓库——构建期一律按 hash 钉死检出，不做任何解析
 #   mirrors: [<url>, ...]  git 仓源回退镜像（主仓克隆失败按序尝试）
-#   ref: <branch|tag|sha>  可选钉住
+#   lock: <40-hex>         完全冻结——只指 sha，机器永不触碰；上游停滞
+#                          （HEAD 四年无新提交）时 update-sources 自动
+#                          转换落此键并拆除 ref/pin
+#   ref: <branch|tag|sha>  偏好——机器维护前进：分支形=跟分支走（ref
+#                          原样保留，pin 物化 HEAD）；tag/sha 形机器
+#                          前进——tag 赢写 tag 名、HEAD 赢直写 sha；
+#                          前进只能向前（倒退持有）
+#   pin: <40-hex>          hash oracle——tag/branch 形 ref 与无 ref 条
+#                          目必备，由程序整体拥有，勿手编；改动 ref 或
+#                          新增条目后须重跑 update-sources
 #   submodules: true       递归初始化子模块（浅）
 #   archive: <url>         固定产物归档（发行 tarball，configure 已烘焙）
 #   sha256: <hex>          archive 完整性校验
+#
+# 优先级：lock > ref(sha) > pin——取源一律按 hash，tag/branch 永不作
+# 拉取目标。解析语义（update-sources 手动执行，不在构建期）：ref 无
+# 关三路探测（分支 HEAD+日期、CI 绿门、最新版本 tag），按 ref 形态
+# 选目标——分支=裸 HEAD；tag=发布轨最新 tag；sha/无 ref=CI 绿门
+# →tag 回退（化石日期戳与预发布出局）。
+# Priority: lock > ref(sha) > pin — fetching is always by hash, a
+# tag/branch is never a fetch target. Resolution semantics (executed
+# by update-sources manually, never at build time): ref-independent
+# three-fact probing (branch HEAD+date, CI-green gate, newest version
+# tag), target selection by ref form — branch = raw HEAD; tag =
+# release-track newest tag; sha/no-ref = CI gate -> tag fallback
+# (datestamp fossils and pre-releases excluded).
 
 ffmpeg:
   git: git://git.ffmpeg.org/ffmpeg.git            # 官方仓优先（9418 原生协议）/ official repo first (native proto on 9418)
   mirrors:                                        # 主仓克隆失败按序兜底 / ordered fallbacks when the primary clone fails
     - https://github.com/FFmpeg/FFmpeg.git
   ref: master              # FFMPEG_REPO/FFMPEG_REF/FFMPEG_SHA 环境变量仍可覆盖 / env vars still override
+  pin: 67240ca40f83da4a0160cce250bebb6adae4955c  # branch master HEAD
 
 zlib:
   git: https://github.com/madler/zlib.git
+  pin: a28e8d5acad59823917e4e556a87584a803ac15e  # default branch develop HEAD CI-green
 bzip2:
   archive: https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
   sha256: ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269
 lzma:
   git: https://github.com/tukaani-project/xz.git
+  pin: c308e9f27201300fd042d3e7324a21e55c25852f  # default branch master HEAD CI-green
 iconv:
   archive: https://ftp.gnu.org/gnu/libiconv/libiconv-1.19.tar.gz
   sha256: 88dd96a8c0464eca144fc791ae60cd31cd8ee78321e67397e25fc095c4a19aa6

@@ -1,20 +1,28 @@
-//! 库源码清单与解析：sources/*.yaml 声明每个库从哪儿取（git 仓库实时
-//! 获取 + CI 验证回退 tag；或固定归档），本模块把规格解析成实际检出，
-//! 并提供后台预取——下载与编译并发执行。
-//! Library source map and resolution: sources/*.yaml declares where each
-//! library comes from (git repos fetched in real time with CI-verified
-//! tag fallback; or fixed archives); this module resolves a spec into an
-//! actual checkout and offers background prefetch — downloads run
-//! concurrently with compilation.
+//! 库源码清单与物化：sources/*.yaml 声明每个库从哪儿取——构建期一律
+//! 钉死（pin: 精确 commit 或 ref: 人工钉），驱动只做 fetch+checkout；
+//! 实时解析（CI 绿门/tag 筛选）整体迁往独立程序 update-sources，由它
+//! 把解析结果回写进 yaml 的 pin: 键。
+//! Library source map and materialisation: sources/*.yaml declares where
+//! each library comes from — at build time everything is pinned (pin: an
+//! exact commit or ref: a manual pin) and the driver only fetches+checks
+//! out; the live resolution (CI-green gate/tag filtering) moved wholesale
+//! into the standalone update-sources program, which writes its results
+//! back into the yaml pin: keys.
 //! 布局 / layout:
-//!   sources/common.yaml         {lib: {git|archive: ..., ref:, sha256:, submodules:}}
+//!   sources/common.yaml         {lib: {git|archive: ..., lock:, ref:, pin:, sha256:, submodules:}}
 //!   sources/misc.yaml           {lib: spec}                  —— 不分平台的杂项
 //!   sources/<os>-<arch>.yaml    {lib: spec}                  —— 整值覆盖
-//! git 解析策略 / git resolution:
-//!   1) ref 是 40-hex sha → 钉死检出
-//!   2) ref 是 tag → 钉 tag；ref 是分支 → 该分支 HEAD 走第 3 步
-//!   3) 无 ref → 默认分支 HEAD：GitHub/GitLab 查 CI——绿用该 commit；
-//!      无 CI 或失败 → 最新 tag；连 tag 也没有 → HEAD（告警）
+//! git 三键模型 / the three-key model:
+//!   lock: <40-hex>   完全冻结——机器禁区，仅人工手写或停滞自动转换产生
+//!   ref: <branch|tag|sha>  版本偏好——分支=浮动意图；tag/sha=机器维护
+//!                    前进线
+//!   pin: <40-hex>    机器自动解析产物，仅存在于无 ref 条目
+//! git 构建期语义 / build-time git semantics:
+//!   1) lock 在场 → 精确 commit（冻结，最高优先）
+//!   2) lock 缺席、ref 在场 → 原样使用：sha 钉死检出；tag/分支直克隆
+//!      （偏好优先，分支浮动无解析、无 API 查询）
+//!   3) 两者皆无、pin 在场 → 精确 commit（update-sources 的产物）
+//!   4) 三者皆无 → 硬报错，提示跑 update-sources——浮动解析已不存在
 
 use crate::fsx;
 use crate::log;
@@ -36,12 +44,86 @@ pub struct Spec {
     pub mirrors: Vec<String>,
     /// 固定归档地址 / fixed archive URL
     pub archive: Option<String>,
-    /// 可选 ref（分支/tag/sha）/ optional ref (branch|tag|sha)
+    /// 完全冻结（仅 40-hex sha）——机器禁区：lock 在场时更新器整条
+    /// 跳过，构建期最高优先。仅产生于人工手写或更新器停滞自动转换
+    /// （上游 4 年无新 commit）/ complete freeze (40-hex sha only) —
+    /// machine territory's inverse: with lock present the updater skips
+    /// the entry wholesale, and it outranks everything at build time.
+    /// Produced only by a human hand or the updater's staleness
+    /// auto-conversion (upstream quiet for 4+ years)
+    pub lock: Option<String>,
+    /// 可选 ref（分支/tag/sha）——版本偏好：分支是浮动意图（永不落
+    /// pin，构建期克隆分支 HEAD），tag/sha 是机器维护的偏好线——
+    /// update-sources 把解析出的更新目标前进到本行（tag 赢写 tag 名，
+    /// HEAD 赢写 sha），构建期优先于 pin / optional ref
+    /// (branch|tag|sha) — the version preference: a branch is floating
+    /// intent (never pinned, builds clone the branch HEAD), a tag/sha
+    /// is the machine-maintained preference line — update-sources
+    /// advances this line to newer resolutions (a tag win writes the
+    /// tag name, a HEAD win writes the sha); outranks pin at build time
     pub ref_: Option<String>,
+    /// update-sources 回写的解析结果：40-hex 精确 commit，仅存在于无
+    /// ref 条目（ref 在场时 preference 自身即目标，pin 无意义）/
+    /// the updater-written resolution: an exact 40-hex commit, present
+    /// only on ref-less entries (with ref present the preference itself
+    /// is the target and a pin is meaningless)
+    pub pin: Option<String>,
     /// archive 的 sha256 / sha256 for archive
     pub sha256: Option<String>,
     /// git 检出后递归初始化子模块 / init submodules after checkout
     pub submodules: bool,
+}
+
+/// 解析一份 sources yaml 文档成有序的 (名称, 规格) 列表——yaml-rust2
+/// 的 hash 保序（LinkedHashMap），返回序即文件序。空规格（无 git 无
+/// archive）照收，过滤决策归调用方。构建驱动与 update-sources 共用。
+/// Parse one sources yaml document into an ordered (name, spec) list —
+/// yaml-rust2's hash preserves order (LinkedHashMap), so the return
+/// order is the file order. Empty specs (no git, no archive) are
+/// included; filtering is the caller's decision. Shared by the build
+/// driver and update-sources.
+/// Params：
+/// - doc: &Yaml —— 已解析的 yaml 文档根 / the parsed yaml document root
+/// - file: &str —— 文件名，仅用于错误信息 / file name, error messages only
+pub fn specs_from_yaml(doc: &Yaml, file: &str) -> Result<Vec<(String, Spec)>, String> {
+    let h = doc
+        .as_hash()
+        .ok_or_else(|| format!("{file}: expected a lib: spec mapping"))?;
+    let mut out = Vec::new();
+    for (k, v) in h {
+        let name = k
+            .as_str()
+            .ok_or_else(|| format!("{file}: source key must be a string"))?;
+        let spec = Spec {
+            git: v["git"].as_str().map(String::from),
+            mirrors: v["mirrors"]
+                .as_vec()
+                .map(|vs| {
+                    vs.iter()
+                        .filter_map(|u| u.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            archive: v["archive"].as_str().map(String::from),
+            lock: v["lock"].as_str().map(String::from),
+            ref_: v["ref"].as_str().map(String::from),
+            pin: v["pin"].as_str().map(String::from),
+            sha256: v["sha256"].as_str().map(String::from),
+            submodules: v["submodules"].as_bool().unwrap_or(false),
+        };
+        if spec.git.is_some() && spec.archive.is_some() {
+            return Err(format!(
+                "{file}: '{name}' needs exactly one of git: or archive:"
+            ));
+        }
+        if !spec.mirrors.is_empty() && spec.git.is_none() {
+            return Err(format!(
+                "{file}: '{name}' has mirrors: but no git: to mirror"
+            ));
+        }
+        out.push((name.to_string(), spec));
+    }
+    Ok(out)
 }
 
 /// 加载并合并 sources 清单（common → misc → 平台文件；同键整值替换）
@@ -56,45 +138,14 @@ fn load() -> &'static HashMap<String, Spec> {
         let mut map: HashMap<String, Spec> = HashMap::new();
 
         let mut absorb = |doc: &Yaml, file: &str| -> Result<(), String> {
-            let h = doc
-                .as_hash()
-                .ok_or_else(|| format!("{file}: expected a lib: spec mapping"))?;
-            for (k, v) in h {
-                let name = k
-                    .as_str()
-                    .ok_or_else(|| format!("{file}: source key must be a string"))?;
-                let spec = Spec {
-                    git: v["git"].as_str().map(String::from),
-                    mirrors: v["mirrors"]
-                        .as_vec()
-                        .map(|vs| {
-                            vs.iter()
-                                .filter_map(|u| u.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    archive: v["archive"].as_str().map(String::from),
-                    ref_: v["ref"].as_str().map(String::from),
-                    sha256: v["sha256"].as_str().map(String::from),
-                    submodules: v["submodules"].as_bool().unwrap_or(false),
-                };
+            for (name, spec) in specs_from_yaml(doc, file)? {
                 // 空规格（系统 SDK/闭源件，如 decklink）只登记不取源
                 // an empty spec (system SDKs/proprietary pieces like
                 // decklink) registers but fetches nothing
                 if spec.git.is_none() && spec.archive.is_none() {
                     continue;
                 }
-                if spec.git.is_some() && spec.archive.is_some() {
-                    return Err(format!(
-                        "{file}: '{name}' needs exactly one of git: or archive:"
-                    ));
-                }
-                if !spec.mirrors.is_empty() && spec.git.is_none() {
-                    return Err(format!(
-                        "{file}: '{name}' has mirrors: but no git: to mirror"
-                    ));
-                }
-                map.insert(name.to_string(), spec);
+                map.insert(name, spec);
             }
             Ok(())
         };
@@ -158,80 +209,188 @@ pub fn spec(name: &str) -> Result<&'static Spec, String> {
         .ok_or_else(|| format!("sources: no entry for '{name}'"))
 }
 
-// ==================== git 解析 / git resolution ====================
-
-/// git 解析结果：检出的具体形式 / resolved checkout form
-enum Checkout {
-    /// 精确 commit / an exact commit
-    Commit(String),
-    /// tag（浅克隆 --branch）/ a tag (shallow --branch clone)
-    Tag(String),
-}
+// ==================== git 解析（update-sources 专用）/ git resolution (update-sources only) ====================
 
 /// 40-hex sha？/ is it a 40-hex sha?
-fn is_sha(s: &str) -> bool {
+pub fn is_sha(s: &str) -> bool {
     s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// 解析 git 源成具体检出：ref 钉住 → 分支 HEAD → CI 验证 → tag 回退
-/// Resolve a git source to a concrete checkout: a pinned ref → branch HEAD
-/// → CI verification → tag fallback
-fn resolve_git(url: &str, ref_: Option<&str>) -> Result<Checkout, String> {
-    // 分支 HEAD → CI 门的共用决策 / shared decision for a branch HEAD
-    let gate = |sha: &str, branch_desc: &str| -> Result<Checkout, String> {
-        match net::ci_green_sync(url, sha) {
-            Some(true) => {
-                log::log(&format!(
-                    "[sources] {url}: {branch_desc} HEAD {sha} CI green"
-                ));
-                Ok(Checkout::Commit(sha.to_string()))
-            }
-            v => {
-                let why = match v {
-                    Some(false) => "CI red or still running",
-                    None => "no CI found",
-                    _ => unreachable!(),
-                };
-                match net::latest_tag(url)? {
-                    Some(tag) => {
-                        log::log(&format!(
-                            "[sources] {url}: {why} on {branch_desc} HEAD — falling back to tag {tag}"
-                        ));
-                        Ok(Checkout::Tag(tag))
-                    }
-                    None => {
-                        log::warn(&format!(
-                            "[sources] {url}: {why} and no tags — using {branch_desc} HEAD {sha}"
-                        ));
-                        Ok(Checkout::Commit(sha.to_string()))
-                    }
-                }
-            }
-        }
-    };
+/// 更新器解析结果：选中的精确 commit、人读依据与上游健康见证 /
+/// updater resolution outcome: the chosen exact commit, a human-readable
+/// basis, and upstream-health witnesses
+#[derive(Debug, Clone)]
+pub struct Resolution {
+    /// 解析出的精确 commit sha / the resolved exact commit sha
+    pub sha: String,
+    /// 人读依据（写进 pin 行注释与更新摘要），如 "master HEAD CI-green" /
+    /// human-readable basis (written into the pin-line comment and the
+    /// update summary), e.g. "master HEAD CI-green"
+    pub basis: String,
+    /// 选中点经由 tag 达成时为 tag 名——ref 前进据此决定写入形态
+    /// （tag 赢写 tag 名，HEAD 赢写 sha）/ the tag name when the chosen
+    /// commit was reached via one — the ref advancement picks its written
+    /// form from this (a tag win writes the tag name, a HEAD win the sha)
+    pub tag: Option<String>,
+    /// 上游分支 HEAD sha——停滞判定的输入（上游死活看分支头日期，与
+    /// 最终落点是否回退老 tag 无关）/ the upstream branch HEAD sha —
+    /// the input to staleness judgment (upstream liveness reads the
+    /// branch tip's date, regardless of whether the final target fell
+    /// back to an old tag)
+    pub head_sha: Option<String>,
+    /// 上游分支 HEAD 的 commit 日期（unix 秒）/ the upstream branch
+    /// HEAD's commit date (unix seconds)
+    pub head_date: Option<i64>,
+    /// 既有 ref 被鉴定为分支形——更新器写入决策的依据（分支形只动
+    /// pin，tag/sha 形机器维护 ref 前进）/ the existing ref tested as
+    /// branch-shaped — input to the updater's write decisions (branch
+    /// form touches only the pin; tag/sha form has the machine advance
+    /// the ref)
+    pub ref_is_branch: bool,
+}
 
-    if let Some(r) = ref_ {
-        if is_sha(r) {
-            return Ok(Checkout::Commit(r.to_string()));
-        }
-        // tag 还是分支？/ tag or branch?
+/// tag 名 → commit sha：annotated tag 取 peeled `^{}` 行，lightweight
+/// 直行即 commit / tag name -> commit sha: annotated tags peel to the
+/// `^{}` line; a lightweight tag's own line already is the commit
+fn tag_commit(url: &str, tag: &str) -> Result<String, String> {
+    // 模式带 * 通配：精确模式在部分 git 版本上不带出 peel 行，通配多捞
+    // 的旁系 tag（v1.3.1 → v1.3.1.2）由下方的精确等值过滤挡掉 /
+    // the pattern carries a * wildcard: an exact pattern does not always
+    // surface peel lines on every git version — the sibling tags the
+    // glob over-collects (v1.3.1 -> v1.3.1.2) are filtered out by the
+    // exact-equality tests below
+    let refs = net::ls_remote(url, &[&format!("refs/tags/{tag}*")])?;
+    let bare = format!("refs/tags/{tag}");
+    let peeled = format!("refs/tags/{tag}^{{}}");
+    refs.iter()
+        .find(|(_, rf)| rf == &peeled)
+        .or_else(|| refs.iter().find(|(_, rf)| rf == &bare))
+        .map(|(s, _)| s.clone())
+        .ok_or_else(|| format!("sources: tag '{tag}' not found on {url}"))
+}
+
+/// 单仓解析：ref 无关的三路事实探测——分支 HEAD（sha+日期）、CI 门、
+/// 最新版本 tag——然后按 ref 形态做目标选择。ref 是偏好而非真相：分支
+/// 形 = 跟分支走（裸 HEAD）；tag 形 = 发布轨（最新 tag 不论 CI）；sha
+/// 形或无 ref = 安全自动（CI 绿门 → tag 回退）/ per-repo resolution:
+/// ref-independent probing of three facts — branch HEAD (sha + date),
+/// the CI gate, the newest version tag — then target selection by the
+/// ref's form. A ref is a preference, not the truth: branch form =
+/// follow the branch (raw HEAD); tag form = release track (newest tag
+/// regardless of CI); sha form or no ref = safe automation (CI-green
+/// gate -> tag fallback)
+fn resolve_one(url: &str, ref_: Option<&str>) -> Result<Resolution, String> {
+    // ref 形态鉴定：sha / branch / tag / 缺失——branch 形还要用该具名
+    // 分支而非默认分支 / ref form identification: sha / branch / tag /
+    // absent — branch form further probes the named branch rather than
+    // the default
+    let mut named_branch: Option<String> = None;
+    if let Some(r) = ref_
+        && !is_sha(r)
+    {
         let refs = net::ls_remote(url, &[r])?;
-        let tag = refs.iter().any(|(_, rf)| rf == &format!("refs/tags/{r}"));
-        let head = refs
-            .iter()
-            .find(|(_, rf)| rf == &format!("refs/heads/{r}"))
-            .map(|(s, _)| s.clone());
-        if tag && head.is_none() {
-            log::log(&format!("[sources] {url}: pinned tag {r}"));
-            return Ok(Checkout::Tag(r.to_string()));
+        if refs.iter().any(|(_, rf)| rf == &format!("refs/heads/{r}")) {
+            named_branch = Some(r.to_string());
+        } else if !refs.iter().any(|(_, rf)| rf == &format!("refs/tags/{r}")) {
+            return Err(format!("sources: ref '{r}' not found on {url}"));
         }
-        if let Some(sha) = head {
-            return gate(&sha, &format!("branch {r}"));
-        }
-        return Err(format!("sources: ref '{r}' not found on {url}"));
     }
-    let (branch, sha) = net::default_branch(url)?;
-    gate(&sha, &format!("default branch {branch}"))
+    // 分支头探测：branch 形用具名分支，其余用默认分支——停滞见证以
+    // 实际追踪的分支为准 / branch tip probing: branch form uses the
+    // named branch, everything else the default — the staleness witness
+    // follows whichever branch is actually tracked
+    let (branch, head_sha) = match &named_branch {
+        Some(b) => {
+            let refs = net::ls_remote(url, &[b])?;
+            let sha = refs
+                .iter()
+                .find(|(_, rf)| rf == &format!("refs/heads/{b}"))
+                .map(|(s, _)| s.clone())
+                .ok_or_else(|| format!("sources: branch {b} not found on {url}"))?;
+            (b.clone(), sha)
+        }
+        None => net::default_branch(url)?,
+    };
+    let tip_date = net::commit_date(url, &head_sha);
+    let ci = net::ci_green_sync(url, &head_sha);
+    let head_ok = ci == Some(true);
+    let why = match ci {
+        Some(true) => "CI-green",
+        Some(false) => "CI red or still running",
+        None => "no CI found",
+    };
+    let tag = net::latest_tag(url)?;
+    // 存活见证：分支头日期与最新 tag 日期取较新者 / liveness witness:
+    // the newer of the branch tip date and the newest tag date
+    let tag_date = tag
+        .as_ref()
+        .and_then(|t| tag_commit(url, t).ok())
+        .and_then(|s| net::commit_date(url, &s));
+    let head_date = match (tip_date, tag_date) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    let bdesc = format!("branch {branch}");
+    let mk = |sha: String, basis: String, tag: Option<String>| Resolution {
+        sha,
+        basis,
+        tag,
+        head_sha: Some(head_sha.clone()),
+        head_date,
+        ref_is_branch: named_branch.is_some(),
+    };
+    // 目标选择按 ref 形态分流 / target selection branches on the ref form
+    let branch_form = named_branch.is_some();
+    let tag_form = ref_.is_some_and(|r| !is_sha(r)) && !branch_form;
+    if branch_form {
+        // 分支追踪：裸 HEAD——人的浮动意图，pin 仅负责物化 / branch
+        // tracking: raw HEAD — the human's floating intent, the pin
+        // merely materializes it
+        return Ok(mk(head_sha.clone(), format!("{bdesc} HEAD"), None));
+    }
+    if tag_form {
+        // 发布轨：最新 tag 是首选，无 tag 退回 HEAD 逻辑 / release
+        // track: the newest tag is preferred; without tags fall back to
+        // the HEAD logic
+        if let Some(t) = tag {
+            let sha = tag_commit(url, &t)?;
+            return Ok(mk(sha, format!("release track — tag {t}"), Some(t)));
+        }
+    }
+    // 安全自动（sha 形 / 无 ref / 无 tag 的发布轨）：CI 绿门 → tag
+    // 回退 / safe automation (sha form / no ref / tag-less release
+    // track): CI-green gate -> tag fallback
+    if head_ok {
+        Ok(mk(head_sha.clone(), format!("{bdesc} HEAD CI-green"), None))
+    } else if let Some(t) = tag {
+        let sha = tag_commit(url, &t)?;
+        Ok(mk(
+            sha,
+            format!("{bdesc} HEAD {why} — fallback tag {t}"),
+            Some(t),
+        ))
+    } else {
+        Ok(mk(
+            head_sha.clone(),
+            format!("{bdesc} HEAD {why}, no tags"),
+            None,
+        ))
+    }
+}
+
+/// update-sources 的唯一解析入口：git 主仓 + mirrors 按序尝试，返回首个
+/// 解析成功的精确 commit / the updater's single resolution entry: the
+/// primary git repo plus mirrors tried in order; returns the first
+/// successfully resolved exact commit
+pub fn resolve_commit(urls: &[&str], ref_: Option<&str>) -> Result<Resolution, String> {
+    let mut last_err = String::new();
+    for url in urls {
+        match resolve_one(url, ref_) {
+            Ok(r) => return Ok(r),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
 }
 
 /// git 源的归档兜底候选：主机 tarball 端点与检出内容等价但走
@@ -285,7 +444,11 @@ fn archive_candidates(url: &str, rev: &str) -> Vec<String> {
 }
 
 /// 把规格物化成 <wd>/src 检出 / materialise a spec into <wd>/src
-fn fetch_into(wd: &Path, spec: &Spec) -> Result<PathBuf, String> {
+/// Params：
+/// - wd: &Path —— 工作目录，检出落 <wd>/src / scratch dir, checkout lands in <wd>/src
+/// - name: &str —— 库名，仅用于诊断信息 / library name, diagnostics only
+/// - spec: &Spec —— 源码规格 / the source spec
+fn fetch_into(wd: &Path, name: &str, spec: &Spec) -> Result<PathBuf, String> {
     // src 之外再带出一个版本痕迹（ver）：git 检出用 describe，归档源
     // 从包名解析——写进 wd/.srcver 供 BUILDINFO 的 external
     // libraries' versions 段取用 / alongside src carry a version
@@ -335,35 +498,71 @@ fn fetch_into(wd: &Path, spec: &Spec) -> Result<PathBuf, String> {
             }
             None
         };
-        // 单 URL 的完整尝试：解析 → 拉取，失败转本仓的归档端点；成功
+        // 构建期零解析且一律按 hash 拉取：检出目标在进环前一次性定
+        // 死——lock（冻结，机器禁区）最高优先；sha 形 ref 次之（自身
+        // 即 hash）；pin 再次之——它是 tag/branch 形 ref 与无 ref 条目
+        // 的 hash oracle。tag/branch 永不作为拉取目标：tag 可重推
+        // 歧义不配入链，branch 浮动不属于依赖物化（ffmpeg 的浮动是
+        // 产品自管通道，不在此路径）。tag/branch 形 ref 缺 pin 硬报错
+        // ——hash 不可得时宁可响亮失败也不浮动偷跑 / zero resolution
+        // at build time and everything fetches by hash: the checkout
+        // target is fixed once before the repo loop — lock (the freeze,
+        // machine territory's inverse) wins; a sha-shaped ref next (it
+        // already IS the hash); then pin — the hash oracle for
+        // tag/branch refs and ref-less entries. Tags/branches never
+        // serve as fetch targets: a re-pushable tag is too ambiguous
+        // for the chain, and branch floating is no dep-materialization
+        // business (ffmpeg's floating is the product's own channel,
+        // off this path). A tag/branch ref missing its pin is a hard
+        // error — better fail loud than sneak a float
+        let sha_of = |s: &str, key: &str| -> Result<String, String> {
+            if is_sha(s) {
+                Ok(s.to_string())
+            } else {
+                Err(format!(
+                    "sources: {name}: {key} '{s}' is not a 40-hex commit / 不是合法 commit"
+                ))
+            }
+        };
+        // 目标恒为精确 commit / the target is always an exact commit
+        let target: String = if let Some(lock) = &spec.lock {
+            sha_of(lock, "lock")?
+        } else if let Some(r) = spec.ref_.as_deref() {
+            if is_sha(r) {
+                r.to_string()
+            } else {
+                // tag/branch 形 ref：pin 是它的 hash oracle，缺席即
+                // 人改了 ref 没跑更新器——响亮报错指路 / tag/branch
+                // refs: pin is their hash oracle — absent means someone
+                // edited ref without re-running the updater; fail loud
+                // with directions
+                match &spec.pin {
+                    Some(p) => sha_of(p, "pin")?,
+                    None => {
+                        return Err(format!(
+                            "sources: '{name}' ref '{r}' is a tag/branch — fetching by name is forbidden and no pin: oracle exists; run update-sources / ref 是 tag/branch——按名拉取被禁且无 pin oracle，请跑 update-sources"
+                        ));
+                    }
+                }
+            }
+        } else if let Some(pin) = &spec.pin {
+            sha_of(pin, "pin")?
+        } else {
+            return Err(format!(
+                "sources: '{name}' has none of lock:/ref:/pin: — run update-sources to pin it / lock/ref/pin 皆无，请跑 update-sources 落钉"
+            ));
+        };
+        // 单 URL 的完整尝试：拉取钉死目标，失败转本仓的归档端点；成功
         // 返 (src, rev)——rev 供 .srcver 在 .git 缺席（归档兜底）时
-        // 兜底 / one URL's full attempt: resolve → fetch, falling to
-        // this repo's own archive endpoints on transport death; on
+        // 兜底 / one URL's full attempt: fetch the pinned target, falling
+        // to this repo's own archive endpoints on transport death; on
         // success returns (src, rev) — rev backs .srcver when .git is
         // absent (archive fallback)
         let try_url = |url: &str| -> Result<(PathBuf, String), String> {
-            match resolve_git(url, spec.ref_.as_deref()) {
-                // 解析本身已死（ls-remote 停滞）——钉住的 ref 名仍可赌
-                // 归档端点（github/gitlab 接受分支/tag 原名）/ resolution
-                // itself died (ls-remote stall) — a pinned ref name can
-                // still try the archive endpoints (github/gitlab accept
-                // raw branch/tag names)
-                Err(e) => spec
-                    .ref_
-                    .as_deref()
-                    .filter(|&r| !is_sha(r))
-                    .and_then(|r| archive_fallback(url, r))
-                    .ok_or(e),
-                Ok(co) => {
-                    let (rev, git_res) = match &co {
-                        Checkout::Commit(s) => (s.clone(), net::fetch_git_commit(wd, url, s)),
-                        Checkout::Tag(t) => (t.clone(), net::fetch_git(wd, url, t, None)),
-                    };
-                    git_res
-                        .map(|s| (s, rev.clone()))
-                        .or_else(|e| archive_fallback(url, &rev).ok_or(e))
-                }
-            }
+            let rev = target.clone();
+            net::fetch_git_commit(wd, url, &target)
+                .map(|s| (s, rev.clone()))
+                .or_else(|e| archive_fallback(url, &rev).ok_or(e))
         };
         let mut last_err = String::new();
         let mut got = None;
@@ -428,10 +627,12 @@ fn git_describe(src: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// spec 自带的版本串：archive 源解析包名，git 源用钉住的 ref——
-/// .srcver/.pc 双双缺席时的兜底（快照恢复期的老缓存没有 .srcver）
+/// spec 自带的版本串：archive 源解析包名，git 源先用钉住的 ref（人读
+/// 标签优先）、再退 pin（精确 sha）——.srcver/.pc 双双缺席时的兜底
+/// （快照恢复期的老缓存没有 .srcver）
 /// the spec's own version string: archive sources parse the package
-/// name, git sources use the pinned ref — the fallback when both
+/// name, git sources prefer the pinned ref (the human-readable label)
+/// then fall back to pin (the exact sha) — the fallback when both
 /// .srcver and .pc are absent (old caches on snapshot restores carry
 /// no .srcver)
 pub fn spec_version(name: &str) -> String {
@@ -441,6 +642,7 @@ pub fn spec_version(name: &str) -> String {
                 .as_deref()
                 .map(archive_version_str)
                 .or_else(|| s.ref_.clone())
+                .or_else(|| s.pin.clone())
                 .unwrap_or_default()
         })
         .unwrap_or_default()
@@ -625,7 +827,7 @@ pub fn prefetch<I: IntoIterator<Item = String>>(names: I) {
                     let spec = spec(&name2)?;
                     fsx::rm_rf(&cd);
                     fsx::install_d(&cd)?;
-                    fetch_into(&cd, spec)?;
+                    fetch_into(&cd, &name2, spec)?;
                     fsx::write(&cd.join("done"), "")?;
                     Ok(())
                 })();
@@ -695,7 +897,7 @@ pub fn materialize(wd: &Path, name: &str) -> Result<PathBuf, String> {
         copy_dir(&cd.join("src"), &dst)?;
     } else {
         // 未预取/预取失败：现场解析 / no (or failed) prefetch: resolve inline
-        fetch_into(wd, spec(name)?)?;
+        fetch_into(wd, name, spec(name)?)?;
     }
     // 残壳 .git 比没有更糟：骗过上游构建脚本的 EXISTS 检查，然后
     // --git-dir 暴毙于 "not a git repository"。剥成缺席——上游改走
@@ -893,10 +1095,14 @@ pub fn dump() -> Result<(), String> {
         let kind = if s.git.is_some() { "git" } else { "archive" };
         let url = s.git.as_deref().or(s.archive.as_deref()).unwrap_or("");
         println!(
-            "{name}: {kind} {url}{}{}",
+            "{name}: {kind} {url}{}{}{}",
             s.ref_
                 .as_deref()
                 .map(|r| format!(" ref={r}"))
+                .unwrap_or_default(),
+            s.pin
+                .as_deref()
+                .map(|p| format!(" pin={}", &p[..p.len().min(10)]))
                 .unwrap_or_default(),
             if s.mirrors.is_empty() {
                 String::new()
